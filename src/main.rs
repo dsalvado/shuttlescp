@@ -2,6 +2,8 @@
 
 mod app;
 mod config;
+mod disk_picker;
+mod disks;
 mod file_pane;
 mod local_fs;
 mod logging;
@@ -27,7 +29,6 @@ fn main() {
         tracing::warn!("{error}; using default settings");
         Config::default()
     });
-    tracing::info!("GuiSCP {} starting", env!("CARGO_PKG_VERSION"));
 
     let app = RelmApp::new(APP_ID);
     // `include_str!` embeds the file's contents into the binary at compile time.

@@ -1,5 +1,6 @@
 //! User preferences persisted as JSON in the XDG config directory.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -42,6 +43,9 @@ pub struct Config {
     theme: ThemeChoice,
     /// Directory the local pane showed when the app was last closed.
     last_local_dir: Option<PathBuf>,
+    /// Last directory shown on each disk, keyed by mount point. A `BTreeMap` keeps the
+    /// keys sorted, so the saved file lists disks in a stable order.
+    last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
     log_level: LogLevel,
 }
 
@@ -134,6 +138,21 @@ impl Config {
         self.last_local_dir = Some(dir);
     }
 
+    /// Last directory shown on each disk, keyed by the disk's mount point.
+    pub fn last_dir_on_disk(&self) -> &BTreeMap<PathBuf, PathBuf> {
+        &self.last_dir_on_disk
+    }
+
+    /// Remember the directory last shown on a disk (call [`Config::save`] to persist it).
+    ///
+    /// # Arguments
+    ///
+    /// * `disk_root` - Mount point of the disk
+    /// * `dir` - Directory shown on that disk
+    pub fn set_last_dir_on_disk(&mut self, disk_root: PathBuf, dir: PathBuf) {
+        self.last_dir_on_disk.insert(disk_root, dir);
+    }
+
     /// Log level the user picked.
     pub fn log_level(&self) -> LogLevel {
         self.log_level
@@ -169,6 +188,7 @@ mod tests {
         config.set_theme(ThemeChoice::Named(String::from("Adwaita-dark")));
         config.set_last_local_dir(PathBuf::from("/srv/data"));
         config.set_log_level(LogLevel::Warn);
+        config.set_last_dir_on_disk(PathBuf::from("/media/usb"), PathBuf::from("/media/usb/a"));
 
         // Act
         config.save(&path).expect("save config");

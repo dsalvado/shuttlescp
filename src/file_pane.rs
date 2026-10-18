@@ -1,7 +1,8 @@
-//! A file explorer pane: path label, refresh button and a sortable column view whose first
-//! row, "..", goes up one folder.
+//! A file explorer pane: refresh button, disk drop-down, path label and a sortable column
+//! view whose first row, "..", goes up one folder.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::iter;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,8 @@ use relm4::prelude::*;
 use relm4::typed_view::OrdFn;
 use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 
+use crate::disk_picker::DiskPicker;
+use crate::disks;
 use crate::local_fs::{self, EntryKind, FileEntry, ListError};
 
 /// Up-arrow picture drawn over the folder icon of the ".." row, embedded at compile time.
@@ -51,13 +54,32 @@ pub enum FilePaneMsg {
     Refresh,
     /// A row was double-clicked or had Enter pressed on it (position in the sorted view).
     Activate(u32),
+    /// The user picked the disk at this position in the disk drop-down.
+    DiskSelected(u32),
+    /// A disk was mounted, unmounted or renamed.
+    DisksChanged,
+}
+
+/// What a [`FilePane`] starts with.
+#[derive(Debug)]
+pub struct FilePaneInit {
+    /// Directory shown first.
+    pub start_dir: PathBuf,
+    /// Last directory shown on each disk in earlier sessions, keyed by mount point.
+    pub last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
 }
 
 /// Notifications a [`FilePane`] sends to its parent.
 #[derive(Debug)]
 pub enum FilePaneOutput {
-    /// The pane now shows this directory.
-    DirectoryChanged(PathBuf),
+    /// The pane now shows `dir`, which lies on the disk mounted at `disk_root`
+    /// (`None` if no known disk holds it).
+    DirectoryChanged {
+        /// Directory now shown.
+        dir: PathBuf,
+        /// Mount point of the disk holding `dir`.
+        disk_root: Option<PathBuf>,
+    },
 }
 
 /// Result of a background directory listing, delivered back to the UI thread.
@@ -88,6 +110,10 @@ pub struct FilePane {
     requested_dir: PathBuf,
     entries: TypedColumnView<Row, gtk::SingleSelection>,
     status: String,
+    disk_picker: DiskPicker,
+    /// Last directory shown on each disk, keyed by the disk's mount point, so returning
+    /// to a disk resumes where the user left it.
+    last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
 }
 
 impl FilePane {
@@ -141,7 +167,7 @@ impl FilePane {
 // and a struct holding the widgets, roughly like a declarative template.
 #[relm4::component(pub)]
 impl Component for FilePane {
-    type Init = PathBuf;
+    type Init = FilePaneInit;
     type Input = FilePaneMsg;
     type Output = FilePaneOutput;
     type CommandOutput = Listing;
@@ -164,6 +190,9 @@ impl Component for FilePane {
                     set_tooltip_text: Some("Refresh"),
                     connect_clicked => FilePaneMsg::Refresh,
                 },
+                // `#[local_ref]` embeds a widget created in `init` instead of building a new one.
+                #[local_ref]
+                disk_dropdown -> gtk::DropDown {},
                 // Current directory. A plain label: it cannot be clicked, focused or edited.
                 gtk::Label {
                     set_hexpand: true,
@@ -182,7 +211,6 @@ impl Component for FilePane {
             gtk::ScrolledWindow {
                 set_vexpand: true,
 
-                // `#[local_ref]` embeds a widget created in `init` instead of building a new one.
                 #[local_ref]
                 entries_view -> gtk::ColumnView {
                     // GTK themes style "data-table" lists with short rows.
@@ -210,25 +238,41 @@ impl Component for FilePane {
     }
 
     fn init(
-        start_dir: Self::Init,
+        init: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let FilePaneInit {
+            start_dir,
+            last_dir_on_disk,
+        } = init;
         let mut entries = TypedColumnView::<Row, gtk::SingleSelection>::new();
         entries.append_column::<NameColumn>();
         entries.append_column::<SizeColumn>();
         entries.append_column::<ModifiedColumn>();
         pin_parent_row(&entries);
 
+        // Each callback owns its own sender clone, since both outlive this function.
+        let select_sender = sender.clone();
+        let mounts_sender = sender.clone();
+        let disk_picker = DiskPicker::new(
+            move |position| select_sender.input(FilePaneMsg::DiskSelected(position)),
+            move || mounts_sender.input(FilePaneMsg::DisksChanged),
+        );
+        disk_picker.show_dir(&start_dir);
+
         let mut model = Self {
             current_dir: start_dir.clone(),
             requested_dir: start_dir.clone(),
             entries,
             status: String::new(),
+            disk_picker,
+            last_dir_on_disk,
         };
         model.request_listing(start_dir, &sender);
 
         let entries_view = &model.entries.view;
+        let disk_dropdown = model.disk_picker.widget();
         // `view_output!()` is generated by the macro; it builds the widget tree declared above.
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -254,6 +298,45 @@ impl Component for FilePane {
                     self.request_listing(dir, &sender);
                 }
             }
+            FilePaneMsg::DiskSelected(position) => {
+                let Some(root) = usize::try_from(position)
+                    .ok()
+                    .and_then(|index| self.disk_picker.disks().get(index))
+                    .map(|disk| disk.root().to_path_buf())
+                else {
+                    return;
+                };
+                // Resume at the last folder seen on this disk if it (or a parent on the
+                // same disk) still exists, otherwise start at the disk's top.
+                let target = self
+                    .last_dir_on_disk
+                    .get(&root)
+                    .and_then(|dir| local_fs::nearest_listable_dir(dir))
+                    .filter(|dir| dir.starts_with(&root))
+                    .map_or(root.clone(), Path::to_path_buf);
+                tracing::info!(
+                    "switching to disk {} at {}",
+                    root.display(),
+                    target.display()
+                );
+                self.request_listing(target, &sender);
+            }
+            FilePaneMsg::DisksChanged => {
+                self.disk_picker.reload();
+                self.disk_picker.show_dir(&self.current_dir);
+                // If the disk being shown was removed, fall back to the nearest folder that
+                // still exists (ultimately "/").
+                if let Some(fallback) = local_fs::nearest_listable_dir(&self.current_dir)
+                    && fallback != self.current_dir
+                {
+                    tracing::info!(
+                        "{} is gone; showing {}",
+                        self.current_dir.display(),
+                        fallback.display()
+                    );
+                    self.request_listing(fallback.to_path_buf(), &sender);
+                }
+            }
         }
     }
 
@@ -272,9 +355,19 @@ impl Component for FilePane {
             Ok(entries) => {
                 self.status = format!("{} items", entries.len());
                 self.show_entries(&listing.dir, entries);
+                let disk_root = disks::disk_index(self.disk_picker.disks(), &listing.dir)
+                    .and_then(|index| self.disk_picker.disks().get(index))
+                    .map(|disk| disk.root().to_path_buf());
+                if let Some(root) = &disk_root {
+                    self.last_dir_on_disk
+                        .insert(root.clone(), listing.dir.clone());
+                }
                 // Sending fails only when the parent is already gone, so there is no one
                 // left to notify; `let _ =` explicitly discards that result.
-                let _ = sender.output(FilePaneOutput::DirectoryChanged(listing.dir.clone()));
+                let _ = sender.output(FilePaneOutput::DirectoryChanged {
+                    dir: listing.dir.clone(),
+                    disk_root,
+                });
                 self.current_dir = listing.dir;
             }
             Err(error) => {
@@ -283,6 +376,8 @@ impl Component for FilePane {
                 self.requested_dir = self.current_dir.clone();
             }
         }
+        // Also undoes a disk choice whose listing failed.
+        self.disk_picker.show_dir(&self.current_dir);
     }
 }
 

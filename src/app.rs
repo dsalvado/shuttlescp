@@ -1,14 +1,16 @@
-//! Main window: menu bar on top, local explorer on the left, remote explorer on the right.
+//! Main window: menu bar on top, then one tab per session, each holding a local explorer
+//! on the left and a remote explorer on the right.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use relm4::actions::{AccelsPlus, RelmAction, RelmActionGroup};
-use relm4::gtk::gio;
 use relm4::gtk::prelude::*;
+use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
 use crate::config::Config;
-use crate::file_pane::{FilePane, FilePaneOutput};
+use crate::file_pane::{FilePane, FilePaneInit, FilePaneOutput};
 use crate::local_fs;
 use crate::logging::{LogLevel, Logger};
 use crate::resize_grips;
@@ -20,6 +22,16 @@ const WINDOW_WIDTH: i32 = 1200;
 const WINDOW_HEIGHT: i32 = 720;
 /// Label of the theme menu entry that follows the desktop theme.
 const SYSTEM_THEME_LABEL: &str = "System default";
+/// Longest session tab title, in characters; longer titles are cut in the middle.
+const TAB_TITLE_MAX_CHARS: usize = 32;
+/// Marker inserted where a tab title was shortened.
+const TAB_TITLE_ELLIPSIS: &str = "...";
+/// Icon of a session tab.
+const SESSION_TAB_ICON: &str = "computer-symbolic";
+/// Icon of the "New Tab" tab, which will open a new connection.
+const NEW_TAB_ICON: &str = "tab-new-symbolic";
+/// Position of the "New Tab" tab, after the single session tab.
+const NEW_TAB_PAGE: u32 = 1;
 
 // These macros declare marker types that name GIO actions in a type-safe way.
 // "win" is the action group GTK attaches to the window, so actions are "win.quit" etc.
@@ -49,14 +61,23 @@ pub enum AppMsg {
     ThemeSelected(ThemeChoice),
     /// The user picked a log level from the Tools menu.
     LogLevelSelected(LogLevel),
-    /// The local pane moved to another directory.
-    LocalDirChanged(PathBuf),
+    /// The local pane moved to `dir`, on the disk mounted at `disk_root` (if known).
+    LocalDirChanged {
+        /// Directory now shown.
+        dir: PathBuf,
+        /// Mount point of the disk holding `dir`.
+        disk_root: Option<PathBuf>,
+    },
 }
 
 /// Root component of the application.
 pub struct App {
     /// `Controller` owns a running child component and gives access to its root widget.
     local_pane: Controller<FilePane>,
+    /// Directory shown in the local pane, for the tab title.
+    local_dir: PathBuf,
+    /// Name of the machine the session tab shows (this computer until remote sessions exist).
+    host: String,
     config: Config,
     config_path: PathBuf,
     logger: Logger,
@@ -69,7 +90,10 @@ impl SimpleComponent for App {
     type Output = ();
 
     view! {
-        gtk::ApplicationWindow {
+        // `#[root]` marks the window as the component's root; the named widgets after it
+        // are built alongside and used as tab labels.
+        #[root]
+        main_window = gtk::ApplicationWindow {
             set_title: Some("GuiSCP"),
             set_default_size: (WINDOW_WIDTH, WINDOW_HEIGHT),
             set_resizable: true,
@@ -88,26 +112,35 @@ impl SimpleComponent for App {
 
                     gtk::PopoverMenuBar::from_model(Some(&menu_model)) {},
 
-                    gtk::Paned {
-                        set_orientation: gtk::Orientation::Horizontal,
+                    #[name = "sessions"]
+                    gtk::Notebook {
                         set_vexpand: true,
-                        set_position: WINDOW_WIDTH / 2,
-                        set_wide_handle: true,
-                        set_shrink_start_child: false,
-                        set_shrink_end_child: false,
-                        // Gives the divider a visible, hoverable handle (see style.css).
-                        add_css_class: "pane-split",
+                        set_scrollable: true,
 
-                        // `#[wrap(Some)]` passes the widget as `Some(widget)`, since the setter
-                        // takes an `Option` (GTK allows clearing a child with `None`).
-                        #[wrap(Some)]
-                        set_start_child = model.local_pane.widget(),
+                        // `append_page[label] = page` calls `append_page(page, label)`.
+                        append_page[Some(&session_tab)] = &gtk::Paned {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_position: WINDOW_WIDTH / 2,
+                            set_wide_handle: true,
+                            set_shrink_start_child: false,
+                            set_shrink_end_child: false,
+                            // Gives the divider a visible, hoverable handle (see style.css).
+                            add_css_class: "pane-split",
 
-                        #[wrap(Some)]
-                        set_end_child = &gtk::Label {
-                            set_label: "Not connected",
-                            add_css_class: "dim-label",
+                            // `#[wrap(Some)]` passes the widget as `Some(widget)`, since the
+                            // setter takes an `Option` (GTK allows clearing a child with `None`).
+                            #[wrap(Some)]
+                            set_start_child = model.local_pane.widget(),
+
+                            #[wrap(Some)]
+                            set_end_child = &gtk::Label {
+                                set_label: "Not connected",
+                                add_css_class: "dim-label",
+                            },
                         },
+
+                        // Placeholder page; its tab is disabled until new connections exist.
+                        append_page[Some(&new_tab)] = &gtk::Box {},
                     },
 
                     // Status bar along the bottom of the window.
@@ -128,7 +161,35 @@ impl SimpleComponent for App {
                     },
                 },
             },
-        }
+        },
+
+        // Tab label of the session: "<host> - <folder>", shortened, full text on hover.
+        session_tab = gtk::Box {
+            set_spacing: 6,
+            #[watch]
+            set_tooltip_text: Some(&model.tab_title()),
+
+            gtk::Image {
+                set_icon_name: Some(SESSION_TAB_ICON),
+            },
+            gtk::Label {
+                #[watch]
+                set_label: &shorten_middle(&model.tab_title(), TAB_TITLE_MAX_CHARS),
+            },
+        },
+
+        // Tab label of the "New Tab" placeholder, greyed out while disabled.
+        new_tab = gtk::Box {
+            set_spacing: 6,
+            set_sensitive: false,
+
+            gtk::Image {
+                set_icon_name: Some(NEW_TAB_ICON),
+            },
+            gtk::Label {
+                set_label: "New Tab",
+            },
+        },
     }
 
     fn init(
@@ -167,18 +228,34 @@ impl SimpleComponent for App {
         tracing::info!("opening local pane at {}", start_dir.display());
         let model = Self {
             // `.forward()` converts each pane output into a message for this component.
-            local_pane: FilePane::builder().launch(start_dir).forward(
-                sender.input_sender(),
-                |output| match output {
-                    FilePaneOutput::DirectoryChanged(dir) => AppMsg::LocalDirChanged(dir),
-                },
-            ),
+            local_pane: FilePane::builder()
+                .launch(FilePaneInit {
+                    start_dir: start_dir.clone(),
+                    last_dir_on_disk: config.last_dir_on_disk().clone(),
+                })
+                .forward(sender.input_sender(), |output| match output {
+                    FilePaneOutput::DirectoryChanged { dir, disk_root } => {
+                        AppMsg::LocalDirChanged { dir, disk_root }
+                    }
+                }),
+            local_dir: start_dir,
+            host: glib::host_name().into(),
             config,
             config_path,
             logger,
         };
         let widgets = view_output!();
         resize_grips::add_corner_grips(&root, &widgets.overlay);
+        // Keep the "New Tab" tab from being opened (by click or keyboard) for now. Our
+        // handler runs before GTK's default one, which performs the switch, so stopping
+        // the emission here cancels it.
+        widgets
+            .sessions
+            .connect_switch_page(|notebook, _page, page_num| {
+                if page_num == NEW_TAB_PAGE {
+                    notebook.stop_signal_emission_by_name("switch-page");
+                }
+            });
         ComponentParts { model, widgets }
     }
 
@@ -198,10 +275,14 @@ impl SimpleComponent for App {
                 self.config.set_log_level(self.logger.level());
                 self.save_config();
             }
-            AppMsg::LocalDirChanged(dir) => {
+            AppMsg::LocalDirChanged { dir, disk_root } => {
                 tracing::debug!("local pane now shows {}", dir.display());
                 // Only kept in memory here; written to disk once, in `shutdown`.
-                self.config.set_last_local_dir(dir);
+                if let Some(root) = disk_root {
+                    self.config.set_last_dir_on_disk(root, dir.clone());
+                }
+                self.config.set_last_local_dir(dir.clone());
+                self.local_dir = dir;
             }
         }
     }
@@ -209,11 +290,21 @@ impl SimpleComponent for App {
     /// Runs when the application quits (window closed or File > Quit).
     fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
         self.save_config();
-        tracing::info!("GuiSCP shutting down");
+        self.logger.end_session();
     }
 }
 
 impl App {
+    /// Full session tab title: `<host> - <folder shown in the local pane>`.
+    fn tab_title(&self) -> String {
+        // The root directory has no file name, so it is shown as its full path ("/").
+        let folder = self.local_dir.file_name().map_or_else(
+            || self.local_dir.to_string_lossy(),
+            |name| name.to_string_lossy(),
+        );
+        format!("{} - {folder}", self.host)
+    }
+
     /// Write the settings file, logging instead of failing: losing a preference should
     /// never stop the app.
     fn save_config(&self) {
@@ -333,4 +424,81 @@ fn build_menu(themes: &[String]) -> gio::Menu {
     menu_bar.append_submenu(Some("_View"), &view_menu);
     menu_bar.append_submenu(Some("_Tools"), &tools_menu);
     menu_bar
+}
+
+/// Shorten `text` to at most `max_chars` characters by replacing its middle with "...".
+///
+/// # Arguments
+///
+/// * `text` - Text to shorten
+/// * `max_chars` - Maximum length in characters (Unicode scalar values), including "..."
+///
+/// # Returns
+///
+/// `text` unchanged (borrowed, no allocation) when it fits, otherwise its start and end
+/// joined by "..."
+///
+/// # Examples
+///
+/// ```ignore
+/// assert_eq!(shorten_middle("abcdefghij", 7), "ab...ij");
+/// ```
+fn shorten_middle(text: &str, max_chars: usize) -> Cow<'_, str> {
+    let length = text.chars().count();
+    if length <= max_chars {
+        return Cow::Borrowed(text);
+    }
+    let kept = max_chars.saturating_sub(TAB_TITLE_ELLIPSIS.len());
+    // The start gets the extra character when `kept` is odd.
+    let head_chars = kept.div_ceil(2);
+    let tail_chars = kept - head_chars;
+    // Convert character counts to byte offsets: Rust strings are UTF-8, so slicing by a
+    // character count directly could split a multi-byte character.
+    let head_end = text
+        .char_indices()
+        .nth(head_chars)
+        .map_or(text.len(), |(offset, _)| offset);
+    let tail_start = text
+        .char_indices()
+        .nth(length - tail_chars)
+        .map_or(text.len(), |(offset, _)| offset);
+    Cow::Owned(format!(
+        "{}{TAB_TITLE_ELLIPSIS}{}",
+        &text[..head_end],
+        &text[tail_start..]
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shorten_middle_keeps_short_text() {
+        assert!(matches!(
+            shorten_middle("host - home", 32),
+            Cow::Borrowed("host - home")
+        ));
+        let exact = "a".repeat(32);
+        assert_eq!(shorten_middle(&exact, 32), exact);
+    }
+
+    #[test]
+    fn shorten_middle_cuts_long_text_to_the_limit() {
+        // Arrange
+        let title = "workstation.example.com - a-very-long-project-folder-name";
+
+        // Act
+        let short = shorten_middle(title, 32);
+
+        // Assert
+        assert_eq!(short.chars().count(), 32);
+        assert_eq!(short, "workstation.exa...ct-folder-name");
+    }
+
+    #[test]
+    fn shorten_middle_counts_characters_not_bytes() {
+        let short = shorten_middle("ééééééééééééééé", 9);
+        assert_eq!(short, "ééé...ééé");
+    }
 }

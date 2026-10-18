@@ -4,6 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use relm4::gtk::glib;
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,8 @@ const APP_TARGET: &str = env!("CARGO_PKG_NAME");
 /// Target for level-change notices. It is always enabled, so a change is recorded even
 /// when the new (or old) level would hide informational messages.
 const LEVEL_CHANGE_TARGET: &str = concat!(env!("CARGO_PKG_NAME"), "::log_level");
+/// Target for the start and end of each app session; always enabled for the same reason.
+const SESSION_TARGET: &str = concat!(env!("CARGO_PKG_NAME"), "::session");
 /// When the log file grows past this size it is moved to `<name>.1` at startup.
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 /// Also echo log lines to the terminal. Development aid: set to `false` to log only to
@@ -111,9 +114,21 @@ pub struct Logger {
     handle: reload::Handle<Targets, Registry>,
     level: LogLevel,
     file_path: Option<PathBuf>,
+    /// When this app session started, for the duration logged at the end.
+    started: Instant,
 }
 
 impl Logger {
+    /// Record the end of the app session, with how long it lasted. Call once, on exit.
+    pub fn end_session(&self) {
+        tracing::info!(
+            target: SESSION_TARGET,
+            "session ended after {} (pid {})",
+            format_duration(self.started.elapsed()),
+            std::process::id()
+        );
+    }
+
     /// Current log level.
     pub fn level(&self) -> LogLevel {
         self.level
@@ -190,6 +205,14 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
         .with((LOG_TO_STDERR || file_path.is_err()).then(|| fmt::layer().with_writer(io::stderr)))
         .init();
 
+    // The process id ties the start and end lines of one session together, even if
+    // two copies of the app write to the log at once.
+    tracing::info!(
+        target: SESSION_TARGET,
+        "session started: GuiSCP {} (pid {})",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
     // The error can only be logged once the subscriber above is installed.
     let file_path = file_path
         .inspect_err(|error| tracing::error!("{error}; logging to stderr only"))
@@ -199,11 +222,28 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
         handle,
         level,
         file_path,
+        started: Instant::now(),
     }
 }
 
-/// Build the filter for a level: this app logs at `level`, the level-change target is
-/// always on, and third-party crates are capped at warnings to keep the log readable.
+/// Format a duration as `H:MM:SS`, e.g. 3725 seconds becomes `"1:02:05"`.
+///
+/// # Arguments
+///
+/// * `duration` - Elapsed time; fractions of a second are dropped
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    format!(
+        "{}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+/// Build the filter for a level: this app logs at `level`, the level-change and session
+/// targets are always on, and third-party crates are capped at warnings to keep the log
+/// readable.
 ///
 /// # Arguments
 ///
@@ -215,6 +255,7 @@ fn filter_for(level: LogLevel) -> Targets {
         .with_default(app_filter.min(LevelFilter::WARN))
         .with_target(APP_TARGET, app_filter)
         .with_target(LEVEL_CHANGE_TARGET, LevelFilter::TRACE)
+        .with_target(SESSION_TARGET, LevelFilter::TRACE)
 }
 
 /// Open `path` for appending, creating its directory and rotating it when too large.
@@ -270,6 +311,17 @@ mod tests {
         assert!(filter.would_enable(APP_TARGET, &Level::ERROR));
         assert!(!filter.would_enable(APP_TARGET, &Level::INFO));
         assert!(filter.would_enable(LEVEL_CHANGE_TARGET, &Level::INFO));
+        assert!(filter.would_enable(SESSION_TARGET, &Level::INFO));
+    }
+
+    #[test]
+    fn format_duration_shows_hours_minutes_seconds() {
+        assert_eq!(format_duration(Duration::from_millis(999)), "0:00:00");
+        assert_eq!(format_duration(Duration::from_secs(3725)), "1:02:05");
+        assert_eq!(
+            format_duration(Duration::from_secs(100 * 3600)),
+            "100:00:00"
+        );
     }
 
     #[test]
