@@ -122,14 +122,50 @@ window.login-dialog spinbutton {
     border-radius: 3px;
 }
 
-/* The log tab in the bottom panel. */
-textview.log-tail {
-    font-size: 8.5pt;
+/* Bottom panel: compact, square tabs. The selected tab takes the page's colour and an
+   outline that runs into the page, so it reads as attached to the pane below it. */
+notebook.bottom-panel > header {
+    padding: 3px 4px 0 4px;
+    background: none;
+    box-shadow: inset 0 -1px alpha(currentColor, 0.15);
+}
+
+notebook.bottom-panel > header > tabs {
+    margin: 0;
 }
 
 notebook.bottom-panel > header > tabs > tab {
     min-height: 0;
-    padding: 2px 10px;
+    min-width: 0;
+    margin: 0 2px 0 0;
+    padding: 1px 10px 2px 10px;
+    border: 1px solid transparent;
+    border-bottom-width: 0;
+    border-radius: 3px 3px 0 0;
+    background: none;
+    box-shadow: none;
+    outline: none;
+    font-size: smaller;
+}
+
+notebook.bottom-panel > header > tabs > tab:hover:not(:checked) {
+    background-color: alpha(currentColor, 0.06);
+}
+
+notebook.bottom-panel > header > tabs > tab:checked {
+    background-color: @view_bg_color;
+    border-color: alpha(currentColor, 0.15);
+}
+
+notebook.bottom-panel > stack {
+    background-color: @view_bg_color;
+}
+
+/* Log text: a fixed-width font so columns of the log line up. */
+textview.log-tail,
+textview.log-tail > text {
+    font-family: monospace;
+    font-size: 8.5pt;
 }
 
 /* Light dashed outline around the session details and their Save / Cancel buttons.

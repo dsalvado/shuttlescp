@@ -598,11 +598,31 @@ fn register_actions(
 fn bottom_panel(log_path: Option<PathBuf>) -> gtk::Notebook {
     let panel = gtk::Notebook::new();
     panel.add_css_class("bottom-panel");
-    let label = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    label.append(&gtk::Image::from_icon_name("text-x-generic-symbolic"));
-    label.append(&gtk::Label::new(Some("Log")));
-    panel.append_page(&log_tail(log_path), Some(&label));
+    panel.append_page(
+        &log_tail(log_path),
+        Some(&panel_tab("text-x-generic-symbolic", "Log")),
+    );
+    // Empty for now; a place to try out focus changes between tabs.
+    let test_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    test_page.add_css_class("bottom-panel-page");
+    panel.append_page(
+        &test_page,
+        Some(&panel_tab("applications-engineering-symbolic", "Test")),
+    );
     panel
+}
+
+/// A bottom panel tab label: a small icon and a name.
+///
+/// # Arguments
+///
+/// * `icon` - Theme icon name
+/// * `name` - Tab name
+fn panel_tab(icon: &str, name: &str) -> gtk::Box {
+    let label = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    label.append(&gtk::Image::from_icon_name(icon));
+    label.append(&gtk::Label::new(Some(name)));
+    label
 }
 
 /// Close the app gracefully on SIGHUP, SIGINT (Ctrl+C) and SIGTERM, so settings are saved
