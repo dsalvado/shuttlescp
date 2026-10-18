@@ -13,6 +13,7 @@ use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 use secrecy::SecretString;
 
+use crate::confirm_dialog::{self, Confirmation};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
 use crate::secrets;
 use crate::site_export::{self, ExportFile};
@@ -54,8 +55,10 @@ pub enum LoginMsg {
     SiteClicked(Selection),
     /// Start editing the selected saved site.
     Edit,
-    /// Delete the selected saved site.
+    /// Ask to confirm deleting the selected saved site.
     Delete,
+    /// The user confirmed: delete the selected saved site.
+    DeleteConfirmed,
     /// Store the edited or new site.
     Save,
     /// Discard the edits in progress.
@@ -400,7 +403,7 @@ impl Component for LoginDialog {
             set_modal: true,
             // Closing only hides the dialog, so it can be shown again from the menu.
             set_hide_on_close: true,
-            set_default_size: (600, 300),
+            set_default_size: (680, 340),
             // Sized down in style.css.
             add_css_class: "login-dialog",
 
@@ -420,7 +423,7 @@ impl Component for LoginDialog {
                         set_spacing: 4,
 
                         gtk::ScrolledWindow {
-                            set_width_request: 190,
+                            set_width_request: 230,
                             set_vexpand: true,
                             set_hscrollbar_policy: gtk::PolicyType::Never,
                             add_css_class: "frame",
@@ -702,7 +705,34 @@ impl Component for LoginDialog {
                     self.editing = true;
                 }
             }
-            LoginMsg::Delete => self.delete(&sender),
+            LoginMsg::Delete => {
+                if !self.saved_site_idle() {
+                    return;
+                }
+                let Some(site) = self.selected_site() else {
+                    return;
+                };
+                let question = format!("Delete {}?", site.display_name());
+                let detail = if site.password_saved {
+                    "The site and its saved password (in the keyring) will be removed. \
+                     This cannot be undone."
+                } else {
+                    "The site will be removed. This cannot be undone."
+                };
+                let wording = Confirmation {
+                    title: "Delete Site",
+                    question: &question,
+                    detail,
+                    confirm_label: "Delete",
+                };
+                let sender = sender.clone();
+                confirm_dialog::ask(root.upcast_ref(), wording, move |confirmed| {
+                    if confirmed {
+                        sender.input(LoginMsg::DeleteConfirmed);
+                    }
+                });
+            }
+            LoginMsg::DeleteConfirmed => self.delete(&sender),
             LoginMsg::Save => self.save(&sender),
             LoginMsg::Cancel => {
                 // A new site is abandoned entirely; a saved one goes back to its details.

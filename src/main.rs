@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod confirm_dialog;
 mod disk_picker;
 mod disks;
 mod file_pane;
