@@ -530,28 +530,31 @@ impl Component for LoginDialog {
                     },
 
                     // Right: the session details and their Save / Cancel buttons, grouped
-                    // in a dashed outline (drawn by the "session-group" style).
+                    // in a dashed outline (drawn by the "session-group" style). It fills
+                    // the height of the site list column so the two sides line up, with
+                    // Save / Cancel level with Edit / Delete.
                     gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
-                        set_spacing: 4,
+                        set_spacing: 8,
                         set_hexpand: true,
-                        set_valign: gtk::Align::Start,
                         add_css_class: "session-group",
 
-                        gtk::Grid {
-                            set_row_spacing: 4,
-                            set_column_spacing: 14,
+                        gtk::Label {
+                            set_label: "Session",
+                            set_xalign: 0.0,
+                            add_css_class: "heading",
+                        },
 
-                            attach[0, 0, 2, 1] = &gtk::Label {
-                                set_label: "Session",
-                                set_xalign: 0.0,
-                                add_css_class: "heading",
-                            },
-                            attach[0, 1, 2, 1] = &gtk::Label {
+                        // File protocol.
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 2,
+
+                            gtk::Label {
                                 set_label: "File protocol:",
                                 set_xalign: 0.0,
                             },
-                            attach[0, 2, 1, 1] = &gtk::DropDown::from_strings(&protocol_labels) {
+                            gtk::DropDown::from_strings(&protocol_labels) {
                                 set_halign: gtk::Align::Start,
                                 // Read-only until "New Site" or Edit.
                                 #[watch]
@@ -562,91 +565,127 @@ impl Component for LoginDialog {
                                     sender.input(LoginMsg::ProtocolSelected(dropdown.selected()));
                                 },
                             },
+                        },
 
-                            attach[0, 3, 1, 1] = &gtk::Label {
-                                set_label: "Host name:",
-                                set_xalign: 0.0,
-                            },
-                            attach[1, 3, 1, 1] = &gtk::Label {
-                                set_label: "Port number:",
-                                set_xalign: 0.0,
-                            },
-                            attach[0, 4, 1, 1] = &gtk::Entry::with_buffer(&model.host) {
+                        // Host name (wide) and port number (short).
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 12,
+
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 2,
                                 set_hexpand: true,
-                                #[watch]
-                                set_sensitive: model.editing,
-                                connect_changed => LoginMsg::FormEdited,
-                            },
-                            attach[1, 4, 1, 1] = &gtk::SpinButton::with_range(1.0, 65535.0, 1.0) {
-                                set_digits: 0,
-                                #[watch]
-                                set_sensitive: model.editing,
-                                #[watch]
-                                set_value: f64::from(model.port),
-                                connect_value_changed[sender] => move |spin| {
-                                    sender.input(LoginMsg::PortChanged(spin.value_as_int()));
+
+                                gtk::Label {
+                                    set_label: "Host name:",
+                                    set_xalign: 0.0,
+                                },
+                                gtk::Entry::with_buffer(&model.host) {
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    connect_changed => LoginMsg::FormEdited,
                                 },
                             },
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 2,
 
-                            attach[0, 5, 1, 1] = &gtk::Label {
-                                set_label: "User name:",
-                                set_xalign: 0.0,
-                            },
-                            attach[1, 5, 1, 1] = &gtk::Label {
-                                set_label: "Password:",
-                                set_xalign: 0.0,
-                            },
-                            attach[0, 6, 1, 1] = &gtk::Entry::with_buffer(&model.user) {
-                                set_hexpand: true,
-                                #[watch]
-                                set_sensitive: model.editing,
-                            },
-                            attach[1, 6, 1, 1] = &gtk::Entry::with_buffer(&model.password) {
-                                set_visibility: false,
-                                set_input_purpose: gtk::InputPurpose::Password,
-                                // Usable for a picked saved site too, to log in with a
-                                // password that is not saved.
-                                #[watch]
-                                set_sensitive: model.editing || model.selected_site().is_some(),
-                                #[watch]
-                                set_placeholder_text: Some(model.password_placeholder()),
-                                // Enter in the password field logs in.
-                                connect_activate => LoginMsg::Login,
-                                set_secondary_icon_name: Some(SHOW_PASSWORD_ICON),
-                                set_secondary_icon_tooltip_text: Some("Show password"),
-                                connect_icon_press => move |entry, _| {
-                                    // Spelled out because `Widget` also has an `is_visible`.
-                                    let show = !EntryExt::is_visible(entry);
-                                    entry.set_visibility(show);
-                                    entry.set_secondary_icon_name(Some(if show {
-                                        HIDE_PASSWORD_ICON
-                                    } else {
-                                        SHOW_PASSWORD_ICON
-                                    }));
+                                gtk::Label {
+                                    set_label: "Port:",
+                                    set_xalign: 0.0,
+                                },
+                                gtk::SpinButton::with_range(1.0, 65535.0, 1.0) {
+                                    set_digits: 0,
+                                    // Room for five digits ("65535") and no more.
+                                    set_width_chars: 5,
+                                    add_css_class: "port",
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    #[watch]
+                                    set_value: f64::from(model.port),
+                                    connect_value_changed[sender] => move |spin| {
+                                        sender.input(LoginMsg::PortChanged(spin.value_as_int()));
+                                    },
                                 },
                             },
-                            attach[1, 7, 1, 1] = &gtk::CheckButton {
-                                set_label: Some("Save password"),
-                                #[watch]
-                                set_sensitive: model.editing,
-                                set_tooltip_text: Some(
-                                    "Keep the password in the desktop keyring (encrypted with \
-                                     your login password)"
-                                ),
-                                #[watch]
-                                set_active: model.save_password,
-                                connect_toggled[sender] => move |check| {
-                                    sender.input(LoginMsg::SavePasswordToggled(check.is_active()));
+                        },
+
+                        // User name and password, side by side at equal widths.
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 12,
+                            set_homogeneous: true,
+
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 2,
+
+                                gtk::Label {
+                                    set_label: "User name:",
+                                    set_xalign: 0.0,
+                                },
+                                gtk::Entry::with_buffer(&model.user) {
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                },
+                            },
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 2,
+
+                                gtk::Label {
+                                    set_label: "Password:",
+                                    set_xalign: 0.0,
+                                },
+                                gtk::Entry::with_buffer(&model.password) {
+                                    set_visibility: false,
+                                    set_input_purpose: gtk::InputPurpose::Password,
+                                    // Usable for a picked saved site too, to log in with a
+                                    // password that is not saved.
+                                    #[watch]
+                                    set_sensitive: model.editing || model.selected_site().is_some(),
+                                    #[watch]
+                                    set_placeholder_text: Some(model.password_placeholder()),
+                                    // Enter in the password field logs in.
+                                    connect_activate => LoginMsg::Login,
+                                    set_secondary_icon_name: Some(SHOW_PASSWORD_ICON),
+                                    set_secondary_icon_tooltip_text: Some("Show password"),
+                                    connect_icon_press => move |entry, _| {
+                                        // Spelled out because `Widget` also has an `is_visible`.
+                                        let show = !EntryExt::is_visible(entry);
+                                        entry.set_visibility(show);
+                                        entry.set_secondary_icon_name(Some(if show {
+                                            HIDE_PASSWORD_ICON
+                                        } else {
+                                            SHOW_PASSWORD_ICON
+                                        }));
+                                    },
+                                },
+                                gtk::CheckButton {
+                                    set_label: Some("Save password"),
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    set_tooltip_text: Some(
+                                        "Keep the password in the desktop keyring (encrypted \
+                                         with your login password)"
+                                    ),
+                                    #[watch]
+                                    set_active: model.save_password,
+                                    connect_toggled[sender] => move |check| {
+                                        sender.input(LoginMsg::SavePasswordToggled(check.is_active()));
+                                    },
                                 },
                             },
                         },
 
                         // Saved-password indicator (left; stays readable while the fields
-                        // are disabled) and Save / Cancel (right), right under the fields.
+                        // are disabled) and Save / Cancel (right), along the bottom edge.
                         gtk::Box {
                             set_orientation: gtk::Orientation::Horizontal,
                             set_spacing: 4,
-                            set_margin_top: 4,
+                            set_vexpand: true,
+                            set_valign: gtk::Align::End,
 
                             gtk::Box {
                                 set_orientation: gtk::Orientation::Horizontal,

@@ -122,6 +122,20 @@ window.login-dialog spinbutton {
     border-radius: 3px;
 }
 
+/* Port box: slim +/- buttons that fit inside the field's height, instead of full-size
+   buttons (this is more specific than the dialog-wide button rule above). */
+window.login-dialog spinbutton > text {
+    min-height: 0;
+    padding: 0 4px;
+}
+
+window.login-dialog spinbutton > button {
+    min-height: 0;
+    min-width: 14px;
+    padding: 0 3px;
+    border-radius: 0;
+}
+
 /* Bottom panel: compact, square tabs. The selected tab takes the page's colour and an
    outline that runs into the page, so it reads as attached to the pane below it. */
 notebook.bottom-panel > header {
