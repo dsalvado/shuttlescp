@@ -37,8 +37,8 @@ pub enum ConfigError {
 }
 
 /// Persisted user preferences.
-// `#[serde(default)]` fills fields missing from older files with their default values.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+// `#[serde(default)]` fills fields missing from older files from `Config::default()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     theme: ThemeChoice,
@@ -48,6 +48,22 @@ pub struct Config {
     /// keys sorted, so the saved file lists disks in a stable order.
     last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
     log_level: LogLevel,
+    /// Open the Login dialog when the app starts.
+    show_login_at_startup: bool,
+}
+
+// Written out by hand (not derived) because the Login dialog should show at startup
+// unless the user turns it off, and a derived default would make that `false`.
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            theme: ThemeChoice::default(),
+            last_local_dir: None,
+            last_dir_on_disk: BTreeMap::new(),
+            log_level: LogLevel::default(),
+            show_login_at_startup: true,
+        }
+    }
 }
 
 /// The app's folder for user files: `$XDG_CONFIG_HOME/guiscp`.
@@ -186,6 +202,20 @@ impl Config {
         self.last_dir_on_disk.insert(disk_root, dir);
     }
 
+    /// Whether the Login dialog opens when the app starts.
+    pub fn show_login_at_startup(&self) -> bool {
+        self.show_login_at_startup
+    }
+
+    /// Change whether the Login dialog opens at startup (call [`Config::save`] to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `show` - `true` to open it at startup
+    pub fn set_show_login_at_startup(&mut self, show: bool) {
+        self.show_login_at_startup = show;
+    }
+
     /// Log level the user picked.
     pub fn log_level(&self) -> LogLevel {
         self.log_level
@@ -237,7 +267,10 @@ mod tests {
         let path = temp.path().join("settings.json");
 
         fs::write(&path, "{}").expect("write file");
-        assert_eq!(Config::load(&path).expect("load"), Config::default());
+        let loaded = Config::load(&path).expect("load");
+        assert_eq!(loaded, Config::default());
+        // Settings files from before this option existed keep showing the dialog.
+        assert!(loaded.show_login_at_startup());
 
         fs::write(&path, "not json").expect("write file");
         assert!(matches!(Config::load(&path), Err(ConfigError::Json { .. })));

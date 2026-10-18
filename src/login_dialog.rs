@@ -95,6 +95,24 @@ pub enum LoginMsg {
     },
     /// A file chooser or passphrase prompt was cancelled.
     Abandoned,
+    /// The "Show at startup" box was ticked or cleared.
+    ShowAtStartupToggled(bool),
+}
+
+/// What the Login dialog starts with.
+#[derive(Debug)]
+pub struct LoginInit {
+    /// Path of the saved sites file.
+    pub sites_path: PathBuf,
+    /// Current "show the dialog at startup" preference.
+    pub show_at_startup: bool,
+}
+
+/// Notifications the Login dialog sends to the main window.
+#[derive(Debug)]
+pub enum LoginOutput {
+    /// The user changed whether the dialog opens when the app starts.
+    ShowAtStartupChanged(bool),
 }
 
 /// Results of background work, delivered back to the dialog.
@@ -141,6 +159,8 @@ pub struct LoginDialog {
     busy: bool,
     /// The open file chooser; kept here so it stays alive until the user answers.
     chooser: Option<gtk::FileChooserNative>,
+    /// Whether the dialog opens when the app starts (saved by the main window).
+    show_at_startup: bool,
 }
 
 impl LoginDialog {
@@ -391,10 +411,9 @@ impl LoginDialog {
 
 #[relm4::component(pub)]
 impl Component for LoginDialog {
-    /// Path of the saved sites file.
-    type Init = PathBuf;
+    type Init = LoginInit;
     type Input = LoginMsg;
-    type Output = ();
+    type Output = LoginOutput;
     type CommandOutput = LoginCmd;
 
     view! {
@@ -403,18 +422,18 @@ impl Component for LoginDialog {
             set_modal: true,
             // Closing only hides the dialog, so it can be shown again from the menu.
             set_hide_on_close: true,
-            set_default_size: (680, 340),
+            set_default_size: (760, 420),
             // Sized down in style.css.
             add_css_class: "login-dialog",
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
-                set_spacing: 8,
-                set_margin_all: 8,
+                set_spacing: 12,
+                set_margin_all: 12,
 
                 gtk::Box {
                     set_orientation: gtk::Orientation::Horizontal,
-                    set_spacing: 10,
+                    set_spacing: 14,
                     set_vexpand: true,
 
                     // Left: saved sites, with the buttons that act on the picked one.
@@ -465,8 +484,8 @@ impl Component for LoginDialog {
                         add_css_class: "session-group",
 
                         gtk::Grid {
-                            set_row_spacing: 2,
-                            set_column_spacing: 8,
+                            set_row_spacing: 4,
+                            set_column_spacing: 14,
                             // Every field is read-only until "New Site" or Edit.
                             #[watch]
                             set_sensitive: model.editing,
@@ -603,6 +622,16 @@ impl Component for LoginDialog {
                     set_orientation: gtk::Orientation::Horizontal,
                     set_spacing: 6,
 
+                    gtk::CheckButton {
+                        set_label: Some("Show at startup"),
+                        set_tooltip_text: Some("Open this dialog when GuiSCP starts"),
+                        set_margin_end: 6,
+                        #[watch]
+                        set_active: model.show_at_startup,
+                        connect_toggled[sender] => move |check| {
+                            sender.input(LoginMsg::ShowAtStartupToggled(check.is_active()));
+                        },
+                    },
                     gtk::Button {
                         set_label: "Import...",
                         set_tooltip_text: Some("Add sites from a GuiSCP export file"),
@@ -644,10 +673,14 @@ impl Component for LoginDialog {
     }
 
     fn init(
-        sites_path: Self::Init,
+        init: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let LoginInit {
+            sites_path,
+            show_at_startup,
+        } = init;
         let book = SiteBook::load(&sites_path).unwrap_or_else(|error| {
             tracing::warn!("{error}; starting with no saved sites");
             SiteBook::default()
@@ -673,6 +706,7 @@ impl Component for LoginDialog {
             status: String::new(),
             busy: false,
             chooser: None,
+            show_at_startup,
         };
         model.select(Selection::Nothing);
 
@@ -759,6 +793,13 @@ impl Component for LoginDialog {
                 }
             }
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
+            LoginMsg::ShowAtStartupToggled(show) => {
+                if show != self.show_at_startup {
+                    self.show_at_startup = show;
+                    // Sending fails only if the main window is gone; nothing to do then.
+                    let _ = sender.output(LoginOutput::ShowAtStartupChanged(show));
+                }
+            }
             // Nothing to store: the update itself refreshes the Save button.
             LoginMsg::FormEdited => {}
             LoginMsg::ExportClicked => self.choose_file(root.upcast_ref(), true, &sender),

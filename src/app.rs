@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneOutput};
 use crate::local_fs;
 use crate::logging::{LogLevel, Logger};
-use crate::login_dialog::{LoginDialog, LoginMsg};
+use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
 use crate::resize_grips;
 use crate::sites::SiteBook;
 use crate::theme::{self, ThemeChoice};
@@ -87,6 +87,8 @@ pub enum AppMsg {
     Quit(&'static str),
     /// Open the Login dialog.
     ShowLogin,
+    /// The user changed whether the Login dialog opens at startup.
+    ShowLoginAtStartup(bool),
 }
 
 /// Root component of the application.
@@ -254,6 +256,7 @@ impl SimpleComponent for App {
             .or_else(std::env::home_dir)
             .unwrap_or_else(|| PathBuf::from("/"));
         tracing::info!("opening local pane at {}", start_dir.display());
+        let show_login = config.show_login_at_startup();
         let model = Self {
             // `.forward()` converts each pane output into a message for this component.
             local_pane: FilePane::builder()
@@ -276,8 +279,13 @@ impl SimpleComponent for App {
             // `transient_for` keeps the dialog above the main window and centred on it.
             login: LoginDialog::builder()
                 .transient_for(&root)
-                .launch(SiteBook::default_path())
-                .detach(),
+                .launch(LoginInit {
+                    sites_path: SiteBook::default_path(),
+                    show_at_startup: show_login,
+                })
+                .forward(sender.input_sender(), |output| match output {
+                    LoginOutput::ShowAtStartupChanged(show) => AppMsg::ShowLoginAtStartup(show),
+                }),
         };
         let widgets = view_output!();
         widgets
@@ -294,6 +302,16 @@ impl SimpleComponent for App {
                     notebook.stop_signal_emission_by_name("switch-page");
                 }
             });
+        if show_login {
+            // Wait until the main window is on screen, so the dialog opens on top of it.
+            // "map" can fire again if the window is re-shown, so only act the first time.
+            let opened = std::cell::Cell::new(false);
+            root.connect_map(move |_| {
+                if !opened.replace(true) {
+                    sender.input(AppMsg::ShowLogin);
+                }
+            });
+        }
         ComponentParts { model, widgets }
     }
 
@@ -310,6 +328,11 @@ impl SimpleComponent for App {
                 self.save_config();
             }
             AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
+            AppMsg::ShowLoginAtStartup(show) => {
+                tracing::info!("show Login dialog at startup: {show}");
+                self.config.set_show_login_at_startup(show);
+                self.save_config();
+            }
             AppMsg::Quit(reason) => {
                 tracing::info!("closing: {reason}");
                 self.exit_reason = reason;
