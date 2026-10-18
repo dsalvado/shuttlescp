@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use relm4::gtk::glib;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -49,44 +50,87 @@ pub struct Config {
     log_level: LogLevel,
 }
 
+/// The app's folder for user files: `$XDG_CONFIG_HOME/guiscp`.
+pub fn config_dir() -> PathBuf {
+    glib::user_config_dir().join("guiscp")
+}
+
+/// Read a JSON file into `T`.
+///
+/// # Arguments
+///
+/// * `path` - JSON file to read
+///
+/// # Returns
+///
+/// The stored value, or `T::default()` if the file does not exist yet
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Io`] if the file exists but cannot be read, or
+/// [`ConfigError::Json`] if it is not valid JSON for `T`
+pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T, ConfigError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(source) => {
+            return Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    serde_json::from_str(&text).map_err(|source| ConfigError::Json {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Write `value` to `path` as pretty-printed JSON, creating parent directories as needed.
+///
+/// # Arguments
+///
+/// * `value` - Data to write
+/// * `path` - JSON file to write
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Io`] if the directory or file cannot be written
+pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), ConfigError> {
+    let io_error = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| ConfigError::Io { path, source }
+    };
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(io_error(dir))?;
+    }
+    let json = serde_json::to_string_pretty(value).map_err(|source| ConfigError::Json {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    fs::write(path, json).map_err(io_error(path))
+}
+
 impl Config {
     /// Default location: `$XDG_CONFIG_HOME/guiscp/settings.json`.
     pub fn default_path() -> PathBuf {
-        glib::user_config_dir().join("guiscp").join("settings.json")
+        config_dir().join("settings.json")
     }
 
-    /// Read the configuration from `path`.
+    /// Read the configuration from `path` (see [`load_json`]).
     ///
     /// # Arguments
     ///
     /// * `path` - JSON file to read
     ///
-    /// # Returns
-    ///
-    /// The stored configuration, or the defaults if the file does not exist yet
-    ///
     /// # Errors
     ///
-    /// Returns [`ConfigError::Io`] if the file exists but cannot be read, or
-    /// [`ConfigError::Json`] if it is not valid JSON
+    /// Returns a [`ConfigError`] if the file exists but cannot be read or parsed
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(source) => {
-                return Err(ConfigError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                });
-            }
-        };
-        serde_json::from_str(&text).map_err(|source| ConfigError::Json {
-            path: path.to_path_buf(),
-            source,
-        })
+        load_json(path)
     }
 
-    /// Write the configuration to `path`, creating parent directories as needed.
+    /// Write the configuration to `path` (see [`save_json`]).
     ///
     /// # Arguments
     ///
@@ -96,18 +140,7 @@ impl Config {
     ///
     /// Returns [`ConfigError::Io`] if the directory or file cannot be written
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
-        let io_error = |path: &Path| {
-            let path = path.to_path_buf();
-            move |source| ConfigError::Io { path, source }
-        };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(io_error(dir))?;
-        }
-        let json = serde_json::to_string_pretty(self).map_err(|source| ConfigError::Json {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        fs::write(path, json).map_err(io_error(path))
+        save_json(self, path)
     }
 
     /// Theme the user picked.

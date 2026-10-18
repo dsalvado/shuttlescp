@@ -7,7 +7,12 @@ mod disks;
 mod file_pane;
 mod local_fs;
 mod logging;
+mod login_dialog;
+mod passphrase_dialog;
 mod resize_grips;
+mod secrets;
+mod site_export;
+mod sites;
 mod theme;
 mod theme_list;
 

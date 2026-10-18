@@ -74,8 +74,61 @@ paned.pane-split > separator.wide:hover {
     background-color: alpha(currentColor, 0.3);
 }
 
+/* Squarer menu bar and menus (the theme rounds them at 9-15px). */
 menubar > item {
     padding: 2px 8px;
+    border-radius: 3px;
+}
+
+popover.menu > contents,
+menubar > item popover.menu popover.menu > contents {
+    border-radius: 5px;
+}
+
+/* Site list in the Login dialog: compact rows like the menus. */
+list.site-list > row {
+    min-height: 22px;
+    padding: 2px 6px;
+}
+
+/* Compact controls in the Login dialog. */
+window.login-dialog entry,
+window.login-dialog spinbutton,
+window.login-dialog dropdown > button,
+window.login-dialog button {
+    min-height: 24px;
+}
+
+window.login-dialog button {
+    padding: 2px 10px;
+}
+
+window.login-dialog entry {
+    padding-left: 6px;
+    padding-right: 6px;
+}
+
+/* Light dashed outline around the session details and their Save / Cancel buttons.
+   GTK 4 draws `border-style: dashed` as a solid line, so each side is a 1px repeating
+   gradient (4px dash, 3px gap) painted along the edge instead. */
+.session-group {
+    padding: 6px 8px 8px 8px;
+    background-image:
+        repeating-linear-gradient(to right, alpha(currentColor, 0.28) 0px,
+            alpha(currentColor, 0.28) 4px, transparent 4px, transparent 7px),
+        repeating-linear-gradient(to right, alpha(currentColor, 0.28) 0px,
+            alpha(currentColor, 0.28) 4px, transparent 4px, transparent 7px),
+        repeating-linear-gradient(to bottom, alpha(currentColor, 0.28) 0px,
+            alpha(currentColor, 0.28) 4px, transparent 4px, transparent 7px),
+        repeating-linear-gradient(to bottom, alpha(currentColor, 0.28) 0px,
+            alpha(currentColor, 0.28) 4px, transparent 4px, transparent 7px);
+    background-size: 100% 1px, 100% 1px, 1px 100%, 1px 100%;
+    background-position: left top, left bottom, left top, right top;
+    background-repeat: no-repeat;
+}
+
+list.site-list > row.picked {
+    background-color: alpha(@accent_bg_color, 0.3);
 }
 
 /* Compact drop-down menus (the theme default is 32px tall items). */
@@ -87,7 +140,7 @@ popover.menu > contents > scrolledwindow > viewport > stack > box {
 popover.menu modelbutton {
     min-height: 22px;
     padding: 0 8px;
-    border-radius: 4px;
+    border-radius: 3px;
 }
 
 /* Mark the selected choice of a menu list with a check mark instead of a radio dot. */
@@ -110,7 +163,7 @@ list.theme-list {
 list.theme-list > row {
     min-height: 22px;
     padding: 0 8px;
-    border-radius: 4px;
+    border-radius: 3px;
 }
 
 list.theme-list > row:hover {

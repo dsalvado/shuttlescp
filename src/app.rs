@@ -13,7 +13,9 @@ use crate::config::Config;
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneOutput};
 use crate::local_fs;
 use crate::logging::{LogLevel, Logger};
+use crate::login_dialog::{LoginDialog, LoginMsg};
 use crate::resize_grips;
+use crate::sites::SiteBook;
 use crate::theme::{self, ThemeChoice};
 use crate::theme_list::ThemeList;
 
@@ -49,6 +51,7 @@ const NEW_TAB_PAGE: u32 = 1;
 // "win" is the action group GTK attaches to the window, so actions are "win.quit" etc.
 relm4::new_action_group!(WindowActions, "win");
 relm4::new_stateless_action!(QuitAction, WindowActions, "quit");
+relm4::new_stateless_action!(LoginAction, WindowActions, "login");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
 // Target and state are both a `ThemeChoice::action_target()` string. A stateful action
 // whose state matches the item's target is what makes GTK draw radio items in a menu.
@@ -82,6 +85,8 @@ pub enum AppMsg {
     },
     /// Close the app; the text says why and is written to the log.
     Quit(&'static str),
+    /// Open the Login dialog.
+    ShowLogin,
 }
 
 /// Root component of the application.
@@ -99,6 +104,8 @@ pub struct App {
     theme_list: ThemeList,
     /// Why the app is closing, written to the log's session-end banner.
     exit_reason: &'static str,
+    /// The Login dialog (hidden until opened from File > Login).
+    login: Controller<LoginDialog>,
 }
 
 #[relm4::component(pub)]
@@ -266,6 +273,11 @@ impl SimpleComponent for App {
             logger,
             theme_list,
             exit_reason: WINDOW_CLOSED,
+            // `transient_for` keeps the dialog above the main window and centred on it.
+            login: LoginDialog::builder()
+                .transient_for(&root)
+                .launch(SiteBook::default_path())
+                .detach(),
         };
         let widgets = view_output!();
         widgets
@@ -297,6 +309,7 @@ impl SimpleComponent for App {
                 self.config.set_theme(choice);
                 self.save_config();
             }
+            AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
             AppMsg::Quit(reason) => {
                 tracing::info!("closing: {reason}");
                 self.exit_reason = reason;
@@ -361,6 +374,11 @@ fn register_actions(
     log_path: Option<&Path>,
     sender: &ComponentSender<App>,
 ) {
+    let login_sender = sender.clone();
+    let login = RelmAction::<LoginAction>::new_stateless(move |_| {
+        login_sender.input(AppMsg::ShowLogin);
+    });
+
     let quit_sender = sender.clone();
     let quit = RelmAction::<QuitAction>::new_stateless(move |_| {
         quit_sender.input(AppMsg::Quit(QUIT_COMMAND));
@@ -401,12 +419,15 @@ fn register_actions(
     );
 
     let mut group = RelmActionGroup::<WindowActions>::new();
+    group.add_action(login);
     group.add_action(quit);
     group.add_action(open_log);
     group.add_action(theme_action);
     group.add_action(level_action);
     group.register_for_widget(window);
-    relm4::main_application().set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
+    let app = relm4::main_application();
+    app.set_accelerators_for_action::<LoginAction>(&["<primary>l"]);
+    app.set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
 }
 
 /// Close the app gracefully on SIGHUP, SIGINT (Ctrl+C) and SIGTERM, so settings are saved
@@ -437,7 +458,12 @@ fn quit_on_signals(sender: &ComponentSender<App>) {
 /// The menu model for a [`gtk::PopoverMenuBar`]
 fn build_menu() -> gio::Menu {
     let file_menu = gio::Menu::new();
-    file_menu.append_item(&RelmAction::<QuitAction>::to_menu_item("_Quit"));
+    let session_section = gio::Menu::new();
+    session_section.append_item(&RelmAction::<LoginAction>::to_menu_item("_Login…"));
+    let quit_section = gio::Menu::new();
+    quit_section.append_item(&RelmAction::<QuitAction>::to_menu_item("_Quit"));
+    file_menu.append_section(None, &session_section);
+    file_menu.append_section(None, &quit_section);
 
     let theme_section = gio::Menu::new();
     let theme_list_item = gio::MenuItem::new(None, None);
