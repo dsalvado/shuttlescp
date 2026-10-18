@@ -38,6 +38,24 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
+    /// Build an entry from its parts (used for remote listings).
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - File name
+    /// * `kind` - Directory or file
+    /// * `size` - Size in bytes
+    /// * `modified` - Last modification time, if known
+    pub fn new(name: OsString, kind: EntryKind, size: u64, modified: Option<SystemTime>) -> Self {
+        Self {
+            sort_key: name.to_string_lossy().to_lowercase(),
+            name,
+            kind,
+            size,
+            modified,
+        }
+    }
+
     /// Build an entry from a `read_dir` result, following symbolic links so a link to a
     /// directory is reported as a directory.
     ///
@@ -58,14 +76,12 @@ impl FileEntry {
             Some(true) => EntryKind::Directory,
             Some(false) | None => EntryKind::File,
         };
-        let name = entry.file_name();
-        Self {
-            sort_key: name.to_string_lossy().to_lowercase(),
-            name,
+        Self::new(
+            entry.file_name(),
             kind,
-            size: metadata.as_ref().map_or(0, Metadata::len),
-            modified: metadata.and_then(|meta| meta.modified().ok()),
-        }
+            metadata.as_ref().map_or(0, Metadata::len),
+            metadata.and_then(|meta| meta.modified().ok()),
+        )
     }
 
     /// Raw file name, suitable for joining onto the parent directory path.

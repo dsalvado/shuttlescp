@@ -27,9 +27,10 @@ const LEVEL_CHANGE_TARGET: &str = concat!(env!("CARGO_PKG_NAME"), "::log_level")
 const SESSION_TARGET: &str = concat!(env!("CARGO_PKG_NAME"), "::session");
 /// When the log file grows past this size it is moved to `<name>.1` at startup.
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
-/// Also echo log lines to the terminal. Development aid: set to `false` to log only to
-/// the file (stderr is still used if the file cannot be opened).
-const LOG_TO_STDERR: bool = true;
+/// Also echo log lines to the terminal. Off now that the Log tab in the bottom panel
+/// shows the log; set to `true` to see it in the terminal again while developing.
+/// (stderr is still used if the log file cannot be opened.)
+const LOG_TO_STDERR: bool = false;
 
 /// Verbosity of the application log, from least to most detailed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

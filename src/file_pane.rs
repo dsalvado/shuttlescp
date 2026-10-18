@@ -16,7 +16,8 @@ use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 
 use crate::disk_picker::DiskPicker;
 use crate::disks;
-use crate::local_fs::{self, EntryKind, FileEntry, ListError};
+use crate::local_fs::{self, EntryKind, FileEntry};
+use crate::remote::Remote;
 
 /// Up-arrow picture drawn over the folder icon of the ".." row, embedded at compile time.
 const UP_ARROW_SVG: &[u8] = include_bytes!("icons/up-arrow.svg");
@@ -67,6 +68,8 @@ pub struct FilePaneInit {
     pub start_dir: PathBuf,
     /// Last directory shown on each disk in earlier sessions, keyed by mount point.
     pub last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
+    /// Browse this server instead of the local disks.
+    pub remote: Option<Remote>,
 }
 
 /// Notifications a [`FilePane`] sends to its parent.
@@ -86,7 +89,8 @@ pub enum FilePaneOutput {
 #[derive(Debug)]
 pub struct Listing {
     dir: PathBuf,
-    result: Result<Vec<FileEntry>, ListError>,
+    /// The entries, or a message for the status line.
+    result: Result<Vec<FileEntry>, String>,
 }
 
 /// One line of the file list.
@@ -102,7 +106,7 @@ enum Row {
     },
 }
 
-/// File explorer component for the local filesystem.
+/// File explorer component, for the local disks or a remote server.
 pub struct FilePane {
     /// Directory whose contents are currently displayed.
     current_dir: PathBuf,
@@ -114,24 +118,36 @@ pub struct FilePane {
     /// Last directory shown on each disk, keyed by the disk's mount point, so returning
     /// to a disk resumes where the user left it.
     last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
+    /// The server this pane browses; `None` for the local disks.
+    remote: Option<Remote>,
 }
 
 impl FilePane {
-    /// Start listing `dir` on a worker thread so a slow disk never freezes the UI.
+    /// Start listing `dir` in the background so a slow disk or network never freezes
+    /// the UI: on a worker thread for local folders, as an async SFTP request for remote.
     ///
     /// # Arguments
     ///
     /// * `dir` - Directory to list
-    /// * `sender` - Component sender used to spawn the worker and receive its result
+    /// * `sender` - Component sender used to spawn the work and receive its result
     fn request_listing(&mut self, dir: PathBuf, sender: &ComponentSender<Self>) {
         tracing::debug!("listing {}", dir.display());
         self.requested_dir = dir.clone();
         self.status = String::from("Loading...");
-        // `move` transfers ownership of `dir` into the closure, which runs on another thread.
-        sender.spawn_oneshot_command(move || Listing {
-            result: local_fs::list_dir(&dir),
-            dir,
-        });
+        match self.remote.clone() {
+            Some(remote) => sender.oneshot_command(async move {
+                Listing {
+                    result: remote.list_dir(&dir).await,
+                    dir,
+                }
+            }),
+            // `move` transfers ownership of `dir` into the closure, which runs on another
+            // thread.
+            None => sender.spawn_oneshot_command(move || Listing {
+                result: local_fs::list_dir(&dir).map_err(|error| error.to_string()),
+                dir,
+            }),
+        }
     }
 
     /// Replace the list contents with a fresh listing of `dir`.
@@ -141,7 +157,12 @@ impl FilePane {
     /// * `dir` - Directory the entries belong to
     /// * `entries` - Its contents, as returned by [`local_fs::list_dir`]
     fn show_entries(&mut self, dir: &Path, entries: Vec<FileEntry>) {
-        let special_folders = special_folder_icons(dir);
+        // Special folder icons describe this computer's folders, not the server's.
+        let special_folders = if self.remote.is_some() {
+            Vec::new()
+        } else {
+            special_folder_icons(dir)
+        };
         self.entries.clear();
         if dir.parent().is_some() {
             self.entries.append(Row::Parent);
@@ -192,7 +213,10 @@ impl Component for FilePane {
                 },
                 // `#[local_ref]` embeds a widget created in `init` instead of building a new one.
                 #[local_ref]
-                disk_dropdown -> gtk::DropDown {},
+                disk_dropdown -> gtk::DropDown {
+                    // Local disks mean nothing when browsing a server.
+                    set_visible: model.remote.is_none(),
+                },
                 // Current directory. A plain label: it cannot be clicked, focused or edited.
                 gtk::Label {
                     set_hexpand: true,
@@ -245,6 +269,7 @@ impl Component for FilePane {
         let FilePaneInit {
             start_dir,
             last_dir_on_disk,
+            remote,
         } = init;
         let mut entries = TypedColumnView::<Row, gtk::SingleSelection>::new();
         entries.append_column::<NameColumn>();
@@ -268,6 +293,7 @@ impl Component for FilePane {
             status: String::new(),
             disk_picker,
             last_dir_on_disk,
+            remote,
         };
         model.request_listing(start_dir, &sender);
 
@@ -321,6 +347,7 @@ impl Component for FilePane {
                 );
                 self.request_listing(target, &sender);
             }
+            FilePaneMsg::DisksChanged if self.remote.is_some() => {}
             FilePaneMsg::DisksChanged => {
                 self.disk_picker.reload();
                 self.disk_picker.show_dir(&self.current_dir);
@@ -355,9 +382,13 @@ impl Component for FilePane {
             Ok(entries) => {
                 self.status = format!("{} items", entries.len());
                 self.show_entries(&listing.dir, entries);
-                let disk_root = disks::disk_index(self.disk_picker.disks(), &listing.dir)
-                    .and_then(|index| self.disk_picker.disks().get(index))
-                    .map(|disk| disk.root().to_path_buf());
+                let disk_root = if self.remote.is_some() {
+                    None
+                } else {
+                    disks::disk_index(self.disk_picker.disks(), &listing.dir)
+                        .and_then(|index| self.disk_picker.disks().get(index))
+                        .map(|disk| disk.root().to_path_buf())
+                };
                 if let Some(root) = &disk_root {
                     self.last_dir_on_disk
                         .insert(root.clone(), listing.dir.clone());
@@ -372,7 +403,7 @@ impl Component for FilePane {
             }
             Err(error) => {
                 tracing::warn!("{error}");
-                self.status = error.to_string();
+                self.status = error;
                 self.requested_dir = self.current_dir.clone();
             }
         }

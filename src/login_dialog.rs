@@ -11,10 +11,12 @@ use std::path::PathBuf;
 use relm4::RelmRemoveAllExt;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
+use russh::keys::PublicKey;
 use secrecy::SecretString;
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
+use crate::remote::{self, ConnectError, Remote};
 use crate::secrets;
 use crate::site_export::{self, ExportFile};
 use crate::sites::{Protocol, Site, SiteBook, new_site_id};
@@ -97,6 +99,10 @@ pub enum LoginMsg {
     Abandoned,
     /// The "Show at startup" box was ticked or cleared.
     ShowAtStartupToggled(bool),
+    /// Connect to the selected site.
+    Login,
+    /// The user trusts this new host key: remember it and connect.
+    TrustHostKey(Box<PublicKey>),
 }
 
 /// What the Login dialog starts with.
@@ -113,6 +119,13 @@ pub struct LoginInit {
 pub enum LoginOutput {
     /// The user changed whether the dialog opens when the app starts.
     ShowAtStartupChanged(bool),
+    /// Logged in: browse `remote`, the server of `site`.
+    Connected {
+        /// The site that was connected to.
+        site: Site,
+        /// The open SFTP session.
+        remote: Remote,
+    },
 }
 
 /// Results of background work, delivered back to the dialog.
@@ -134,6 +147,8 @@ pub enum LoginCmd {
     /// An import finished: the sites (with `password_saved` set where the keyring
     /// accepted the password) and how many passwords could not be stored.
     Imported(Result<(Vec<Site>, usize), String>),
+    /// A login attempt finished.
+    Connected(Result<(Site, Remote), ConnectError>),
 }
 
 /// State of the Login dialog.
@@ -211,6 +226,46 @@ impl LoginDialog {
     /// Whether the form holds enough to save a site (a host name is required).
     fn can_save(&self) -> bool {
         !self.host.text().trim().is_empty()
+    }
+
+    /// Whether Login applies: a saved site is picked and nothing else is going on.
+    fn can_login(&self) -> bool {
+        self.saved_site_idle()
+    }
+
+    /// Start connecting to the picked site in the background, with the typed password
+    /// or else the one saved in the keyring.
+    ///
+    /// # Arguments
+    ///
+    /// * `sender` - Used to run the connection attempt
+    /// * `approved_key` - A host key the user has just agreed to trust
+    fn start_login(&mut self, sender: &ComponentSender<Self>, approved_key: Option<PublicKey>) {
+        if !self.can_login() {
+            return;
+        }
+        let Some(site) = self.selected_site().cloned() else {
+            return;
+        };
+        let typed = (!self.password.text().is_empty())
+            .then(|| SecretString::from(self.password.text().as_str()));
+        self.busy = true;
+        self.status = format!("Connecting to {}...", site.display_name());
+        sender.oneshot_command(async move {
+            let password = match typed {
+                Some(password) => Some(password),
+                None if site.password_saved => match secrets::load_password(&site.id).await {
+                    Ok(password) => password,
+                    Err(error) => {
+                        tracing::warn!("cannot read the saved password: {error}");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let result = remote::connect(&site, password, approved_key).await;
+            LoginCmd::Connected(result.map(|remote| (site, remote)))
+        });
     }
 
     /// Whether a saved site is picked and not being edited (Edit / Delete apply).
@@ -486,9 +541,6 @@ impl Component for LoginDialog {
                         gtk::Grid {
                             set_row_spacing: 4,
                             set_column_spacing: 14,
-                            // Every field is read-only until "New Site" or Edit.
-                            #[watch]
-                            set_sensitive: model.editing,
 
                             attach[0, 0, 2, 1] = &gtk::Label {
                                 set_label: "Session",
@@ -501,6 +553,9 @@ impl Component for LoginDialog {
                             },
                             attach[0, 2, 1, 1] = &gtk::DropDown::from_strings(&protocol_labels) {
                                 set_halign: gtk::Align::Start,
+                                // Read-only until "New Site" or Edit.
+                                #[watch]
+                                set_sensitive: model.editing,
                                 #[watch]
                                 set_selected: model.protocol.index(),
                                 connect_selected_notify[sender] => move |dropdown| {
@@ -518,10 +573,14 @@ impl Component for LoginDialog {
                             },
                             attach[0, 4, 1, 1] = &gtk::Entry::with_buffer(&model.host) {
                                 set_hexpand: true,
+                                #[watch]
+                                set_sensitive: model.editing,
                                 connect_changed => LoginMsg::FormEdited,
                             },
                             attach[1, 4, 1, 1] = &gtk::SpinButton::with_range(1.0, 65535.0, 1.0) {
                                 set_digits: 0,
+                                #[watch]
+                                set_sensitive: model.editing,
                                 #[watch]
                                 set_value: f64::from(model.port),
                                 connect_value_changed[sender] => move |spin| {
@@ -539,12 +598,20 @@ impl Component for LoginDialog {
                             },
                             attach[0, 6, 1, 1] = &gtk::Entry::with_buffer(&model.user) {
                                 set_hexpand: true,
+                                #[watch]
+                                set_sensitive: model.editing,
                             },
                             attach[1, 6, 1, 1] = &gtk::Entry::with_buffer(&model.password) {
                                 set_visibility: false,
                                 set_input_purpose: gtk::InputPurpose::Password,
+                                // Usable for a picked saved site too, to log in with a
+                                // password that is not saved.
+                                #[watch]
+                                set_sensitive: model.editing || model.selected_site().is_some(),
                                 #[watch]
                                 set_placeholder_text: Some(model.password_placeholder()),
+                                // Enter in the password field logs in.
+                                connect_activate => LoginMsg::Login,
                                 set_secondary_icon_name: Some(SHOW_PASSWORD_ICON),
                                 set_secondary_icon_tooltip_text: Some("Show password"),
                                 connect_icon_press => move |entry, _| {
@@ -560,6 +627,8 @@ impl Component for LoginDialog {
                             },
                             attach[1, 7, 1, 1] = &gtk::CheckButton {
                                 set_label: Some("Save password"),
+                                #[watch]
+                                set_sensitive: model.editing,
                                 set_tooltip_text: Some(
                                     "Keep the password in the desktop keyring (encrypted with \
                                      your login password)"
@@ -660,8 +729,10 @@ impl Component for LoginDialog {
                     gtk::Button {
                         set_label: "Login",
                         add_css_class: "suggested-action",
-                        set_sensitive: false,
-                        set_tooltip_text: Some("Connecting is not available yet"),
+                        set_tooltip_text: Some("Connect to the selected site"),
+                        #[watch]
+                        set_sensitive: model.can_login(),
+                        connect_clicked => LoginMsg::Login,
                     },
                     gtk::Button {
                         set_label: "Close",
@@ -793,6 +864,8 @@ impl Component for LoginDialog {
                 }
             }
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
+            LoginMsg::Login => self.start_login(&sender, None),
+            LoginMsg::TrustHostKey(key) => self.start_login(&sender, Some(*key)),
             LoginMsg::ShowAtStartupToggled(show) => {
                 if show != self.show_at_startup {
                     self.show_at_startup = show;
@@ -874,10 +947,51 @@ impl Component for LoginDialog {
     fn update_cmd(
         &mut self,
         message: Self::CommandOutput,
-        _sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        sender: ComponentSender<Self>,
+        root: &Self::Root,
     ) {
         match message {
+            LoginCmd::Connected(result) => {
+                self.busy = false;
+                match result {
+                    Ok((site, remote)) => {
+                        self.status.clear();
+                        self.password.set_text("");
+                        // Sending fails only if the main window is gone; nothing to do then.
+                        let _ = sender.output(LoginOutput::Connected { site, remote });
+                        root.close();
+                    }
+                    Err(ConnectError::UnknownHostKey { fingerprint, key }) => {
+                        self.status = String::from("Waiting for you to check the server's key");
+                        let host = self
+                            .selected_site()
+                            .map_or_else(String::new, |s| s.host.clone());
+                        let question = format!("Trust the server {host}?");
+                        let detail = format!(
+                            "This is the first connection to this server, so its identity \
+                             cannot be checked yet. Its host key fingerprint is:\n\n\
+                             {fingerprint}\n\nIf it matches the server's real key, trust it: \
+                             it will be remembered in ~/.ssh/known_hosts."
+                        );
+                        let wording = Confirmation {
+                            title: "Unknown Server",
+                            question: &question,
+                            detail: &detail,
+                            confirm_label: "Trust and Connect",
+                        };
+                        let sender = sender.clone();
+                        confirm_dialog::ask(root.upcast_ref(), wording, move |trusted| {
+                            if trusted {
+                                sender.input(LoginMsg::TrustHostKey(key.clone()));
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!("login failed: {error}");
+                        self.status = error.to_string();
+                    }
+                }
+            }
             LoginCmd::PasswordChanged {
                 site_id,
                 saved,

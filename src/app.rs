@@ -12,9 +12,12 @@ use relm4::prelude::*;
 use crate::config::Config;
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneOutput};
 use crate::local_fs;
+use crate::log_tail::log_tail;
 use crate::logging::{LogLevel, Logger};
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
+use crate::remote::Remote;
 use crate::resize_grips;
+use crate::sites::Site;
 use crate::sites::SiteBook;
 use crate::theme::{self, ThemeChoice};
 use crate::theme_list::ThemeList;
@@ -46,12 +49,17 @@ const SESSION_TAB_ICON: &str = "computer-symbolic";
 const NEW_TAB_ICON: &str = "tab-new-symbolic";
 /// Position of the "New Tab" tab, after the single session tab.
 const NEW_TAB_PAGE: u32 = 1;
+/// Initial height of the session area above the bottom panel, in pixels.
+const SESSION_AREA_HEIGHT: i32 = 470;
+/// Text shown in the remote half of the split while not connected.
+const NOT_CONNECTED: &str = "Not connected";
 
 // These macros declare marker types that name GIO actions in a type-safe way.
 // "win" is the action group GTK attaches to the window, so actions are "win.quit" etc.
 relm4::new_action_group!(WindowActions, "win");
 relm4::new_stateless_action!(QuitAction, WindowActions, "quit");
 relm4::new_stateless_action!(LoginAction, WindowActions, "login");
+relm4::new_stateless_action!(DisconnectAction, WindowActions, "disconnect");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
 // Target and state are both a `ThemeChoice::action_target()` string. A stateful action
 // whose state matches the item's target is what makes GTK draw radio items in a menu.
@@ -89,6 +97,30 @@ pub enum AppMsg {
     ShowLogin,
     /// The user changed whether the Login dialog opens at startup.
     ShowLoginAtStartup(bool),
+    /// The Login dialog connected to a server.
+    Connected {
+        /// The site connected to.
+        site: Site,
+        /// The open SFTP session.
+        remote: Remote,
+    },
+    /// The remote pane moved to another folder.
+    RemoteDirChanged(PathBuf),
+    /// Close the connection (File > Disconnect).
+    Disconnect,
+}
+
+/// The open connection shown in the right half of the session.
+struct Connection {
+    /// "user@host" of the site, for the status bar.
+    name: String,
+    /// Server host name, for the tab title.
+    host: String,
+    /// Folder shown in the remote pane.
+    dir: PathBuf,
+    /// The remote file pane, held only to keep it running: dropping it closes the
+    /// session (the leading `_` tells Rust it is deliberately never read).
+    _pane: Controller<FilePane>,
 }
 
 /// Root component of the application.
@@ -108,6 +140,14 @@ pub struct App {
     exit_reason: &'static str,
     /// The Login dialog (hidden until opened from File > Login).
     login: Controller<LoginDialog>,
+    /// The current server connection, if any.
+    connection: Option<Connection>,
+    /// Left/right split of the session tab; the right half shows the remote pane.
+    split: Option<gtk::Paned>,
+    /// Shown in the right half while not connected.
+    placeholder: gtk::Label,
+    /// File > Disconnect, enabled only while connected.
+    disconnect_action: RelmAction<DisconnectAction>,
 }
 
 #[relm4::component(pub)]
@@ -140,8 +180,22 @@ impl SimpleComponent for App {
                     #[name = "menu_bar"]
                     gtk::PopoverMenuBar::from_model(Some(&menu_model)) {},
 
+                    // Sessions on top, the tabbed bottom panel (log, ...) below; the
+                    // divider can be dragged.
+                    gtk::Paned {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_vexpand: true,
+                        set_position: SESSION_AREA_HEIGHT,
+                        set_wide_handle: true,
+                        // Resizing the window grows the sessions, not the panel.
+                        set_resize_end_child: false,
+                        set_shrink_end_child: false,
+                        add_css_class: "pane-split",
+                        set_end_child: Some(&bottom_panel),
+
+                    #[wrap(Some)]
                     #[name = "sessions"]
-                    gtk::Notebook {
+                    set_start_child = &gtk::Notebook {
                         set_vexpand: true,
                         set_scrollable: true,
 
@@ -160,15 +214,12 @@ impl SimpleComponent for App {
                             #[wrap(Some)]
                             set_start_child = model.local_pane.widget(),
 
-                            #[wrap(Some)]
-                            set_end_child = &gtk::Label {
-                                set_label: "Not connected",
-                                add_css_class: "dim-label",
-                            },
+                            set_end_child: Some(&placeholder),
                         },
 
                         // Placeholder page; its tab is disabled until new connections exist.
                         append_page[Some(&new_tab)] = &gtk::Box {},
+                    },
                     },
 
                     // Status bar along the bottom of the window.
@@ -178,9 +229,10 @@ impl SimpleComponent for App {
                         add_css_class: "statusbar",
 
                         gtk::Label {
-                            set_label: "Not connected",
                             set_hexpand: true,
                             set_xalign: 0.0,
+                            #[watch]
+                            set_label: &model.connection_status(),
                         },
                         gtk::Label {
                             #[watch]
@@ -244,7 +296,10 @@ impl SimpleComponent for App {
         theme::apply(config.theme());
         theme::ensure_cursor_theme();
 
-        register_actions(&root, &config, logger.file_path(), &sender);
+        let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
+        let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
+        placeholder.add_css_class("dim-label");
+        let bottom_panel = bottom_panel(logger.file_path().map(Path::to_path_buf));
         let menu_model = build_menu();
         let theme_list = ThemeList::new(themes, config.theme());
         quit_on_signals(&sender);
@@ -257,12 +312,13 @@ impl SimpleComponent for App {
             .unwrap_or_else(|| PathBuf::from("/"));
         tracing::info!("opening local pane at {}", start_dir.display());
         let show_login = config.show_login_at_startup();
-        let model = Self {
+        let mut model = Self {
             // `.forward()` converts each pane output into a message for this component.
             local_pane: FilePane::builder()
                 .launch(FilePaneInit {
                     start_dir: start_dir.clone(),
                     last_dir_on_disk: config.last_dir_on_disk().clone(),
+                    remote: None,
                 })
                 .forward(sender.input_sender(), |output| match output {
                     FilePaneOutput::DirectoryChanged { dir, disk_root } => {
@@ -285,9 +341,16 @@ impl SimpleComponent for App {
                 })
                 .forward(sender.input_sender(), |output| match output {
                     LoginOutput::ShowAtStartupChanged(show) => AppMsg::ShowLoginAtStartup(show),
+                    LoginOutput::Connected { site, remote } => AppMsg::Connected { site, remote },
                 }),
+            connection: None,
+            split: None,
+            placeholder: placeholder.clone(),
+            disconnect_action,
         };
         let widgets = view_output!();
+        // The session's left/right split is the notebook's first page.
+        model.split = widgets.sessions.nth_page(Some(0)).and_downcast();
         widgets
             .menu_bar
             .add_child(model.theme_list.widget(), THEME_LIST_ID);
@@ -315,7 +378,7 @@ impl SimpleComponent for App {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
+    fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
         match message {
             AppMsg::ThemeSelected(choice) => {
                 if &choice == self.config.theme() {
@@ -328,6 +391,24 @@ impl SimpleComponent for App {
                 self.save_config();
             }
             AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
+            AppMsg::Connected { site, remote } => self.show_remote(site, remote, &sender),
+            AppMsg::RemoteDirChanged(dir) => {
+                if let Some(connection) = &mut self.connection {
+                    tracing::debug!("remote pane now shows {}", dir.display());
+                    connection.dir = dir;
+                }
+            }
+            AppMsg::Disconnect => {
+                if let Some(connection) = self.connection.take() {
+                    tracing::info!("disconnected from {}", connection.name);
+                    if let Some(split) = &self.split {
+                        split.set_end_child(Some(&self.placeholder));
+                    }
+                    self.disconnect_action.set_enabled(false);
+                    // Dropping the pane drops its session, which closes the connection.
+                    drop(connection);
+                }
+            }
             AppMsg::ShowLoginAtStartup(show) => {
                 tracing::info!("show Login dialog at startup: {show}");
                 self.config.set_show_login_at_startup(show);
@@ -363,14 +444,57 @@ impl SimpleComponent for App {
 }
 
 impl App {
-    /// Full session tab title: `<host> - <folder shown in the local pane>`.
+    /// Full session tab title: `<server> - <folder>`, for the remote server while
+    /// connected, otherwise for this computer and the local pane's folder.
     fn tab_title(&self) -> String {
+        let (host, dir) = match &self.connection {
+            Some(connection) => (connection.host.as_str(), connection.dir.as_path()),
+            None => (self.host.as_str(), self.local_dir.as_path()),
+        };
         // The root directory has no file name, so it is shown as its full path ("/").
-        let folder = self.local_dir.file_name().map_or_else(
-            || self.local_dir.to_string_lossy(),
-            |name| name.to_string_lossy(),
-        );
-        format!("{} - {folder}", self.host)
+        let folder = dir
+            .file_name()
+            .map_or_else(|| dir.to_string_lossy(), |name| name.to_string_lossy());
+        format!("{host} - {folder}")
+    }
+
+    /// Connection text for the status bar.
+    fn connection_status(&self) -> String {
+        self.connection.as_ref().map_or_else(
+            || String::from(NOT_CONNECTED),
+            |c| format!("Connected to {}", c.name),
+        )
+    }
+
+    /// Show a newly connected server in the right half of the session, replacing any
+    /// previous connection.
+    ///
+    /// # Arguments
+    ///
+    /// * `site` - The site connected to
+    /// * `remote` - Its open SFTP session
+    /// * `sender` - Receives the remote pane's folder changes
+    fn show_remote(&mut self, site: Site, remote: Remote, sender: &ComponentSender<Self>) {
+        let start_dir = remote.home().to_path_buf();
+        let pane = FilePane::builder()
+            .launch(FilePaneInit {
+                start_dir: start_dir.clone(),
+                last_dir_on_disk: std::collections::BTreeMap::new(),
+                remote: Some(remote.clone()),
+            })
+            .forward(sender.input_sender(), |output| match output {
+                FilePaneOutput::DirectoryChanged { dir, .. } => AppMsg::RemoteDirChanged(dir),
+            });
+        if let Some(split) = &self.split {
+            split.set_end_child(Some(pane.widget()));
+        }
+        self.disconnect_action.set_enabled(true);
+        self.connection = Some(Connection {
+            name: site.display_name(),
+            host: remote.host().to_owned(),
+            dir: start_dir,
+            _pane: pane,
+        });
     }
 
     /// Write the settings file, logging instead of failing: losing a preference should
@@ -391,12 +515,23 @@ impl App {
 /// * `config` - Current settings, used for the initial radio selections
 /// * `log_path` - Log file opened by Tools > Open Log File; `None` disables that item
 /// * `sender` - Sender used to forward menu choices to [`App::update`]
+///
+/// # Returns
+///
+/// The File > Disconnect action, so it can be enabled while connected
 fn register_actions(
     window: &gtk::ApplicationWindow,
     config: &Config,
     log_path: Option<&Path>,
     sender: &ComponentSender<App>,
-) {
+) -> RelmAction<DisconnectAction> {
+    let disconnect_sender = sender.clone();
+    let disconnect = RelmAction::<DisconnectAction>::new_stateless(move |_| {
+        disconnect_sender.input(AppMsg::Disconnect);
+    });
+    // Nothing to disconnect from yet.
+    disconnect.set_enabled(false);
+
     let login_sender = sender.clone();
     let login = RelmAction::<LoginAction>::new_stateless(move |_| {
         login_sender.input(AppMsg::ShowLogin);
@@ -443,6 +578,7 @@ fn register_actions(
 
     let mut group = RelmActionGroup::<WindowActions>::new();
     group.add_action(login);
+    group.add_action(disconnect.clone());
     group.add_action(quit);
     group.add_action(open_log);
     group.add_action(theme_action);
@@ -451,6 +587,22 @@ fn register_actions(
     let app = relm4::main_application();
     app.set_accelerators_for_action::<LoginAction>(&["<primary>l"]);
     app.set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
+    disconnect
+}
+
+/// The tabbed panel along the bottom of the window. Its first tab follows the log file.
+///
+/// # Arguments
+///
+/// * `log_path` - The log file, if logging to a file works
+fn bottom_panel(log_path: Option<PathBuf>) -> gtk::Notebook {
+    let panel = gtk::Notebook::new();
+    panel.add_css_class("bottom-panel");
+    let label = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    label.append(&gtk::Image::from_icon_name("text-x-generic-symbolic"));
+    label.append(&gtk::Label::new(Some("Log")));
+    panel.append_page(&log_tail(log_path), Some(&label));
+    panel
 }
 
 /// Close the app gracefully on SIGHUP, SIGINT (Ctrl+C) and SIGTERM, so settings are saved
@@ -483,6 +635,7 @@ fn build_menu() -> gio::Menu {
     let file_menu = gio::Menu::new();
     let session_section = gio::Menu::new();
     session_section.append_item(&RelmAction::<LoginAction>::to_menu_item("_Login…"));
+    session_section.append_item(&RelmAction::<DisconnectAction>::to_menu_item("_Disconnect"));
     let quit_section = gio::Menu::new();
     quit_section.append_item(&RelmAction::<QuitAction>::to_menu_item("_Quit"));
     file_menu.append_section(None, &session_section);
