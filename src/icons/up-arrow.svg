@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- Up arrow drawn over the theme's folder icon on the ".." row. The dark outline keeps
+       it visible on light and dark folder colours alike. -->
+  <path d="M16 3L28 15H20V29H12V15H4z" fill="#ffffff" stroke="#3a3a3a"
+        stroke-width="2.5" stroke-linejoin="round"/>
+</svg>

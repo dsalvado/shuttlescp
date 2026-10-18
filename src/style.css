@@ -1,0 +1,85 @@
+/* Application-wide style overrides. Loaded with application priority, so these rules
+   win over whichever GTK theme is active. */
+
+/* Smaller text throughout the app (the desktop default here is 10pt). Popovers and menus
+   inherit it from the window. */
+window {
+    font-size: 9pt;
+}
+
+/* Fine dotted lines between the file list columns, on rows and headers alike. GTK 4 draws
+   `border-style: dotted` as a solid line, so the dots are a 1px wide repeating gradient
+   (1px on, 1px off) painted down the left edge of each cell instead. */
+columnview.column-separators > listview > row > cell,
+columnview.column-separators > header > button {
+    border-left-color: transparent;
+    background-image: repeating-linear-gradient(
+        to bottom,
+        alpha(currentColor, 0.22) 0px,
+        alpha(currentColor, 0.22) 1px,
+        transparent 1px,
+        transparent 2px
+    );
+    background-size: 1px 100%;
+    background-position: left top;
+    background-repeat: no-repeat;
+}
+
+columnview.column-separators > listview > row > cell:first-child,
+columnview.column-separators > header > button:first-child {
+    background-image: none;
+}
+
+/* Current directory shown above each file list: looks like a read-only field but is a
+   plain label, so it cannot be clicked into. */
+label.path-label {
+    padding: 3px 6px;
+    border: 1px solid alpha(currentColor, 0.15);
+    border-radius: 4px;
+    background-color: alpha(currentColor, 0.04);
+}
+
+/* Squarer window corners. Application priority beats every theme rule, so maximized,
+   tiled and fullscreen windows must be reset to square explicitly. */
+window.csd {
+    border-radius: 4px;
+}
+
+window.csd.maximized,
+window.csd.fullscreen,
+window.csd.tiled,
+window.csd.tiled-top,
+window.csd.tiled-right,
+window.csd.tiled-bottom,
+window.csd.tiled-left {
+    border-radius: 0;
+}
+
+/* Status bar along the bottom of the main window. The right padding keeps text clear
+   of the bottom-right resize grip. */
+.statusbar {
+    padding: 2px 20px 2px 8px;
+    border-top: 1px solid alpha(currentColor, 0.15);
+    font-size: smaller;
+}
+
+/* Visible, easy to grab divider between the local and remote panes. Many themes draw
+   the wide handle almost transparent. */
+paned.pane-split > separator.wide {
+    min-width: 6px;
+    background-color: alpha(currentColor, 0.12);
+}
+
+paned.pane-split > separator.wide:hover {
+    background-color: alpha(currentColor, 0.3);
+}
+
+menubar > item {
+    padding: 2px 8px;
+}
+
+.compact-toolbar button {
+    min-height: 20px;
+    min-width: 20px;
+    padding: 2px 4px;
+}
