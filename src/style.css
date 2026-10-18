@@ -78,6 +78,52 @@ menubar > item {
     padding: 2px 8px;
 }
 
+/* Compact drop-down menus (the theme default is 32px tall items). */
+popover.menu > contents > stack > box,
+popover.menu > contents > scrolledwindow > viewport > stack > box {
+    padding: 3px;
+}
+
+popover.menu modelbutton {
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 4px;
+}
+
+/* Mark the selected choice of a menu list with a check mark instead of a radio dot. */
+popover.menu radio {
+    border: none;
+    padding: 1px;
+    background-image: none;
+    -gtk-icon-source: none;
+}
+
+popover.menu radio:checked {
+    -gtk-icon-source: -gtk-icontheme("object-select-symbolic");
+}
+
+/* Theme list embedded in the View menu, sized like the other menu items. */
+list.theme-list {
+    background: none;
+}
+
+list.theme-list > row {
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 4px;
+}
+
+list.theme-list > row:hover {
+    background-color: alpha(currentColor, 0.1);
+}
+
+list.theme-list > row.separator-row,
+list.theme-list > row.separator-row:hover {
+    min-height: 0;
+    padding: 3px 0;
+    background: none;
+}
+
 .compact-toolbar button {
     min-height: 20px;
     min-width: 20px;

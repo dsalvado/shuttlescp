@@ -15,13 +15,25 @@ use crate::local_fs;
 use crate::logging::{LogLevel, Logger};
 use crate::resize_grips;
 use crate::theme::{self, ThemeChoice};
+use crate::theme_list::ThemeList;
 
 /// Initial window width in pixels; the divider starts at half of it.
 const WINDOW_WIDTH: i32 = 1200;
 /// Initial window height in pixels.
 const WINDOW_HEIGHT: i32 = 720;
-/// Label of the theme menu entry that follows the desktop theme.
-const SYSTEM_THEME_LABEL: &str = "System default";
+/// Menu model id linking the View menu's placeholder item to the theme list widget.
+const THEME_LIST_ID: &str = "theme-list";
+/// Signals that close the app gracefully, with the reason logged for each. The numbers
+/// are the Linux values (see `man 7 signal`); GLib only accepts these few.
+const QUIT_SIGNALS: [(i32, &str); 3] = [
+    (1, "terminal closed (SIGHUP)"),
+    (2, "Ctrl+C (SIGINT)"),
+    (15, "stop request (SIGTERM)"),
+];
+/// Exit reason when the window is closed with its close button.
+const WINDOW_CLOSED: &str = "window closed";
+/// Exit reason for File > Quit and Ctrl+Q.
+const QUIT_COMMAND: &str = "File > Quit";
 /// Longest session tab title, in characters; longer titles are cut in the middle.
 const TAB_TITLE_MAX_CHARS: usize = 32;
 /// Marker inserted where a tab title was shortened.
@@ -68,6 +80,8 @@ pub enum AppMsg {
         /// Mount point of the disk holding `dir`.
         disk_root: Option<PathBuf>,
     },
+    /// Close the app; the text says why and is written to the log.
+    Quit(&'static str),
 }
 
 /// Root component of the application.
@@ -81,6 +95,10 @@ pub struct App {
     config: Config,
     config_path: PathBuf,
     logger: Logger,
+    /// Theme list inside the View menu.
+    theme_list: ThemeList,
+    /// Why the app is closing, written to the log's session-end banner.
+    exit_reason: &'static str,
 }
 
 #[relm4::component(pub)]
@@ -110,6 +128,7 @@ impl SimpleComponent for App {
 
                     gtk::HeaderBar {},
 
+                    #[name = "menu_bar"]
                     gtk::PopoverMenuBar::from_model(Some(&menu_model)) {},
 
                     #[name = "sessions"]
@@ -217,7 +236,9 @@ impl SimpleComponent for App {
         theme::ensure_cursor_theme();
 
         register_actions(&root, &config, logger.file_path(), &sender);
-        let menu_model = build_menu(&themes);
+        let menu_model = build_menu();
+        let theme_list = ThemeList::new(themes, config.theme());
+        quit_on_signals(&sender);
 
         let start_dir = config
             .last_local_dir()
@@ -243,8 +264,13 @@ impl SimpleComponent for App {
             config,
             config_path,
             logger,
+            theme_list,
+            exit_reason: WINDOW_CLOSED,
         };
         let widgets = view_output!();
+        widgets
+            .menu_bar
+            .add_child(model.theme_list.widget(), THEME_LIST_ID);
         resize_grips::add_corner_grips(&root, &widgets.overlay);
         // Keep the "New Tab" tab from being opened (by click or keyboard) for now. Our
         // handler runs before GTK's default one, which performs the switch, so stopping
@@ -267,8 +293,14 @@ impl SimpleComponent for App {
                 }
                 tracing::info!("theme changed to {choice:?}");
                 theme::apply(&choice);
+                self.theme_list.show_current(&choice);
                 self.config.set_theme(choice);
                 self.save_config();
+            }
+            AppMsg::Quit(reason) => {
+                tracing::info!("closing: {reason}");
+                self.exit_reason = reason;
+                relm4::main_application().quit();
             }
             AppMsg::LogLevelSelected(level) => {
                 self.logger.set_level(level);
@@ -287,10 +319,10 @@ impl SimpleComponent for App {
         }
     }
 
-    /// Runs when the application quits (window closed or File > Quit).
+    /// Runs when the application quits (window closed, File > Quit or a quit signal).
     fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
         self.save_config();
-        self.logger.end_session();
+        self.logger.end_session(self.exit_reason);
     }
 }
 
@@ -329,7 +361,10 @@ fn register_actions(
     log_path: Option<&Path>,
     sender: &ComponentSender<App>,
 ) {
-    let quit = RelmAction::<QuitAction>::new_stateless(|_| relm4::main_application().quit());
+    let quit_sender = sender.clone();
+    let quit = RelmAction::<QuitAction>::new_stateless(move |_| {
+        quit_sender.input(AppMsg::Quit(QUIT_COMMAND));
+    });
 
     let log_uri = log_path.map(|path| gio::File::for_path(path).uri());
     let open_log = RelmAction::<OpenLogAction>::new_stateless(move |_| {
@@ -374,33 +409,40 @@ fn register_actions(
     relm4::main_application().set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
 }
 
-/// Build the menu bar model: File, View (themes) and Tools (logging).
-///
-/// Radio lists sit in sections rather than nested submenus, so every menu opens as a
-/// single popup.
+/// Close the app gracefully on SIGHUP, SIGINT (Ctrl+C) and SIGTERM, so settings are saved
+/// and the log gets its session-end banner. SIGKILL cannot be caught by any program.
 ///
 /// # Arguments
 ///
-/// * `themes` - Installed theme names, listed after "System default"
+/// * `sender` - Sender used to ask [`App::update`] to quit
+fn quit_on_signals(sender: &ComponentSender<App>) {
+    for (signal, reason) in QUIT_SIGNALS {
+        let sender = sender.clone();
+        // Runs on the GTK main loop, so it is safe to touch the app from here.
+        glib_unix::unix_signal_add_local(signal, move || {
+            sender.input(AppMsg::Quit(reason));
+            glib::ControlFlow::Continue
+        });
+    }
+}
+
+/// Build the menu bar model: File, View (themes) and Tools (logging).
+///
+/// Lists sit in sections rather than nested submenus, so every menu opens as a single
+/// popup. The theme section holds one placeholder item that the [`ThemeList`] widget
+/// replaces (see [`THEME_LIST_ID`]).
 ///
 /// # Returns
 ///
 /// The menu model for a [`gtk::PopoverMenuBar`]
-fn build_menu(themes: &[String]) -> gio::Menu {
+fn build_menu() -> gio::Menu {
     let file_menu = gio::Menu::new();
     file_menu.append_item(&RelmAction::<QuitAction>::to_menu_item("_Quit"));
 
     let theme_section = gio::Menu::new();
-    let system_target = ThemeChoice::System.action_target().to_owned();
-    theme_section.append_item(&RelmAction::<ThemeAction>::to_menu_item_with_target_value(
-        SYSTEM_THEME_LABEL,
-        &system_target,
-    ));
-    for name in themes {
-        theme_section.append_item(&RelmAction::<ThemeAction>::to_menu_item_with_target_value(
-            name, name,
-        ));
-    }
+    let theme_list_item = gio::MenuItem::new(None, None);
+    theme_list_item.set_attribute_value("custom", Some(&THEME_LIST_ID.to_variant()));
+    theme_section.append_item(&theme_list_item);
     let view_menu = gio::Menu::new();
     view_menu.append_section(Some("Theme"), &theme_section);
 

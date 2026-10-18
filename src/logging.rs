@@ -1,5 +1,6 @@
 //! Application logging to a file (and stderr) with a level that can change at runtime.
 
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,8 +10,12 @@ use std::time::{Duration, Instant};
 use relm4::gtk::glib;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::{Event, Subscriber};
 use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{Registry, fmt, reload};
 
 /// Crate name, used as the tracing target prefix of every event this app emits.
@@ -114,18 +119,24 @@ pub struct Logger {
     handle: reload::Handle<Targets, Registry>,
     level: LogLevel,
     file_path: Option<PathBuf>,
+    /// Distinct name of this app session, shown in its start and end banners.
+    session_label: String,
     /// When this app session started, for the duration logged at the end.
     started: Instant,
 }
 
 impl Logger {
     /// Record the end of the app session, with how long it lasted. Call once, on exit.
-    pub fn end_session(&self) {
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` - How the app was closed, e.g. "window closed" or "Ctrl+C (SIGINT)"
+    pub fn end_session(&self, reason: &str) {
         tracing::info!(
             target: SESSION_TARGET,
-            "session ended after {} (pid {})",
-            format_duration(self.started.elapsed()),
-            std::process::id()
+            "*** Session {} Ended after {}, reason: {reason} ***",
+            self.session_label,
+            format_duration(self.started.elapsed())
         );
     }
 
@@ -187,12 +198,21 @@ pub fn default_log_path() -> PathBuf {
 ///
 /// A [`Logger`] used to change the level later
 pub fn init(level: LogLevel, log_path: &Path) -> Logger {
+    let tag = session_tag(glib::random_int());
+    let session_label = session_label(glib::DateTime::now_local().ok(), &tag);
+    let line_format = LineFormat {
+        session: Arc::from(tag),
+    };
     let (filter, handle) = reload::Layer::new(filter_for(level));
     let (file_layer, file_path) = match open_log_file(log_path) {
         // `Arc<File>` is a lock-free writer: each event is written with a single
         // append-mode `write` call.
         Ok(file) => (
-            Some(fmt::layer().with_ansi(false).with_writer(Arc::new(file))),
+            Some(
+                fmt::layer()
+                    .event_format(line_format.clone())
+                    .with_writer(Arc::new(file)),
+            ),
             Ok(log_path.to_path_buf()),
         ),
         Err(error) => (None, Err(error)),
@@ -202,14 +222,18 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
         .with(filter)
         .with(file_layer)
         // `bool::then` gives `Some(layer)` only when the condition holds.
-        .with((LOG_TO_STDERR || file_path.is_err()).then(|| fmt::layer().with_writer(io::stderr)))
+        .with((LOG_TO_STDERR || file_path.is_err()).then(|| {
+            fmt::layer()
+                .event_format(line_format)
+                .with_writer(io::stderr)
+        }))
         .init();
 
-    // The process id ties the start and end lines of one session together, even if
-    // two copies of the app write to the log at once.
+    let started = Instant::now();
+    log_crashes(session_label.clone(), started);
     tracing::info!(
         target: SESSION_TARGET,
-        "session started: GuiSCP {} (pid {})",
+        "*** Session {session_label} Started (GuiSCP {}, pid {}) ***",
         env!("CARGO_PKG_VERSION"),
         std::process::id()
     );
@@ -222,8 +246,108 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
         handle,
         level,
         file_path,
-        started: Instant::now(),
+        session_label,
+        started,
     }
+}
+
+/// Make a crash (Rust panic) end the session with a banner in the log before the
+/// default panic report is printed.
+///
+/// # Arguments
+///
+/// * `session_label` - Label of this session, for the banner
+/// * `started` - When the session started, for the duration in the banner
+fn log_crashes(session_label: String, started: Instant) {
+    // `take_hook` returns the current handler so ours can still call it afterwards.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(
+            target: SESSION_TARGET,
+            "*** Session {session_label} Ended abnormally after {}: {info} ***",
+            format_duration(started.elapsed())
+        );
+        default_hook(info);
+    }));
+}
+
+/// Build the short session tag printed on every log line: four hex digits in brackets,
+/// e.g. `[a3f1]`.
+///
+/// # Arguments
+///
+/// * `random` - Random number; its low 16 bits are used
+fn session_tag(random: u32) -> String {
+    format!("[{:04x}]", random & 0xffff)
+}
+
+/// Build the full session label used in the start and end banners: the local start time
+/// plus the session tag, e.g. `20261018-070512-[a3f1]`. Labels sort in start order and
+/// two sessions started in the same second still differ.
+///
+/// # Arguments
+///
+/// * `start` - Local start time, or `None` if the clock could not be read
+/// * `tag` - The session tag from [`session_tag`]
+fn session_label(start: Option<glib::DateTime>, tag: &str) -> String {
+    let time = start
+        .and_then(|time| time.format("%Y%m%d-%H%M%S").ok())
+        .map_or_else(|| String::from("unknown-time"), String::from);
+    format!("{time}-{tag}")
+}
+
+/// Log line layout, in local time:
+/// `[YYYY-MM-DD HH:MM:SS.mmm] [tag] LEVEL target: message`.
+/// Session banners leave out the target so they read as plain headings.
+#[derive(Clone)]
+struct LineFormat {
+    /// Session tag printed on every line. `Arc<str>` is a shared, immutable string, so
+    /// the file and terminal formatters share one copy.
+    session: Arc<str>,
+}
+
+// `where` clauses spell out what tracing needs from the subscriber (`S`) and the field
+// formatter (`N`); this implementation works with any that qualify.
+impl<S, N> FormatEvent<S, N> for LineFormat
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    N: for<'writer> FormatFields<'writer> + 'static,
+{
+    fn format_event(
+        &self,
+        context: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> std::fmt::Result {
+        let metadata = event.metadata();
+        write!(
+            writer,
+            "[{}] {} {:<5} ",
+            local_timestamp(),
+            self.session,
+            metadata.level()
+        )?;
+        if metadata.target() != SESSION_TARGET {
+            write!(writer, "{}: ", metadata.target())?;
+        }
+        context
+            .field_format()
+            .format_fields(writer.by_ref(), event)?;
+        writeln!(writer)
+    }
+}
+
+/// Current local time as `YYYY-MM-DD HH:MM:SS.mmm`.
+fn local_timestamp() -> String {
+    let Ok(now) = glib::DateTime::now_local() else {
+        return String::from("unknown time");
+    };
+    let mut text = now
+        .format("%Y-%m-%d %H:%M:%S")
+        .map_or_else(|_| String::from("unknown time"), String::from);
+    // Writing into a `String` cannot fail, so the result is safely ignored.
+    let _ = write!(text, ".{:03}", now.microsecond() / 1000);
+    text
 }
 
 /// Format a duration as `H:MM:SS`, e.g. 3725 seconds becomes `"1:02:05"`.
@@ -312,6 +436,25 @@ mod tests {
         assert!(!filter.would_enable(APP_TARGET, &Level::INFO));
         assert!(filter.would_enable(LEVEL_CHANGE_TARGET, &Level::INFO));
         assert!(filter.would_enable(SESSION_TARGET, &Level::INFO));
+    }
+
+    #[test]
+    fn session_tag_is_four_bracketed_hex_digits() {
+        assert_eq!(session_tag(0xa3f1), "[a3f1]");
+        assert_eq!(session_tag(0x1234_0007), "[0007]");
+    }
+
+    #[test]
+    fn session_label_combines_start_time_and_tag() {
+        // Arrange
+        let start = glib::DateTime::from_local(2026, 10, 18, 7, 5, 12.0).expect("valid date");
+
+        // Act + Assert
+        assert_eq!(
+            session_label(Some(start), "[a3f1]"),
+            "20261018-070512-[a3f1]"
+        );
+        assert_eq!(session_label(None, "[beef]"), "unknown-time-[beef]");
     }
 
     #[test]

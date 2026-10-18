@@ -9,6 +9,7 @@ mod local_fs;
 mod logging;
 mod resize_grips;
 mod theme;
+mod theme_list;
 
 use relm4::RelmApp;
 
