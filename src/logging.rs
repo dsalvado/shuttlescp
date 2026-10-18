@@ -134,7 +134,7 @@ impl Logger {
     pub fn end_session(&self, reason: &str) {
         tracing::info!(
             target: SESSION_TARGET,
-            "*** Session {} Ended after {}, reason: {reason} ***",
+            "==== Session {} Ended after {}, reason: {reason} ====",
             self.session_label,
             format_duration(self.started.elapsed())
         );
@@ -233,7 +233,7 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
     log_crashes(session_label.clone(), started);
     tracing::info!(
         target: SESSION_TARGET,
-        "*** Session {session_label} Started (GuiSCP {}, pid {}) ***",
+        "==== Session {session_label} Started (GuiSCP {}, pid {}) ====",
         env!("CARGO_PKG_VERSION"),
         std::process::id()
     );
@@ -264,7 +264,7 @@ fn log_crashes(session_label: String, started: Instant) {
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!(
             target: SESSION_TARGET,
-            "*** Session {session_label} Ended abnormally after {}: {info} ***",
+            "==== Session {session_label} Ended abnormally after {}: {info} ====",
             format_duration(started.elapsed())
         );
         default_hook(info);
