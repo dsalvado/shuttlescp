@@ -3,20 +3,31 @@
 //!
 //! Every job runs as its own background task (see [`guiscp_core::transfer`]), so jobs
 //! proceed side by side; their progress arrives here as command messages.
+//!
+//! The list is a single [`gtk::ListView`] of the rows currently expanded: only the rows
+//! on screen have widgets, so a job with hundreds of thousands of files stays fast.
+//! Progress updates go straight to the widgets of visible rows.
 
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
-use relm4::gtk;
 use relm4::gtk::prelude::*;
+use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
 use guiscp_core::format::format_size;
+use guiscp_core::pending::{PendingJob, PendingTransfers};
 use guiscp_core::remote::Remote;
+use guiscp_core::sites::new_site_id;
 use guiscp_core::transfer::{
     self, CancelFlag, ItemKind, ItemOutcome, Job, JobKind, JobSummary, PlanItem, RateMeter, Side,
     TransferEvent,
 };
+
+use crate::conflict_dialog;
 
 /// Jobs with more items than this start with their folders collapsed.
 const EXPAND_LIMIT: usize = 200;
@@ -24,34 +35,54 @@ const EXPAND_LIMIT: usize = 200;
 const BAR_WIDTH: i32 = 160;
 /// Indent of each tree level, in pixels.
 const INDENT: i32 = 18;
+/// Width of the slot at the end of each line for the result icon (or a job's Cancel /
+/// Retry button), so bars and texts stay lined up whatever it shows.
+const END_SLOT_WIDTH: i32 = 24;
+/// Width of the slot for the expander arrow; files get an empty one, so their names
+/// line up with folder names.
+const EXPANDER_SLOT_WIDTH: i32 = 20;
 /// Icon of a finished item.
 const DONE_ICON: &str = "object-select-symbolic";
 /// Icon of a failed item.
 const FAILED_ICON: &str = "dialog-error-symbolic";
-/// Icon of a cancelled item.
-const CANCELLED_ICON: &str = "process-stop-symbolic";
-/// Width of the slot at the end of each line for the result icon (or a job's Cancel
-/// button), so the bars and texts stay lined up whether or not it shows anything.
-const END_SLOT_WIDTH: i32 = 24;
+/// Icon of a cancelled or skipped item.
+const STOPPED_ICON: &str = "process-stop-symbolic";
+/// Name of the panel's action group, used by the row buttons.
+const ACTION_GROUP: &str = "transfers";
+
+/// The server connection jobs use.
+#[derive(Debug, Clone)]
+pub struct PanelConnection {
+    /// Id of the connected site, to record unfinished jobs against.
+    pub site_id: String,
+    /// The open session.
+    pub remote: Remote,
+}
 
 /// Messages handled by the transfers panel.
 #[derive(Debug)]
 pub enum TransferPanelMsg {
     /// Run a job.
-    Start {
-        /// What to do.
-        job: Job,
-        /// The server connection, if any.
-        remote: Option<Remote>,
-    },
+    Start(Job),
     /// Stop the job with this id.
     Cancel(u64),
-    /// Stop every job that uses the server (it is being disconnected).
-    CancelRemote,
+    /// Run an unfinished job again, continuing where it stopped.
+    Retry(u64),
+    /// Show or hide the contents of a job (`item` is `None`) or folder.
+    Toggle {
+        /// The job.
+        job: u64,
+        /// The folder, or `None` for the whole job.
+        item: Option<usize>,
+    },
     /// Remove finished jobs from the list.
     ClearFinished,
-    /// The connection changed: its name, or `None` when disconnected.
-    ShowConnection(Option<String>),
+    /// A server was connected, or (`None`) disconnected: jobs using the old one stop.
+    Connection(Option<PanelConnection>),
+    /// Resume the jobs interrupted in an earlier session.
+    ResumeInterrupted,
+    /// Forget the jobs interrupted in an earlier session.
+    DiscardInterrupted,
 }
 
 /// Notifications sent to the main window.
@@ -59,87 +90,110 @@ pub enum TransferPanelMsg {
 pub enum TransferPanelOutput {
     /// A job finished; the file panes may need refreshing.
     JobFinished,
+    /// The number of jobs still running changed.
+    Running(usize),
 }
 
-/// The widgets of one line: progress bar, text and result icon.
-struct RowWidgets {
-    bar: gtk::ProgressBar,
-    info: gtk::Label,
-    status: gtk::Image,
-}
-
-impl RowWidgets {
-    /// Show how the item ended.
-    fn finish(&self, outcome: &ItemOutcome, done_text: &str) {
-        let (icon, text) = match outcome {
-            ItemOutcome::Done => (DONE_ICON, done_text.to_owned()),
-            ItemOutcome::Failed(error) => (FAILED_ICON, error.clone()),
-            ItemOutcome::Cancelled => (CANCELLED_ICON, String::from("Cancelled")),
-        };
-        if *outcome == ItemOutcome::Done {
-            self.bar.set_fraction(1.0);
-        }
-        self.status.set_icon_name(Some(icon));
-        self.info.set_label(&text);
-        self.info.set_tooltip_text(Some(&text));
-        if matches!(outcome, ItemOutcome::Failed(_)) {
-            self.info.add_css_class("error");
-        }
-    }
+/// Identifies a row: a job's header line, or one of its items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RowKey {
+    job: u64,
+    item: Option<usize>,
 }
 
 /// One file or folder of a job.
-struct ItemView {
-    widgets: RowWidgets,
+struct ItemState {
+    name: String,
+    source: PathBuf,
     kind: ItemKind,
     parent: Option<usize>,
-    /// Bytes in all (a folder: the files inside it).
+    depth: i32,
+    /// Bytes in all (a folder: the files inside it) and done.
     size: u64,
-    /// Bytes done.
     done: u64,
-    /// Speed of this item, from its first progress report on.
+    /// Speed, from the first progress report on (for folders: from the start).
     meter: Option<RateMeter>,
-    /// Holds the children of a folder.
-    children: Option<gtk::Box>,
+    outcome: Option<ItemOutcome>,
+    expanded: bool,
+    /// Waiting for the user to decide about an existing file.
+    asking: bool,
 }
 
 /// One job in the list.
-struct JobView {
-    kind: JobKind,
-    side: Side,
+struct JobState {
+    job: Job,
+    /// Its entry in the unfinished-transfers file, if it uses the server.
+    pending_key: Option<String>,
     cancel: CancelFlag,
-    /// The job's whole entry.
-    root: gtk::Box,
-    header: RowWidgets,
-    cancel_button: gtk::Button,
-    /// Holds the job's top-level items.
-    items_box: gtk::Box,
-    /// Shows or hides the items.
-    expander: gtk::Button,
-    items: Vec<ItemView>,
+    /// Cancelled by the user (not by a disconnect), so it is not offered for resuming.
+    user_cancelled: bool,
+    items: Vec<ItemState>,
+    children: Vec<Vec<usize>>,
+    roots: Vec<usize>,
+    planned: bool,
     /// Bytes in all and done, over every file.
     total: u64,
     done: u64,
     /// Items finished, for deletes (which have no bytes to count).
     finished_items: usize,
     meter: RateMeter,
-    finished: bool,
+    summary: Option<JobSummary>,
+    expanded: bool,
+}
+
+impl JobState {
+    fn is_running(&self) -> bool {
+        self.summary.is_none()
+    }
+}
+
+/// The widgets of one row. Rows are recycled as the list scrolls; `key` says which
+/// row they currently show.
+#[derive(Clone)]
+struct RowWidgets {
+    key: Rc<Cell<Option<RowKey>>>,
+    indent: gtk::Box,
+    expander: gtk::Button,
+    icon: gtk::Image,
+    name: gtk::Label,
+    bar: gtk::ProgressBar,
+    info: gtk::Label,
+    status: gtk::Image,
+    cancel: gtk::Button,
+    retry: gtk::Button,
+}
+
+/// State shared by the panel and its list rows.
+#[derive(Default)]
+struct Shared {
+    jobs: BTreeMap<u64, JobState>,
+    /// The widgets of the rows on screen.
+    bound: HashMap<RowKey, RowWidgets>,
 }
 
 /// The transfers panel component.
 pub struct TransferPanel {
-    jobs: BTreeMap<u64, JobView>,
+    shared: Rc<RefCell<Shared>>,
+    /// The visible rows, in order (each a `BoxedAnyObject` holding a [`RowKey`]).
+    rows: gio::ListStore,
     next_id: u64,
-    /// Holds the job entries.
-    list: gtk::Box,
-    /// Shown while there are no jobs.
+    connection: Option<PanelConnection>,
+    pending: PendingTransfers,
+    pending_path: PathBuf,
+    /// Jobs of this site interrupted in an earlier session, offered for resuming.
+    interrupted: Vec<PendingJob>,
     placeholder: gtk::Label,
     clear_button: gtk::Button,
+    banner: gtk::Box,
+    banner_text: gtk::Label,
+    /// Running jobs last reported to the main window.
+    running: usize,
 }
 
 #[relm4::component(pub)]
 impl Component for TransferPanel {
-    type Init = ();
+    /// Where unfinished transfers are recorded.
+    type Init = PathBuf;
     type Input = TransferPanelMsg;
     type Output = TransferPanelOutput;
     type CommandOutput = (u64, TransferEvent);
@@ -149,6 +203,28 @@ impl Component for TransferPanel {
             set_orientation: gtk::Orientation::Vertical,
             add_css_class: "transfer-panel",
 
+            #[local_ref]
+            banner -> gtk::Box {
+                set_orientation: gtk::Orientation::Horizontal,
+                set_spacing: 6,
+                add_css_class: "transfer-banner",
+                set_visible: false,
+
+                #[local_ref]
+                banner_text -> gtk::Label {
+                    set_hexpand: true,
+                    set_xalign: 0.0,
+                },
+                gtk::Button {
+                    set_label: "Resume",
+                    connect_clicked => TransferPanelMsg::ResumeInterrupted,
+                },
+                gtk::Button {
+                    set_label: "Discard",
+                    set_tooltip_text: Some("Forget them; their partial files stay where they are"),
+                    connect_clicked => TransferPanelMsg::DiscardInterrupted,
+                },
+            },
             gtk::Box {
                 set_orientation: gtk::Orientation::Horizontal,
                 add_css_class: "compact-toolbar",
@@ -162,98 +238,131 @@ impl Component for TransferPanel {
                     connect_clicked => TransferPanelMsg::ClearFinished,
                 },
             },
-            gtk::ScrolledWindow {
+            gtk::Overlay {
                 set_vexpand: true,
-                set_hscrollbar_policy: gtk::PolicyType::Never,
+                add_overlay: placeholder,
 
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
+                gtk::ScrolledWindow {
+                    set_hscrollbar_policy: gtk::PolicyType::Never,
 
                     #[local_ref]
-                    placeholder -> gtk::Label {
-                        set_vexpand: true,
-                        add_css_class: "dim-label",
-                    },
-                    #[local_ref]
-                    list -> gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-                        set_spacing: 4,
-                    },
+                    list -> gtk::ListView {},
                 },
             },
         }
     }
 
-    fn init(_: (), root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
+    fn init(
+        pending_path: PathBuf,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let shared = Rc::new(RefCell::new(Shared::default()));
+        let rows = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let list = gtk::ListView::new(
+            Some(gtk::NoSelection::new(Some(rows.clone()))),
+            Some(row_factory(&shared)),
+        );
+        list.add_css_class("transfer-list");
+        register_actions(&root, &sender);
+
+        let placeholder = gtk::Label::new(Some(crate::app::NOT_CONNECTED));
+        placeholder.add_css_class("dim-label");
+        // Clicks go through to the list underneath.
+        placeholder.set_can_target(false);
         let model = Self {
-            jobs: BTreeMap::new(),
+            shared,
+            rows,
             next_id: 0,
-            list: gtk::Box::default(),
-            placeholder: gtk::Label::new(Some(crate::app::NOT_CONNECTED)),
+            connection: None,
+            pending: PendingTransfers::load(&pending_path),
+            pending_path,
+            interrupted: Vec::new(),
+            placeholder,
             clear_button: gtk::Button::default(),
+            banner: gtk::Box::default(),
+            banner_text: gtk::Label::default(),
+            running: 0,
         };
-        let (list, placeholder, clear_button) =
-            (&model.list, &model.placeholder, &model.clear_button);
+        let (placeholder, clear_button, banner, banner_text, list) = (
+            &model.placeholder,
+            &model.clear_button,
+            &model.banner,
+            &model.banner_text,
+            &list,
+        );
         let widgets = view_output!();
         ComponentParts { model, widgets }
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
         match message {
-            TransferPanelMsg::Start { job, remote } => self.start(job, remote, &sender),
+            TransferPanelMsg::Start(job) => self.start(job, None, &sender),
             TransferPanelMsg::Cancel(id) => {
-                if let Some(job) = self.jobs.get(&id) {
+                if let Some(job) = self.shared.borrow_mut().jobs.get_mut(&id) {
                     tracing::info!("cancelling transfer {id}");
+                    job.user_cancelled = true;
                     job.cancel.cancel();
                 }
             }
-            TransferPanelMsg::CancelRemote => {
-                for (id, job) in &self.jobs {
-                    let uses_server = !(job.kind == JobKind::Delete && job.side == Side::Local);
-                    if !job.finished && uses_server {
-                        tracing::info!("cancelling transfer {id}: disconnecting");
-                        job.cancel.cancel();
-                    }
+            TransferPanelMsg::Retry(id) => self.retry(id, &sender),
+            TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
+            TransferPanelMsg::ClearFinished => self.clear_finished(),
+            TransferPanelMsg::Connection(connection) => self.set_connection(connection),
+            TransferPanelMsg::ResumeInterrupted => {
+                for pending in std::mem::take(&mut self.interrupted) {
+                    tracing::info!("resuming interrupted transfer: {}", pending.job.title());
+                    let mut job = pending.job;
+                    job.resume = true;
+                    self.start(job, Some(pending.key), &sender);
                 }
+                self.banner.set_visible(false);
             }
-            TransferPanelMsg::ClearFinished => {
-                self.jobs.retain(|_, job| {
-                    if job.finished {
-                        self.list.remove(&job.root);
-                    }
-                    !job.finished
-                });
-                self.update_chrome();
-            }
-            TransferPanelMsg::ShowConnection(name) => {
-                self.placeholder.set_label(if name.is_some() {
-                    "No transfers yet"
-                } else {
-                    crate::app::NOT_CONNECTED
-                });
+            TransferPanelMsg::DiscardInterrupted => {
+                for pending in std::mem::take(&mut self.interrupted) {
+                    tracing::info!("discarding interrupted transfer: {}", pending.job.title());
+                    self.pending.remove(&pending.key);
+                }
+                self.save_pending();
+                self.banner.set_visible(false);
             }
         }
+        self.update_chrome(&sender);
     }
 
     fn update_cmd(
         &mut self,
         (id, event): Self::CommandOutput,
         sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        root: &Self::Root,
     ) {
-        let Some(job) = self.jobs.get_mut(&id) else {
-            return;
-        };
         let now = Instant::now();
         match event {
-            TransferEvent::Planned(items) => job.show_plan(&items, now),
-            TransferEvent::Progress { id: item, done } => job.progress(item, done, now),
-            TransferEvent::ItemFinished { id: item, outcome } => {
-                job.item_finished(item, &outcome, now)
+            TransferEvent::Planned(items) => self.show_plan(id, &items, now),
+            TransferEvent::Resumed { id: item, from } => {
+                let mut shared = self.shared.borrow_mut();
+                let changed = resumed(&mut shared, id, item, from, now);
+                refresh(&shared, &changed, now);
             }
+            TransferEvent::Progress { id: item, done } => {
+                let mut shared = self.shared.borrow_mut();
+                let changed = progress(&mut shared, id, item, done, now);
+                refresh(&shared, &changed, now);
+            }
+            TransferEvent::ItemFinished { id: item, outcome } => {
+                let mut shared = self.shared.borrow_mut();
+                let changed = item_finished(&mut shared, id, item, outcome, now);
+                refresh(&shared, &changed, now);
+            }
+            TransferEvent::Conflict {
+                id: item,
+                existing,
+                incoming,
+                reply,
+            } => self.ask_conflict(root, id, item, existing, incoming, reply, now),
             TransferEvent::JobFinished(summary) => {
-                job.job_finished(&summary);
-                self.update_chrome();
+                self.job_finished(id, summary, now);
+                self.update_chrome(&sender);
                 let _ = sender.output(TransferPanelOutput::JobFinished);
             }
         }
@@ -262,17 +371,57 @@ impl Component for TransferPanel {
 
 impl TransferPanel {
     /// Add a job to the list and start it in the background.
-    fn start(&mut self, job: Job, remote: Option<Remote>, sender: &ComponentSender<Self>) {
+    ///
+    /// # Arguments
+    ///
+    /// * `job` - What to do
+    /// * `pending_key` - Its entry in the unfinished-transfers file, when resuming
+    /// * `sender` - Runs the job and receives its events
+    fn start(&mut self, job: Job, pending_key: Option<String>, sender: &ComponentSender<Self>) {
         let id = self.next_id;
         self.next_id += 1;
+        let remote = self
+            .connection
+            .as_ref()
+            .map(|connection| connection.remote.clone());
+        // Record jobs that use the server, so they can be resumed if interrupted.
+        let pending_key = match (&self.connection, job.uses_server()) {
+            (Some(connection), true) => {
+                let key = pending_key.unwrap_or_else(new_site_id);
+                self.pending.add(PendingJob {
+                    key: key.clone(),
+                    site_id: connection.site_id.clone(),
+                    job: job.clone(),
+                });
+                self.save_pending();
+                Some(key)
+            }
+            _ => None,
+        };
         let cancel = CancelFlag::default();
-        let view = JobView::new(&job, cancel.clone(), {
-            let sender = sender.clone();
-            move || sender.input(TransferPanelMsg::Cancel(id))
-        });
-        self.list.append(&view.root);
-        self.jobs.insert(id, view);
-        self.update_chrome();
+        self.shared.borrow_mut().jobs.insert(
+            id,
+            JobState {
+                job: job.clone(),
+                pending_key,
+                cancel: cancel.clone(),
+                user_cancelled: false,
+                items: Vec::new(),
+                children: Vec::new(),
+                roots: Vec::new(),
+                planned: false,
+                total: 0,
+                done: 0,
+                finished_items: 0,
+                meter: RateMeter::new(Instant::now()),
+                summary: None,
+                expanded: true,
+            },
+        );
+        self.rows.append(&row_object(RowKey {
+            job: id,
+            item: None,
+        }));
 
         // The job runs as its own task on the async runtime's worker threads; its events
         // come back to `update_cmd` on the UI thread.
@@ -289,262 +438,714 @@ impl TransferPanel {
         });
     }
 
-    /// Show the placeholder only while the list is empty, and enable "Clear Finished"
-    /// while there is something to clear.
-    fn update_chrome(&self) {
-        self.placeholder.set_visible(self.jobs.is_empty());
-        self.clear_button
-            .set_sensitive(self.jobs.values().any(|job| job.finished));
-    }
-}
-
-impl JobView {
-    /// The job's entry, with a header line until its plan arrives.
-    ///
-    /// # Arguments
-    ///
-    /// * `job` - The job
-    /// * `cancel` - Its stop request
-    /// * `on_cancel` - Called when the Cancel button is clicked
-    fn new(job: &Job, cancel: CancelFlag, on_cancel: impl Fn() + 'static) -> Self {
-        let icon = match (job.kind, job.side) {
-            (JobKind::Delete, _) => "user-trash-symbolic",
-            (_, Side::Local) => "go-up-symbolic",
-            (_, Side::Remote) => "go-down-symbolic",
+    /// Run a finished, incomplete job again in its place, continuing where it stopped.
+    fn retry(&mut self, id: u64, sender: &ComponentSender<Self>) {
+        let Some(old) = self.shared.borrow_mut().jobs.remove(&id) else {
+            return;
         };
-        let (line, header, title) = row_line(icon, &job.title());
-        title.add_css_class("heading");
-        header.info.set_label("Preparing...");
-        let cancel_button = gtk::Button::builder()
-            .icon_name("window-close-symbolic")
-            .has_frame(false)
-            .tooltip_text("Cancel")
-            .css_classes(["tab-close"])
-            .build();
-        cancel_button.connect_clicked(move |_| on_cancel());
-        // The Cancel button takes the result icon's place until the job ends.
-        header.status.set_visible(false);
-        if let Some(slot) = header.status.parent().and_downcast::<gtk::Box>() {
-            slot.append(&cancel_button);
-        }
-
-        let items_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        items_box.set_margin_start(INDENT);
-        let expander = expander(&items_box, true);
-        line.prepend(&expander);
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.add_css_class("transfer-job");
-        root.append(&line);
-        root.append(&items_box);
-        Self {
-            kind: job.kind,
-            side: job.side,
-            cancel,
-            root,
-            header,
-            cancel_button,
-            items_box,
-            expander,
-            items: Vec::new(),
-            total: 0,
-            done: 0,
-            finished_items: 0,
-            meter: RateMeter::new(Instant::now()),
-            finished: false,
-        }
+        self.remove_rows(id);
+        tracing::info!("retrying: {}", old.job.title());
+        let mut job = old.job;
+        job.resume = true;
+        self.start(job, old.pending_key, sender);
     }
 
-    /// Build the tree of items.
-    fn show_plan(&mut self, plan: &[PlanItem], now: Instant) {
-        let expanded = plan.len() <= EXPAND_LIMIT;
-        for item in plan {
-            let icon = match item.kind {
-                ItemKind::Folder => "folder",
-                ItemKind::File => "text-x-generic",
-            };
-            let (line, widgets, _) = row_line(icon, &item.name);
-            line.set_tooltip_text(Some(&item.source.display().to_string()));
-            widgets.info.set_label(match (self.kind, item.kind) {
-                (JobKind::Delete, _) => "",
-                (_, ItemKind::File) => "Waiting",
-                (_, ItemKind::Folder) => "",
-            });
-            if self.kind == JobKind::Delete {
-                // Nothing to measure while deleting; the result icon says enough.
-                widgets.bar.set_visible(false);
-            }
-            let entry = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            let children = (item.kind == ItemKind::Folder).then(|| {
-                let children = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                children.set_margin_start(INDENT);
-                children.set_visible(expanded);
-                line.prepend(&expander(&children, expanded));
-                children
-            });
-            if children.is_none() {
-                // Keeps file names lined up with folder names next to an expander.
-                let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                spacer.set_size_request(16, -1);
-                line.prepend(&spacer);
-            }
-            entry.append(&line);
-            if let Some(children) = &children {
-                entry.append(children);
-            }
-            let container = item
-                .parent
-                .and_then(|parent| self.items.get(parent))
-                .and_then(|parent| parent.children.as_ref())
-                .unwrap_or(&self.items_box);
-            container.append(&entry);
-            self.items.push(ItemView {
-                widgets,
-                kind: item.kind,
-                parent: item.parent,
-                size: item.size,
-                done: 0,
-                meter: (item.kind == ItemKind::Folder).then(|| RateMeter::new(now)),
-                children,
-            });
-        }
-        self.total = plan
+    /// Remove finished jobs (and their entries in the unfinished-transfers file: the
+    /// user has seen how they ended).
+    fn clear_finished(&mut self) {
+        let finished: Vec<u64> = self
+            .shared
+            .borrow()
+            .jobs
             .iter()
-            .filter(|item| item.kind == ItemKind::File)
-            .map(|item| item.size)
-            .sum();
-        self.meter = RateMeter::new(now);
-        self.refresh_header(now);
-    }
-
-    /// A file has `done` bytes copied: update it, the folders it is in, and the job.
-    fn progress(&mut self, id: usize, done: u64, now: Instant) {
-        let Some(item) = self.items.get_mut(id) else {
-            return;
-        };
-        let added = done.saturating_sub(item.done);
-        item.done = done;
-        item.meter
-            .get_or_insert_with(|| RateMeter::starting_from(now, done))
-            .record(done, now);
-        show_bytes(item, now);
-        let mut parent = item.parent;
-        while let Some(folder_id) = parent {
-            let Some(folder) = self.items.get_mut(folder_id) else {
-                break;
-            };
-            folder.done += added;
-            if let Some(meter) = &mut folder.meter {
-                meter.record(folder.done, now);
+            .filter(|(_, job)| !job.is_running())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in finished {
+            let removed = self.shared.borrow_mut().jobs.remove(&id);
+            if let Some(key) = removed.and_then(|job| job.pending_key) {
+                self.pending.remove(&key);
             }
-            show_bytes(folder, now);
-            parent = folder.parent;
+            self.remove_rows(id);
         }
-        self.done += added;
-        self.meter.record(self.done, now);
-        self.refresh_header(now);
+        self.save_pending();
     }
 
-    /// An item finished.
-    fn item_finished(&mut self, id: usize, outcome: &ItemOutcome, now: Instant) {
-        // A finished file counts in full, even if its last progress report was skipped.
-        if *outcome == ItemOutcome::Done
-            && let Some(item) = self.items.get(id)
-            && item.kind == ItemKind::File
-        {
-            self.progress(id, item.size, now);
+    /// Switch to a new connection (or none): stop jobs using the old one, and offer to
+    /// resume the new site's interrupted jobs.
+    fn set_connection(&mut self, connection: Option<PanelConnection>) {
+        for (id, job) in &self.shared.borrow().jobs {
+            if job.is_running() && job.job.uses_server() {
+                tracing::info!("stopping transfer {id}: disconnected");
+                job.cancel.cancel();
+            }
         }
-        let Some(item) = self.items.get(id) else {
+        self.interrupted.clear();
+        if let Some(connection) = &connection {
+            let in_list: Vec<String> = self
+                .shared
+                .borrow()
+                .jobs
+                .values()
+                .filter_map(|job| job.pending_key.clone())
+                .collect();
+            self.interrupted = self
+                .pending
+                .for_site(&connection.site_id)
+                .filter(|pending| !in_list.contains(&pending.key))
+                .cloned()
+                .collect();
+        }
+        let count = self.interrupted.len();
+        if count > 0 {
+            tracing::info!("{count} interrupted transfers can be resumed");
+        }
+        self.banner.set_visible(count > 0);
+        self.banner_text.set_label(&match count {
+            1 => String::from("1 transfer was interrupted and can be resumed."),
+            count => format!("{count} transfers were interrupted and can be resumed."),
+        });
+        self.placeholder.set_label(if connection.is_some() {
+            "No transfers yet"
+        } else {
+            crate::app::NOT_CONNECTED
+        });
+        self.connection = connection;
+    }
+
+    /// Ask the user what to do about a file already at the destination.
+    #[allow(clippy::too_many_arguments)]
+    fn ask_conflict(
+        &self,
+        root: &gtk::Box,
+        id: u64,
+        item: usize,
+        existing: transfer::FileInfo,
+        incoming: transfer::FileInfo,
+        reply: transfer::ConflictReply,
+        now: Instant,
+    ) {
+        let (name, dest) = {
+            let mut shared = self.shared.borrow_mut();
+            let Some(job) = shared.jobs.get_mut(&id) else {
+                return;
+            };
+            let dest = job.job.dest_dir.display().to_string();
+            let Some(state) = job.items.get_mut(item) else {
+                return;
+            };
+            state.asking = true;
+            let name = state.name.clone();
+            refresh(
+                &shared,
+                &[RowKey {
+                    job: id,
+                    item: Some(item),
+                }],
+                now,
+            );
+            (name, dest)
+        };
+        let Some(window) = root.root().and_downcast::<gtk::Window>() else {
             return;
         };
-        let done_text = match self.kind {
-            JobKind::Delete => String::from("Deleted"),
-            _ => format_size(item.size),
+        let shared = Rc::clone(&self.shared);
+        conflict_dialog::ask(&window, &name, &dest, existing, incoming, move |answer| {
+            if let Some(state) = shared
+                .borrow_mut()
+                .jobs
+                .get_mut(&id)
+                .and_then(|job| job.items.get_mut(item))
+            {
+                state.asking = false;
+            }
+            reply.answer(answer);
+        });
+    }
+
+    /// Show a job's items once its plan arrives.
+    fn show_plan(&mut self, id: u64, plan: &[PlanItem], now: Instant) {
+        let new_rows = {
+            let mut shared = self.shared.borrow_mut();
+            let Some(job) = shared.jobs.get_mut(&id) else {
+                return;
+            };
+            let expanded = plan.len() <= EXPAND_LIMIT;
+            let mut depths: Vec<i32> = Vec::with_capacity(plan.len());
+            job.items = plan
+                .iter()
+                .map(|item| {
+                    let depth = item.parent.map_or(0, |parent| depths[parent] + 1);
+                    depths.push(depth);
+                    ItemState {
+                        name: item.name.clone(),
+                        source: item.source.clone(),
+                        kind: item.kind,
+                        parent: item.parent,
+                        depth,
+                        size: item.size,
+                        done: 0,
+                        meter: (item.kind == ItemKind::Folder).then(|| RateMeter::new(now)),
+                        outcome: None,
+                        expanded,
+                        asking: false,
+                    }
+                })
+                .collect();
+            job.children = vec![Vec::new(); plan.len()];
+            job.roots.clear();
+            for item in plan {
+                match item.parent {
+                    Some(parent) => job.children[parent].push(item.id),
+                    None => job.roots.push(item.id),
+                }
+            }
+            job.total = plan
+                .iter()
+                .filter(|item| item.kind == ItemKind::File)
+                .map(|item| item.size)
+                .sum();
+            job.planned = true;
+            job.meter = RateMeter::new(now);
+            let rows = visible_below(
+                job,
+                RowKey {
+                    job: id,
+                    item: None,
+                },
+            );
+            refresh(
+                &shared,
+                &[RowKey {
+                    job: id,
+                    item: None,
+                }],
+                now,
+            );
+            rows
         };
-        item.widgets.finish(outcome, &done_text);
-        self.finished_items += 1;
-        self.refresh_header(now);
+        // The borrow is released first: adding rows makes GTK fill them right away.
+        if let Some(position) = self.position_of(RowKey {
+            job: id,
+            item: None,
+        }) {
+            let objects: Vec<glib::Object> = new_rows.into_iter().map(row_object).collect();
+            self.rows.splice(position + 1, 0, &objects);
+        }
     }
 
     /// The whole job finished.
-    fn job_finished(&mut self, summary: &JobSummary) {
-        self.finished = true;
-        self.cancel_button.set_visible(false);
-        self.header.status.set_visible(true);
-        // A job that went well folds to its header line; one with problems stays open
-        // so they can be seen.
-        if summary.failed == 0 && summary.cancelled == 0 && summary.error.is_none() {
-            set_expanded(&self.expander, &self.items_box, false);
+    fn job_finished(&mut self, id: u64, summary: JobSummary, now: Instant) {
+        let (fold, forget) = {
+            let mut shared = self.shared.borrow_mut();
+            let Some(job) = shared.jobs.get_mut(&id) else {
+                return;
+            };
+            let complete = summary.is_complete();
+            // Nothing left to resume: done, or the user chose to stop it.
+            let forget = (complete || job.user_cancelled)
+                .then(|| job.pending_key.clone())
+                .flatten();
+            // A job that went well folds to its header line; one with problems stays
+            // open so they can be seen.
+            let fold = complete && job.expanded;
+            job.summary = Some(summary);
+            refresh(
+                &shared,
+                &[RowKey {
+                    job: id,
+                    item: None,
+                }],
+                now,
+            );
+            (fold, forget)
+        };
+        if let Some(key) = forget {
+            self.pending.remove(&key);
+            self.save_pending();
         }
-        let outcome = if let Some(error) = &summary.error {
-            ItemOutcome::Failed(error.clone())
-        } else if summary.failed > 0 {
-            ItemOutcome::Failed(format!(
-                "{} done, {} failed{}",
-                summary.done,
-                summary.failed,
-                cancelled_text(summary)
-            ))
-        } else if summary.cancelled > 0 {
-            ItemOutcome::Cancelled
-        } else {
-            ItemOutcome::Done
-        };
-        let done_text = match self.kind {
-            JobKind::Delete => format!("{} deleted", items_text(summary.done)),
-            _ => format!("{} · {}", items_text(summary.done), format_size(self.total)),
-        };
-        self.header.finish(&outcome, &done_text);
-        if summary.cancelled > 0 && summary.failed == 0 && summary.error.is_none() {
-            self.header.info.set_label(&format!(
-                "Cancelled: {} done{}",
-                summary.done,
-                cancelled_text(summary)
-            ));
+        if fold {
+            self.toggle(RowKey {
+                job: id,
+                item: None,
+            });
         }
     }
 
-    /// Update the header's bar and text.
-    fn refresh_header(&self, now: Instant) {
-        if self.finished {
+    /// Expand or collapse a job or folder.
+    fn toggle(&mut self, key: RowKey) {
+        let Some(position) = self.position_of(key) else {
             return;
+        };
+        let (removed, added) = {
+            let mut shared = self.shared.borrow_mut();
+            let Some(job) = shared.jobs.get_mut(&key.job) else {
+                return;
+            };
+            let before = visible_below(job, key).len();
+            match key.item {
+                None => job.expanded = !job.expanded,
+                Some(item) => {
+                    if let Some(state) = job.items.get_mut(item) {
+                        state.expanded = !state.expanded;
+                    }
+                }
+            }
+            let after = visible_below(job, key);
+            refresh(&shared, &[key], Instant::now());
+            (before, after)
+        };
+        let objects: Vec<glib::Object> = added.into_iter().map(row_object).collect();
+        // `splice` counts in u32; a job never has anywhere near 4 billion rows.
+        let removed = u32::try_from(removed).unwrap_or(u32::MAX);
+        self.rows.splice(position + 1, removed, &objects);
+    }
+
+    /// Remove a job's rows from the list.
+    fn remove_rows(&mut self, id: u64) {
+        let Some(start) = self.position_of(RowKey {
+            job: id,
+            item: None,
+        }) else {
+            return;
+        };
+        let mut end = start + 1;
+        while self
+            .rows
+            .item(end)
+            .is_some_and(|object| row_key(&object).is_some_and(|key| key.job == id))
+        {
+            end += 1;
         }
-        if self.kind == JobKind::Delete {
-            let total = self.items.len();
-            self.header
-                .bar
-                .set_fraction(transfer::fraction(self.finished_items as u64, total as u64));
-            self.header
-                .info
-                .set_label(&format!("{} of {total} deleted", self.finished_items));
-        } else {
-            self.header
-                .bar
-                .set_fraction(transfer::fraction(self.done, self.total));
-            self.header
-                .info
-                .set_label(&self.meter.describe(self.done, self.total, now));
+        self.rows.splice(start, end - start, &[] as &[glib::Object]);
+    }
+
+    /// Position of a row in the list.
+    fn position_of(&self, key: RowKey) -> Option<u32> {
+        (0..self.rows.n_items()).find(|&position| {
+            self.rows.item(position).and_then(|object| row_key(&object)) == Some(key)
+        })
+    }
+
+    /// Show the placeholder only while the list is empty, enable "Clear Finished" while
+    /// there is something to clear, and tell the main window how many jobs run.
+    fn update_chrome(&mut self, sender: &ComponentSender<Self>) {
+        let (empty, any_finished, running) = {
+            let shared = self.shared.borrow();
+            (
+                shared.jobs.is_empty(),
+                shared.jobs.values().any(|job| !job.is_running()),
+                shared.jobs.values().filter(|job| job.is_running()).count(),
+            )
+        };
+        self.placeholder.set_visible(empty);
+        self.clear_button.set_sensitive(any_finished);
+        if running != self.running {
+            self.running = running;
+            let _ = sender.output(TransferPanelOutput::Running(running));
+        }
+    }
+
+    /// Write the unfinished-transfers file, logging (not failing) on error.
+    fn save_pending(&self) {
+        if let Err(error) = self.pending.save(&self.pending_path) {
+            tracing::warn!("cannot record unfinished transfers: {error}");
         }
     }
 }
 
-/// Show an item's byte progress.
-fn show_bytes(item: &ItemView, now: Instant) {
-    item.widgets
-        .bar
-        .set_fraction(transfer::fraction(item.done, item.size));
-    let text = item.meter.as_ref().map_or_else(
-        || format!("{}%", transfer::percent(item.done, item.size)),
-        |meter| meter.describe(item.done, item.size, now),
-    );
-    item.widgets.info.set_label(&text);
+/// A list item holding a row key.
+fn row_object(key: RowKey) -> glib::Object {
+    glib::BoxedAnyObject::new(key).upcast()
 }
 
-/// " (n cancelled)" when some items were cancelled, else nothing.
-fn cancelled_text(summary: &JobSummary) -> String {
-    if summary.cancelled > 0 {
-        format!(", {} cancelled", summary.cancelled)
+/// The row key held by a list item.
+fn row_key(object: &glib::Object) -> Option<RowKey> {
+    object
+        .downcast_ref::<glib::BoxedAnyObject>()
+        .and_then(|boxed| boxed.try_borrow::<RowKey>().ok().map(|key| *key))
+}
+
+/// The rows shown under `key` while it is expanded (none if it is collapsed), in tree
+/// order.
+fn visible_below(job: &JobState, key: RowKey) -> Vec<RowKey> {
+    let (expanded, start): (bool, &[usize]) = match key.item {
+        None => (job.expanded, &job.roots),
+        Some(item) => (
+            job.items.get(item).is_some_and(|state| state.expanded),
+            job.children.get(item).map_or(&[], Vec::as_slice),
+        ),
+    };
+    let mut rows = Vec::new();
+    if !expanded {
+        return rows;
+    }
+    // Depth-first, keeping the plan's order among siblings.
+    let mut stack: Vec<usize> = start.iter().rev().copied().collect();
+    while let Some(item) = stack.pop() {
+        rows.push(RowKey {
+            job: key.job,
+            item: Some(item),
+        });
+        if job.items[item].expanded {
+            stack.extend(job.children[item].iter().rev().copied());
+        }
+    }
+    rows
+}
+
+/// Record a file's progress, and add it to the folders it is in and the job.
+///
+/// # Returns
+///
+/// The rows to redraw
+fn progress(shared: &mut Shared, id: u64, item: usize, done: u64, now: Instant) -> Vec<RowKey> {
+    let Some(job) = shared.jobs.get_mut(&id) else {
+        return Vec::new();
+    };
+    let Some(state) = job.items.get_mut(item) else {
+        return Vec::new();
+    };
+    let added = done.saturating_sub(state.done);
+    state.done = done;
+    state
+        .meter
+        .get_or_insert_with(|| RateMeter::starting_from(now, done))
+        .record(done, now);
+    let mut changed = vec![RowKey {
+        job: id,
+        item: Some(item),
+    }];
+    let mut parent = state.parent;
+    while let Some(folder_id) = parent {
+        let Some(folder) = job.items.get_mut(folder_id) else {
+            break;
+        };
+        folder.done += added;
+        if let Some(meter) = &mut folder.meter {
+            meter.record(folder.done, now);
+        }
+        changed.push(RowKey {
+            job: id,
+            item: Some(folder_id),
+        });
+        parent = folder.parent;
+    }
+    job.done += added;
+    job.meter.record(job.done, now);
+    changed.push(RowKey {
+        job: id,
+        item: None,
+    });
+    changed
+}
+
+/// A file continues an earlier copy: count its first `from` bytes as done, for it, the
+/// folders it is in and the job, without counting them towards their speeds.
+///
+/// # Returns
+///
+/// The rows to redraw
+fn resumed(shared: &mut Shared, id: u64, item: usize, from: u64, now: Instant) -> Vec<RowKey> {
+    let Some(job) = shared.jobs.get_mut(&id) else {
+        return Vec::new();
+    };
+    let Some(state) = job.items.get_mut(item) else {
+        return Vec::new();
+    };
+    state.done = from;
+    state.meter = Some(RateMeter::starting_from(now, from));
+    let mut changed = vec![RowKey {
+        job: id,
+        item: Some(item),
+    }];
+    let mut parent = state.parent;
+    while let Some(folder_id) = parent {
+        let Some(folder) = job.items.get_mut(folder_id) else {
+            break;
+        };
+        folder.done += from;
+        if let Some(meter) = &mut folder.meter {
+            meter.add_done_earlier(from);
+        }
+        changed.push(RowKey {
+            job: id,
+            item: Some(folder_id),
+        });
+        parent = folder.parent;
+    }
+    job.done += from;
+    job.meter.add_done_earlier(from);
+    changed.push(RowKey {
+        job: id,
+        item: None,
+    });
+    changed
+}
+
+/// Record how an item ended.
+///
+/// # Returns
+///
+/// The rows to redraw
+fn item_finished(
+    shared: &mut Shared,
+    id: u64,
+    item: usize,
+    outcome: ItemOutcome,
+    now: Instant,
+) -> Vec<RowKey> {
+    // A finished file counts in full, even if its last progress report was skipped.
+    let full = shared
+        .jobs
+        .get(&id)
+        .and_then(|job| job.items.get(item))
+        .filter(|state| outcome == ItemOutcome::Done && state.kind == ItemKind::File)
+        .map(|state| state.size);
+    let mut changed = match full {
+        Some(size) => progress(shared, id, item, size, now),
+        None => vec![RowKey {
+            job: id,
+            item: None,
+        }],
+    };
+    if let Some(job) = shared.jobs.get_mut(&id) {
+        job.finished_items += 1;
+        if let Some(state) = job.items.get_mut(item) {
+            state.outcome = Some(outcome);
+            state.asking = false;
+        }
+    }
+    changed.push(RowKey {
+        job: id,
+        item: Some(item),
+    });
+    changed
+}
+
+/// Redraw the given rows, if they are on screen.
+fn refresh(shared: &Shared, keys: &[RowKey], now: Instant) {
+    for key in keys {
+        if let Some(widgets) = shared.bound.get(key) {
+            fill(widgets, shared, *key, now);
+        }
+    }
+}
+
+/// What a row shows.
+struct RowView {
+    indent: i32,
+    expandable: bool,
+    expanded: bool,
+    icon: &'static str,
+    name: String,
+    tooltip: String,
+    heading: bool,
+    fraction: Option<f64>,
+    info: String,
+    error: bool,
+    status: Option<&'static str>,
+    can_cancel: bool,
+    can_retry: bool,
+}
+
+/// Show a row's current state in its widgets.
+fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
+    let Some(job) = shared.jobs.get(&key.job) else {
+        return;
+    };
+    let row = match key.item {
+        None => job_row(job, now),
+        Some(item) => match job.items.get(item) {
+            Some(state) => item_row(job, state, now),
+            None => return,
+        },
+    };
+    widgets.key.set(Some(key));
+    widgets.indent.set_size_request(row.indent, -1);
+    widgets.expander.set_visible(row.expandable);
+    widgets.expander.set_icon_name(if row.expanded {
+        "pan-down-symbolic"
     } else {
-        String::new()
+        "pan-end-symbolic"
+    });
+    widgets.icon.set_icon_name(Some(row.icon));
+    widgets.name.set_label(&row.name);
+    widgets.name.set_tooltip_text(Some(&row.tooltip));
+    set_class(&widgets.name, "heading", row.heading);
+    widgets.bar.set_visible(row.fraction.is_some());
+    widgets.bar.set_fraction(row.fraction.unwrap_or(0.0));
+    widgets.info.set_label(&row.info);
+    widgets.info.set_tooltip_text(Some(&row.info));
+    set_class(&widgets.info, "error", row.error);
+    widgets.status.set_icon_name(row.status);
+    widgets.cancel.set_visible(row.can_cancel);
+    widgets.retry.set_visible(row.can_retry);
+    widgets
+        .status
+        .set_visible(!row.can_cancel && !row.can_retry);
+}
+
+/// Add or remove a CSS class.
+fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
+    if on {
+        widget.add_css_class(class);
+    } else {
+        widget.remove_css_class(class);
+    }
+}
+
+/// A job's header line.
+fn job_row(job: &JobState, now: Instant) -> RowView {
+    let deleting = job.job.kind == JobKind::Delete;
+    let icon = match (job.job.kind, job.job.side) {
+        (JobKind::Delete, _) => "user-trash-symbolic",
+        (_, Side::Local) => "go-up-symbolic",
+        (_, Side::Remote) => "go-down-symbolic",
+    };
+    let fraction = if deleting {
+        transfer::fraction(job.finished_items as u64, job.items.len() as u64)
+    } else {
+        transfer::fraction(job.done, job.total)
+    };
+    let (info, error, status) = match &job.summary {
+        None if !job.planned => (String::from("Preparing..."), false, None),
+        None if deleting => (
+            format!("{} of {} deleted", job.finished_items, job.items.len()),
+            false,
+            None,
+        ),
+        None => (job.meter.describe(job.done, job.total, now), false, None),
+        Some(summary) => summary_text(job, summary),
+    };
+    let title = if job.job.resume {
+        format!("{} (resumed)", job.job.title())
+    } else {
+        job.job.title()
+    };
+    RowView {
+        indent: 0,
+        expandable: job.planned && !job.roots.is_empty(),
+        expanded: job.expanded,
+        icon,
+        tooltip: title.clone(),
+        name: title,
+        heading: true,
+        fraction: Some(match &job.summary {
+            Some(summary) if summary.is_complete() => 1.0,
+            _ => fraction,
+        }),
+        info,
+        error,
+        status,
+        can_cancel: job.is_running(),
+        can_retry: job
+            .summary
+            .as_ref()
+            .is_some_and(|summary| !summary.is_complete()),
+    }
+}
+
+/// The text, error flag and icon of a finished job.
+fn summary_text(job: &JobState, summary: &JobSummary) -> (String, bool, Option<&'static str>) {
+    let count = |count: usize, what: &str| {
+        if count > 0 {
+            format!(", {count} {what}")
+        } else {
+            String::new()
+        }
+    };
+    let (cancelled, skipped) = (
+        count(summary.cancelled, "cancelled"),
+        count(summary.skipped, "skipped"),
+    );
+    if let Some(error) = &summary.error {
+        (error.clone(), true, Some(FAILED_ICON))
+    } else if summary.failed > 0 {
+        (
+            format!(
+                "{} done, {} failed{cancelled}{skipped}",
+                summary.done, summary.failed
+            ),
+            true,
+            Some(FAILED_ICON),
+        )
+    } else if summary.cancelled > 0 {
+        (
+            format!("Cancelled: {} done{cancelled}{skipped}", summary.done),
+            false,
+            Some(STOPPED_ICON),
+        )
+    } else if job.job.kind == JobKind::Delete {
+        (
+            format!("{} deleted", items_text(summary.done)),
+            false,
+            Some(DONE_ICON),
+        )
+    } else {
+        (
+            format!(
+                "{} · {}{skipped}",
+                items_text(summary.done + summary.skipped),
+                format_size(job.total)
+            ),
+            false,
+            Some(DONE_ICON),
+        )
+    }
+}
+
+/// A file or folder line.
+fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
+    let deleting = job.job.kind == JobKind::Delete;
+    let (info, error, status) = match &item.outcome {
+        Some(ItemOutcome::Done) if deleting => (String::from("Deleted"), false, Some(DONE_ICON)),
+        Some(ItemOutcome::Done) => (format_size(item.size), false, Some(DONE_ICON)),
+        Some(ItemOutcome::Skipped) => (
+            String::from("Skipped: the existing file was kept"),
+            false,
+            Some(STOPPED_ICON),
+        ),
+        Some(ItemOutcome::Failed(error)) => (error.clone(), true, Some(FAILED_ICON)),
+        Some(ItemOutcome::Cancelled) => (String::from("Cancelled"), false, Some(STOPPED_ICON)),
+        None if item.asking => (
+            String::from("Already exists: waiting for your answer"),
+            false,
+            None,
+        ),
+        None if deleting => (String::new(), false, None),
+        None if item.kind == ItemKind::File && item.meter.is_none() => {
+            (String::from("Waiting"), false, None)
+        }
+        None => (
+            item.meter.as_ref().map_or_else(
+                || format!("{}%", transfer::percent(item.done, item.size)),
+                |meter| meter.describe(item.done, item.size, now),
+            ),
+            false,
+            None,
+        ),
+    };
+    RowView {
+        indent: (item.depth + 1) * INDENT,
+        expandable: item.kind == ItemKind::Folder,
+        expanded: item.expanded,
+        icon: match item.kind {
+            ItemKind::Folder => "folder",
+            ItemKind::File => "text-x-generic",
+        },
+        name: item.name.clone(),
+        tooltip: item.source.display().to_string(),
+        heading: false,
+        fraction: (!deleting).then(|| match item.outcome {
+            Some(ItemOutcome::Done) => 1.0,
+            _ => transfer::fraction(item.done, item.size),
+        }),
+        info,
+        error,
+        status,
+        can_cancel: false,
+        can_retry: false,
     }
 }
 
@@ -557,16 +1158,74 @@ fn items_text(count: usize) -> String {
     }
 }
 
-/// One line of the list: icon, name, progress bar, text and result icon.
-///
-/// # Returns
-///
-/// The line, its updatable widgets, and its name label
-fn row_line(icon: &str, name: &str) -> (gtk::Box, RowWidgets, gtk::Label) {
+/// The factory that builds, fills and recycles the list's rows.
+fn row_factory(shared: &Rc<RefCell<Shared>>) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    // The widgets of each row, by the address of its list item (stable while it lives).
+    let rows: Rc<RefCell<HashMap<usize, RowWidgets>>> = Rc::default();
+    let address = |list_item: &gtk::ListItem| list_item.as_ptr() as usize;
+    {
+        let rows = Rc::clone(&rows);
+        factory.connect_setup(move |_, object| {
+            let list_item = object;
+            let (root, widgets) = build_row();
+            list_item.set_child(Some(&root));
+            list_item.set_activatable(false);
+            rows.borrow_mut().insert(address(object), widgets);
+        });
+    }
+    {
+        let (rows, shared) = (Rc::clone(&rows), Rc::clone(shared));
+        factory.connect_bind(move |_, object| {
+            let list_item = object;
+            let (Some(key), Some(widgets)) = (
+                list_item.item().as_ref().and_then(row_key),
+                rows.borrow().get(&address(object)).cloned(),
+            ) else {
+                return;
+            };
+            let mut shared = shared.borrow_mut();
+            shared.bound.insert(key, widgets.clone());
+            fill(&widgets, &shared, key, Instant::now());
+        });
+    }
+    {
+        let (rows, shared) = (Rc::clone(&rows), Rc::clone(shared));
+        factory.connect_unbind(move |_, object| {
+            let Some(widgets) = rows.borrow().get(&address(object)).cloned() else {
+                return;
+            };
+            if let Some(key) = widgets.key.take() {
+                let mut shared = shared.borrow_mut();
+                // Only if the row has not been bound to other widgets since.
+                if shared
+                    .bound
+                    .get(&key)
+                    .is_some_and(|bound| Rc::ptr_eq(&bound.key, &widgets.key))
+                {
+                    shared.bound.remove(&key);
+                }
+            }
+        });
+    }
+    factory.connect_teardown(move |_, object| {
+        rows.borrow_mut().remove(&address(object));
+    });
+    factory
+}
+
+/// Build one (empty) row: indent, expander, icon, name, bar, text, end slot.
+fn build_row() -> (gtk::Box, RowWidgets) {
+    let key: Rc<Cell<Option<RowKey>>> = Rc::default();
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     line.add_css_class("transfer-row");
-    let name_label = gtk::Label::builder()
-        .label(name)
+    let indent = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let expander = small_button("pan-down-symbolic", None);
+    let expander_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    expander_slot.set_size_request(EXPANDER_SLOT_WIDTH, -1);
+    expander_slot.append(&expander);
+    let icon = gtk::Image::new();
+    let name = gtk::Label::builder()
         .xalign(0.0)
         .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
@@ -584,37 +1243,85 @@ fn row_line(icon: &str, name: &str) -> (gtk::Box, RowWidgets, gtk::Label) {
         .css_classes(["dim-label", "transfer-info"])
         .build();
     let status = gtk::Image::new();
+    let cancel = small_button("window-close-symbolic", Some("Cancel"));
+    let retry = small_button(
+        "view-refresh-symbolic",
+        Some("Retry: continue where it stopped"),
+    );
     let end_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     end_slot.set_size_request(END_SLOT_WIDTH, -1);
     end_slot.append(&status);
-    line.append(&gtk::Image::from_icon_name(icon));
-    line.append(&name_label);
+    end_slot.append(&cancel);
+    end_slot.append(&retry);
+    line.append(&indent);
+    line.append(&expander_slot);
+    line.append(&icon);
+    line.append(&name);
     line.append(&bar);
     line.append(&info);
     line.append(&end_slot);
-    (line, RowWidgets { bar, info, status }, name_label)
+
+    // The buttons trigger the panel's actions with the row they currently show.
+    let send = |button: &gtk::Button, action: &'static str| {
+        let key = Rc::clone(&key);
+        button.connect_clicked(move |button| {
+            let Some(RowKey { job, item }) = key.get() else {
+                return;
+            };
+            // -1 stands for "the job itself" in the action's parameter.
+            let item = item.map_or(-1, |item| i64::try_from(item).unwrap_or(-1));
+            let _ = button.activate_action(
+                &format!("{ACTION_GROUP}.{action}"),
+                Some(&(job, item).to_variant()),
+            );
+        });
+    };
+    send(&expander, "toggle");
+    send(&cancel, "cancel");
+    send(&retry, "retry");
+    (
+        line,
+        RowWidgets {
+            key,
+            indent,
+            expander,
+            icon,
+            name,
+            bar,
+            info,
+            status,
+            cancel,
+            retry,
+        },
+    )
 }
 
-/// A small arrow button that shows or hides a folder's (or job's) contents.
-fn expander(children: &gtk::Box, expanded: bool) -> gtk::Button {
+/// A small flat icon button.
+fn small_button(icon: &str, tooltip: Option<&str>) -> gtk::Button {
     let button = gtk::Button::builder()
+        .icon_name(icon)
         .has_frame(false)
         .css_classes(["tab-close"])
         .build();
-    set_expanded(&button, children, expanded);
-    let children = children.clone();
-    button.connect_clicked(move |button| {
-        set_expanded(button, &children, !children.is_visible());
-    });
+    button.set_tooltip_text(tooltip);
     button
 }
 
-/// Show or hide an expander's contents, pointing its arrow to match.
-fn set_expanded(expander: &gtk::Button, children: &gtk::Box, open: bool) {
-    children.set_visible(open);
-    expander.set_icon_name(if open {
-        "pan-down-symbolic"
-    } else {
-        "pan-end-symbolic"
-    });
+/// The panel's actions, triggered by the row buttons with a (job, item) parameter.
+fn register_actions(root: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
+    let group = gio::SimpleActionGroup::new();
+    let add = |name: &str, message: fn(u64, Option<usize>) -> TransferPanelMsg| {
+        let action = gio::SimpleAction::new(name, Some(&<(u64, i64)>::static_variant_type()));
+        let sender = sender.clone();
+        action.connect_activate(move |_, parameter| {
+            if let Some((job, item)) = parameter.and_then(|value| value.get::<(u64, i64)>()) {
+                sender.input(message(job, usize::try_from(item).ok()));
+            }
+        });
+        group.add_action(&action);
+    };
+    add("toggle", |job, item| TransferPanelMsg::Toggle { job, item });
+    add("cancel", |job, _| TransferPanelMsg::Cancel(job));
+    add("retry", |job, _| TransferPanelMsg::Retry(job));
+    root.insert_action_group(ACTION_GROUP, Some(&group));
 }

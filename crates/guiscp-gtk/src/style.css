@@ -281,3 +281,13 @@ button.tab-close {
 .transfer-panel .transfer-info {
     font-feature-settings: "tnum";
 }
+
+/* "Interrupted transfers can be resumed" bar above the transfers list. */
+.transfer-panel .transfer-banner {
+    padding: 3px 8px;
+    background-color: alpha(@accent_bg_color, 0.12);
+    border-bottom: 1px solid alpha(currentColor, 0.1);
+}
+.transfer-panel .transfer-list {
+    background: transparent;
+}

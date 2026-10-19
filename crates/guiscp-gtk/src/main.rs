@@ -3,10 +3,12 @@
 mod app;
 mod build_info;
 mod confirm_dialog;
+mod conflict_dialog;
 mod disk_picker;
 mod file_pane;
 mod log_tail;
 mod login_dialog;
+mod name_dialog;
 mod passphrase_dialog;
 mod resize_grips;
 mod theme;

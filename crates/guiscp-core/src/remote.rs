@@ -14,7 +14,7 @@ use russh::client;
 use russh::keys::known_hosts::learn_known_hosts;
 use russh::keys::{HashAlg, PublicKeyOrCertificate, check_known_hosts};
 use russh_sftp::client::fs::{File, Metadata};
-use russh_sftp::protocol::FileAttributes;
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
 
 /// A server's SSH host key. Re-exported so front ends can pass keys around (for
 /// example after the user agrees to trust one) without depending on the SSH library.
@@ -271,14 +271,29 @@ impl Remote {
             .map_err(|error| format!("cannot open {text}: {error}"))
     }
 
-    /// Create a file for writing, emptying it if it exists.
-    pub(crate) async fn create(&self, path: &Path) -> Result<File, String> {
+    /// Open a file for writing, creating it if needed; `truncate` empties an existing
+    /// file, otherwise its contents are kept (to continue writing after them).
+    pub(crate) async fn open_write(&self, path: &Path, truncate: bool) -> Result<File, String> {
         let text = path_text(path);
+        let mut flags = OpenFlags::CREATE | OpenFlags::WRITE;
+        if truncate {
+            flags |= OpenFlags::TRUNCATE;
+        }
         self.0
             .sftp
-            .create(text.clone())
+            .open_with_flags(text.clone(), flags)
             .await
-            .map_err(|error| format!("cannot create {text}: {error}"))
+            .map_err(|error| format!("cannot write {text}: {error}"))
+    }
+
+    /// Rename `from` to `to`. Most servers refuse if `to` exists.
+    pub(crate) async fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
+        let (from_text, to_text) = (path_text(from), path_text(to));
+        self.0
+            .sftp
+            .rename(from_text.clone(), to_text.clone())
+            .await
+            .map_err(|error| format!("cannot rename {from_text} to {to_text}: {error}"))
     }
 
     /// Create a folder; an existing folder is fine.

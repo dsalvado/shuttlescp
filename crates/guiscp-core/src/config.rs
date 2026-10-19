@@ -155,6 +155,17 @@ pub fn config_dir() -> PathBuf {
         .join("guiscp")
 }
 
+/// The app's folder for state it keeps between runs (logs, unfinished transfers):
+/// `$XDG_STATE_HOME/guiscp` on Linux (usually `~/.local/state/guiscp`), and the
+/// platform's local data folder elsewhere.
+pub fn state_dir() -> PathBuf {
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+        .unwrap_or_default()
+        .join("guiscp")
+}
+
 /// Read a JSON file into `T`.
 ///
 /// # Arguments

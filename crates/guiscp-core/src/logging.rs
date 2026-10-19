@@ -180,11 +180,7 @@ impl Logger {
 /// (`~/.local/state/guiscp/logs/guiscp.log` when the variable is unset), and the
 /// platform's local app-data folder elsewhere.
 pub fn default_log_path() -> PathBuf {
-    dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
-        .unwrap_or_default()
-        .join(APP_TARGET)
+    crate::config::state_dir()
         .join("logs")
         .join(format!("{APP_TARGET}.log"))
 }

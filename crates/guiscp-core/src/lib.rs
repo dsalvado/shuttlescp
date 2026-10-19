@@ -8,6 +8,7 @@
 //! * [`secrets`] - passwords in the system's password store
 //! * [`remote`] - SSH host-key checks, login and SFTP listing
 //! * [`transfer`] - copying, moving and deleting files and folders, with progress
+//! * [`pending`] - unfinished transfers, kept so they can be resumed
 //! * [`session`] - the login, export and import workflows
 //! * [`entry`] / [`local_fs`] / [`disks`] - files, local folders and disks
 //! * [`logging`] / [`log_reader`] - the log file and following it live
@@ -22,6 +23,7 @@ pub mod format;
 pub mod local_fs;
 pub mod log_reader;
 pub mod logging;
+pub mod pending;
 pub mod remote;
 pub mod secrets;
 pub mod session;

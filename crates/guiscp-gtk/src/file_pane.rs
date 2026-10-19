@@ -1,6 +1,6 @@
 //! A file explorer pane: refresh button, disk drop-down, path label and a sortable column
-//! view whose first row, "..", goes up one folder. Right-clicking selected files offers
-//! to copy, move or delete them.
+//! view whose first row, "..", goes up one folder. Right-clicking offers to copy, move,
+//! rename or delete the selected items, or to create a folder.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -19,9 +19,10 @@ use guiscp_core::entry::{EntryKind, FileEntry};
 use guiscp_core::format::{format_modified, format_size};
 use guiscp_core::local_fs;
 use guiscp_core::remote::Remote;
-use guiscp_core::transfer::{JobKind, Side};
+use guiscp_core::transfer::{self, JobKind, Side};
 
 use crate::disk_picker::DiskPicker;
+use crate::name_dialog::{self, NamePrompt};
 
 /// Up-arrow picture drawn over the folder icon of the ".." row, embedded at compile time.
 const UP_ARROW_SVG: &[u8] = include_bytes!("icons/up-arrow.svg");
@@ -47,6 +48,11 @@ const ACTION_GROUP: &str = "pane";
 /// Action a right-click on a row triggers, with the row's position and the click's
 /// coordinates in the column view.
 const CONTEXT_MENU_ACTION: &str = "context-menu";
+/// CSS class marking the cells of the file list, to tell a right-click on a row from
+/// one on the empty space below the rows.
+const CELL_CLASS: &str = "pane-cell";
+/// Name suggested for a new folder.
+const NEW_FOLDER_NAME: &str = "New Folder";
 
 thread_local! {
     // Decoded once and shared by every ".." row. `thread_local!` because GTK objects live
@@ -68,10 +74,11 @@ pub enum FilePaneMsg {
     DiskSelected(u32),
     /// A disk was mounted, unmounted or renamed.
     DisksChanged,
-    /// A row was right-clicked: show the context menu at (`x`, `y`) in the column view.
+    /// A row (or the empty space below the rows) was right-clicked: show the context
+    /// menu at (`x`, `y`) in the column view.
     ContextMenu {
-        /// Position of the row in the sorted view.
-        position: u32,
+        /// Position of the row in the sorted view; `None` for the empty space.
+        position: Option<u32>,
         /// Click position in the column view.
         x: f64,
         /// Click position in the column view.
@@ -81,6 +88,19 @@ pub enum FilePaneMsg {
     Request(JobKind),
     /// Whether there is somewhere to copy to (for the local pane: a connected server).
     PeerAvailable(bool),
+    /// Ask for a name and create a folder in the current folder.
+    NewFolder,
+    /// Ask for a new name for the selected item.
+    Rename,
+    /// Create a folder with this name in the current folder.
+    CreateFolder(String),
+    /// Rename an item.
+    RenameTo {
+        /// The item.
+        path: PathBuf,
+        /// Its new name.
+        name: String,
+    },
 }
 
 /// What a [`FilePane`] starts with.
@@ -114,7 +134,16 @@ pub enum FilePaneOutput {
     },
 }
 
-/// Result of a background directory listing, delivered back to the UI thread.
+/// Results of background work, delivered back to the UI thread.
+#[derive(Debug)]
+pub enum PaneCommand {
+    /// A directory listing.
+    Listing(Listing),
+    /// A folder was created or an item renamed: what happened, or what went wrong.
+    Operation(Result<String, String>),
+}
+
+/// Result of a background directory listing.
 #[derive(Debug)]
 pub struct Listing {
     dir: PathBuf,
@@ -151,8 +180,20 @@ pub struct FilePane {
     remote: Option<Remote>,
     /// Right-click menu of the selected items.
     context_menu: gtk::PopoverMenu,
-    /// The menu's copy and move actions, enabled while there is somewhere to copy to.
-    copy_actions: [gio::SimpleAction; 2],
+    /// The menu's actions, enabled to suit the selection before it opens.
+    actions: PaneActions,
+    /// Whether there is somewhere to copy to (for the local pane: a connected server).
+    peer_available: bool,
+    /// What the last operation did, shown with the next listing's item count.
+    notice: Option<String>,
+}
+
+/// The actions of the right-click menu.
+struct PaneActions {
+    copy: gio::SimpleAction,
+    move_: gio::SimpleAction,
+    delete: gio::SimpleAction,
+    rename: gio::SimpleAction,
 }
 
 impl FilePane {
@@ -169,18 +210,48 @@ impl FilePane {
         self.status = String::from("Loading...");
         match self.remote.clone() {
             Some(remote) => sender.oneshot_command(async move {
-                Listing {
+                PaneCommand::Listing(Listing {
                     result: remote.list_dir(&dir).await,
                     dir,
-                }
+                })
             }),
             // `move` transfers ownership of `dir` into the closure, which runs on another
             // thread.
-            None => sender.spawn_oneshot_command(move || Listing {
-                result: local_fs::list_dir(&dir).map_err(|error| error.to_string()),
-                dir,
+            None => sender.spawn_oneshot_command(move || {
+                PaneCommand::Listing(Listing {
+                    result: local_fs::list_dir(&dir).map_err(|error| error.to_string()),
+                    dir,
+                })
             }),
         }
+    }
+
+    /// Enable the menu's actions to suit the selection: copying needs a selection and
+    /// somewhere to copy to, renaming exactly one selected item.
+    fn update_actions(&self) {
+        let selected = self.selected_paths().len();
+        self.actions
+            .copy
+            .set_enabled(self.peer_available && selected > 0);
+        self.actions
+            .move_
+            .set_enabled(self.peer_available && selected > 0);
+        self.actions.delete.set_enabled(selected > 0);
+        self.actions.rename.set_enabled(selected == 1);
+    }
+
+    /// Ask for a name over the pane's window, then send the message `on_name` makes.
+    fn ask_name(
+        root: &gtk::Box,
+        wording: NamePrompt<'_>,
+        sender: &ComponentSender<Self>,
+        on_name: impl Fn(String) -> FilePaneMsg + 'static,
+    ) {
+        let Some(window) = root.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let sender = sender.clone();
+        name_dialog::ask(&window, wording, move |name| sender.input(on_name(name)));
     }
 
     /// Full paths of the selected files and folders ("..", if selected, is left out).
@@ -237,7 +308,7 @@ impl Component for FilePane {
     type Init = FilePaneInit;
     type Input = FilePaneMsg;
     type Output = FilePaneOutput;
-    type CommandOutput = Listing;
+    type CommandOutput = PaneCommand;
 
     view! {
         gtk::Box {
@@ -337,24 +408,22 @@ impl Component for FilePane {
         } else {
             Side::Local
         };
-        let (context_menu, copy_actions) = context_menu(&root, side, &sender);
-        // The local pane has nowhere to copy to until a server is connected.
-        for action in &copy_actions {
-            action.set_enabled(side == Side::Remote);
-        }
+        let (context_menu, actions) = context_menu(&root, side, &sender);
         let keys = gtk::EventControllerKey::new();
         {
             let sender = sender.clone();
             keys.connect_key_pressed(move |_, key, _, _| {
-                if key == gdk::Key::Delete {
-                    sender.input(FilePaneMsg::Request(JobKind::Delete));
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
+                let message = match key {
+                    gdk::Key::Delete => FilePaneMsg::Request(JobKind::Delete),
+                    gdk::Key::F2 => FilePaneMsg::Rename,
+                    _ => return glib::Propagation::Proceed,
+                };
+                sender.input(message);
+                glib::Propagation::Stop
             });
         }
         entries.view.add_controller(keys);
+        attach_empty_space_click(&entries.view, &sender);
 
         let mut model = Self {
             current_dir: start_dir.clone(),
@@ -365,7 +434,10 @@ impl Component for FilePane {
             last_dir_on_disk,
             remote,
             context_menu,
-            copy_actions,
+            actions,
+            // The local pane has nowhere to copy to until a server is connected.
+            peer_available: side == Side::Remote,
+            notice: None,
         };
         model.request_listing(start_dir, &sender);
 
@@ -420,19 +492,28 @@ impl Component for FilePane {
                 self.request_listing(target, &sender);
             }
             FilePaneMsg::ContextMenu { position, x, y } => {
-                let is_entry = self
-                    .entries
-                    .get_visible(position)
-                    .is_some_and(|item| matches!(&*item.borrow(), Row::Entry { .. }));
-                if !is_entry {
-                    return;
-                }
-                // Right-clicking outside the selection selects just that row, as file
-                // managers do; inside it, the whole selection is kept.
                 let selection = &self.entries.selection_model;
-                if !selection.is_selected(position) {
-                    selection.select_item(position, true);
+                match position {
+                    Some(position) => {
+                        let is_entry = self
+                            .entries
+                            .get_visible(position)
+                            .is_some_and(|item| matches!(&*item.borrow(), Row::Entry { .. }));
+                        if !is_entry {
+                            return;
+                        }
+                        // Right-clicking outside the selection selects just that row, as
+                        // file managers do; inside it, the whole selection is kept.
+                        if !selection.is_selected(position) {
+                            selection.select_item(position, true);
+                        }
+                    }
+                    // The empty space below the rows: a menu for the folder itself.
+                    None => {
+                        selection.unselect_all();
+                    }
                 }
+                self.update_actions();
                 let point = self
                     .entries
                     .view
@@ -448,17 +529,69 @@ impl Component for FilePane {
             }
             FilePaneMsg::Request(kind) => {
                 let paths = self.selected_paths();
-                let allowed = kind == JobKind::Delete || self.copy_actions[0].is_enabled();
+                let allowed = kind == JobKind::Delete || self.peer_available;
                 if paths.is_empty() || !allowed {
                     return;
                 }
                 tracing::debug!("{kind:?} requested for {} items", paths.len());
                 let _ = sender.output(FilePaneOutput::Request { kind, paths });
             }
-            FilePaneMsg::PeerAvailable(available) => {
-                for action in &self.copy_actions {
-                    action.set_enabled(available);
-                }
+            FilePaneMsg::PeerAvailable(available) => self.peer_available = available,
+            FilePaneMsg::NewFolder => Self::ask_name(
+                root,
+                NamePrompt {
+                    title: "New Folder",
+                    prompt: &format!("Create a folder in {}:", self.current_dir.display()),
+                    initial: NEW_FOLDER_NAME,
+                    confirm_label: "Create",
+                },
+                &sender,
+                FilePaneMsg::CreateFolder,
+            ),
+            FilePaneMsg::Rename => {
+                let paths = self.selected_paths();
+                let [path] = paths.as_slice() else {
+                    return;
+                };
+                let path = path.clone();
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Self::ask_name(
+                    root,
+                    NamePrompt {
+                        title: "Rename",
+                        prompt: &format!("New name for {name}:"),
+                        initial: &name,
+                        confirm_label: "Rename",
+                    },
+                    &sender,
+                    move |new_name| FilePaneMsg::RenameTo {
+                        path: path.clone(),
+                        name: new_name,
+                    },
+                );
+            }
+            FilePaneMsg::CreateFolder(name) => {
+                let (remote, dir) = (self.remote.clone(), self.current_dir.clone());
+                sender.oneshot_command(async move {
+                    PaneCommand::Operation(
+                        transfer::create_folder(remote.as_ref(), &dir, &name)
+                            .await
+                            .map(|_| format!("Created folder {name}")),
+                    )
+                });
+            }
+            FilePaneMsg::RenameTo { path, name } => {
+                let remote = self.remote.clone();
+                sender.oneshot_command(async move {
+                    PaneCommand::Operation(
+                        transfer::rename(remote.as_ref(), &path, &name)
+                            .await
+                            .map(|_| format!("Renamed to {name}")),
+                    )
+                });
             }
             FilePaneMsg::DisksChanged if self.remote.is_some() => {}
             FilePaneMsg::DisksChanged => {
@@ -482,10 +615,23 @@ impl Component for FilePane {
 
     fn update_cmd(
         &mut self,
-        listing: Self::CommandOutput,
+        command: Self::CommandOutput,
         sender: ComponentSender<Self>,
         _root: &Self::Root,
     ) {
+        let listing = match command {
+            PaneCommand::Listing(listing) => listing,
+            PaneCommand::Operation(Ok(notice)) => {
+                self.notice = Some(notice);
+                self.request_listing(self.current_dir.clone(), &sender);
+                return;
+            }
+            PaneCommand::Operation(Err(error)) => {
+                tracing::warn!("{error}");
+                self.status = error;
+                return;
+            }
+        };
         // A newer navigation superseded this listing before it finished.
         if listing.dir != self.requested_dir {
             tracing::trace!("dropping stale listing of {}", listing.dir.display());
@@ -493,9 +639,13 @@ impl Component for FilePane {
         }
         match listing.result {
             Ok(entries) => {
-                self.status = match entries.len() {
+                let count = match entries.len() {
                     1 => String::from("1 item"),
                     count => format!("{count} items"),
+                };
+                self.status = match self.notice.take() {
+                    Some(notice) => format!("{notice} · {count}"),
+                    None => count,
                 };
                 self.show_entries(&listing.dir, entries);
                 let disk_root = if self.remote.is_some() {
@@ -538,23 +688,27 @@ impl Component for FilePane {
 ///
 /// # Returns
 ///
-/// The menu, and its copy and move actions (to enable or disable)
+/// The menu, and its actions (to enable or disable)
 fn context_menu(
     root: &gtk::Box,
     side: Side,
     sender: &ComponentSender<FilePane>,
-) -> (gtk::PopoverMenu, [gio::SimpleAction; 2]) {
+) -> (gtk::PopoverMenu, PaneActions) {
     let group = gio::SimpleActionGroup::new();
-    let request = |name: &str, kind: JobKind| {
+    let add = |name: &str, message: fn() -> FilePaneMsg| {
         let action = gio::SimpleAction::new(name, None);
         let sender = sender.clone();
-        action.connect_activate(move |_, _| sender.input(FilePaneMsg::Request(kind)));
+        action.connect_activate(move |_, _| sender.input(message()));
         group.add_action(&action);
         action
     };
-    let copy = request("copy", JobKind::Copy);
-    let move_ = request("move", JobKind::Move);
-    request("delete", JobKind::Delete);
+    let actions = PaneActions {
+        copy: add("copy", || FilePaneMsg::Request(JobKind::Copy)),
+        move_: add("move", || FilePaneMsg::Request(JobKind::Move)),
+        delete: add("delete", || FilePaneMsg::Request(JobKind::Delete)),
+        rename: add("rename", || FilePaneMsg::Rename),
+    };
+    add("new-folder", || FilePaneMsg::NewFolder);
 
     // Triggered by the right-click handlers of the cells (see `attach_context_click`).
     let menu_action = gio::SimpleAction::new(
@@ -567,7 +721,11 @@ fn context_menu(
             if let Some((position, x, y)) =
                 parameter.and_then(|value| value.get::<(u32, f64, f64)>())
             {
-                sender.input(FilePaneMsg::ContextMenu { position, x, y });
+                sender.input(FilePaneMsg::ContextMenu {
+                    position: Some(position),
+                    x,
+                    y,
+                });
             }
         });
     }
@@ -581,10 +739,14 @@ fn context_menu(
     let transfer_section = gio::Menu::new();
     transfer_section.append(Some(copy_label), Some("pane.copy"));
     transfer_section.append(Some(move_label), Some("pane.move"));
+    let edit_section = gio::Menu::new();
+    edit_section.append(Some("_New Folder…"), Some("pane.new-folder"));
+    edit_section.append(Some("_Rename…"), Some("pane.rename"));
     let delete_section = gio::Menu::new();
     delete_section.append(Some("_Delete"), Some("pane.delete"));
     let menu = gio::Menu::new();
     menu.append_section(None, &transfer_section);
+    menu.append_section(None, &edit_section);
     menu.append_section(None, &delete_section);
 
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
@@ -596,7 +758,44 @@ fn context_menu(
         let popover = popover.clone();
         root.connect_destroy(move |_| popover.unparent());
     }
-    (popover, [copy, move_])
+    (popover, actions)
+}
+
+/// Make right-clicking the empty space below the rows open the context menu (with
+/// nothing selected, so it offers New Folder). Clicks on rows are left to their cells.
+///
+/// # Arguments
+///
+/// * `view` - The file list
+/// * `sender` - Receives the request for the menu
+fn attach_empty_space_click(view: &gtk::ColumnView, sender: &ComponentSender<FilePane>) {
+    let click = gtk::GestureClick::builder()
+        .button(gdk::BUTTON_SECONDARY)
+        .build();
+    let sender = sender.clone();
+    click.connect_pressed(move |gesture, _, x, y| {
+        let Some(view) = gesture.widget() else {
+            return;
+        };
+        // Walk up from the widget under the pointer: a cell means a row was clicked
+        // (its own handler opens the menu); a column title means the header was.
+        let mut widget = view.pick(x, y, gtk::PickFlags::DEFAULT);
+        while let Some(current) = widget {
+            if current.has_css_class(CELL_CLASS) || current.type_().name().contains("Title") {
+                return;
+            }
+            if current == view {
+                break;
+            }
+            widget = current.parent();
+        }
+        sender.input(FilePaneMsg::ContextMenu {
+            position: None,
+            x,
+            y,
+        });
+    });
+    view.add_controller(click);
 }
 
 /// Make right-clicking a cell open the pane's context menu for its row.
@@ -612,6 +811,7 @@ fn attach_context_click(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
     let click = gtk::GestureClick::builder()
         .button(gdk::BUTTON_SECONDARY)
         .build();
+    cell.add_css_class(CELL_CLASS);
     let item = item.downgrade();
     let cell_widget = cell.clone().upcast::<gtk::Widget>();
     click.connect_pressed(move |gesture, _, x, y| {

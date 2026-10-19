@@ -1,7 +1,9 @@
 //! Main window: menu bar on top, then one tab per session, each holding a local explorer
 //! on the left and a remote explorer on the right.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use relm4::actions::{AccelsPlus, RelmAction, RelmActionGroup};
 use relm4::gtk::prelude::*;
@@ -12,6 +14,7 @@ use guiscp_core::config::{Config, ThemeChoice, WindowSize};
 use guiscp_core::format::shorten_middle;
 use guiscp_core::local_fs;
 use guiscp_core::logging::{LogLevel, Logger};
+use guiscp_core::pending::PendingTransfers;
 use guiscp_core::remote::Remote;
 use guiscp_core::sites::{Site, SiteBook};
 use guiscp_core::transfer::{Job, JobKind, Side};
@@ -24,7 +27,9 @@ use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
 use crate::resize_grips;
 use crate::theme;
 use crate::theme_list::ThemeList;
-use crate::transfer_panel::{TransferPanel, TransferPanelMsg, TransferPanelOutput};
+use crate::transfer_panel::{
+    PanelConnection, TransferPanel, TransferPanelMsg, TransferPanelOutput,
+};
 
 /// Window size the first time the app opens; after that, the size it was closed at.
 const FIRST_WINDOW_SIZE: WindowSize = WindowSize {
@@ -99,8 +104,11 @@ pub enum AppMsg {
         /// Mount point of the disk holding `dir`.
         disk_root: Option<PathBuf>,
     },
-    /// Close the app; the text says why and is written to the log.
+    /// Close the app; the text says why and is written to the log. Asks first while
+    /// transfers are running (except when quitting on a signal).
     Quit(&'static str),
+    /// Close the app without asking (the user agreed to stop the transfers).
+    QuitNow(&'static str),
     /// Open the Login dialog.
     ShowLogin,
     /// The user changed whether the Login dialog opens at startup.
@@ -117,8 +125,11 @@ pub enum AppMsg {
     /// Close the connection (File > Disconnect).
     Disconnect,
     /// The session tab's X was clicked: disconnect and close the session. It is the
-    /// last (only) session tab, so the app exits.
+    /// last (only) session tab, so the app exits. Asks first while transfers are
+    /// running.
     CloseSession,
+    /// Close the session without asking.
+    CloseSessionNow,
     /// A file pane asked to copy, move or delete its selected items.
     PaneRequest {
         /// The pane's side.
@@ -132,6 +143,8 @@ pub enum AppMsg {
     StartJob(Job),
     /// A transfer finished: show the panes' new contents.
     TransferFinished,
+    /// The number of running transfers changed.
+    TransfersRunning(usize),
     /// The main window was resized, maximized or restored.
     WindowChanged {
         /// The window's normal size; `None` while maximized (its size then is the
@@ -150,10 +163,9 @@ struct Connection {
     host: String,
     /// Folder shown in the remote pane.
     dir: PathBuf,
-    /// The remote file pane; dropping it (with `remote`) closes the session.
+    /// The remote file pane; dropping it (and stopping the transfers, which hold the
+    /// session too) closes the session.
     pane: Controller<FilePane>,
-    /// The SFTP session, for transfers.
-    remote: Remote,
 }
 
 /// Root component of the application.
@@ -189,6 +201,10 @@ pub struct App {
     bottom_panel: gtk::Notebook,
     /// The main window, for dialogs.
     window: gtk::ApplicationWindow,
+    /// Transfers still running; shared with the window's close handler.
+    running_transfers: Rc<Cell<usize>>,
+    /// Set once quitting is decided, so closing the window no longer asks.
+    quitting: Rc<Cell<bool>>,
 }
 
 #[relm4::component(pub)]
@@ -363,12 +379,30 @@ impl SimpleComponent for App {
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
         let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
         placeholder.add_css_class("dim-label");
-        let transfers = TransferPanel::builder().launch(()).forward(
-            sender.input_sender(),
-            |output| match output {
+        let transfers = TransferPanel::builder()
+            .launch(PendingTransfers::default_path())
+            .forward(sender.input_sender(), |output| match output {
                 TransferPanelOutput::JobFinished => AppMsg::TransferFinished,
-            },
-        );
+                TransferPanelOutput::Running(count) => AppMsg::TransfersRunning(count),
+            });
+        let running_transfers = Rc::new(Cell::new(0));
+        let quitting = Rc::new(Cell::new(false));
+        {
+            // Closing the window while transfers run asks first (see `AppMsg::Quit`).
+            let (running, quitting, sender) = (
+                Rc::clone(&running_transfers),
+                Rc::clone(&quitting),
+                sender.clone(),
+            );
+            root.connect_close_request(move |_| {
+                if running.get() > 0 && !quitting.get() {
+                    sender.input(AppMsg::Quit(WINDOW_CLOSED));
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            });
+        }
         let (bottom_panel, transfer_tab) = bottom_panel(
             logger.file_path().map(Path::to_path_buf),
             transfers.widget().upcast_ref(),
@@ -434,6 +468,8 @@ impl SimpleComponent for App {
             transfers,
             bottom_panel: bottom_panel.clone(),
             window: root.clone(),
+            running_transfers,
+            quitting,
         };
         let widgets = view_output!();
         // The session's left/right split is the notebook's first page.
@@ -493,24 +529,39 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::Disconnect => self.disconnect(),
-            AppMsg::CloseSession => {
+            AppMsg::CloseSession if self.running_transfers.get() > 0 => {
+                self.confirm_stopping_transfers(
+                    "Close Session",
+                    "Close the session?",
+                    "Close Session",
+                    &sender,
+                    || AppMsg::CloseSessionNow,
+                );
+            }
+            AppMsg::CloseSession | AppMsg::CloseSessionNow => {
                 self.disconnect();
                 // There is only one session tab today, so closing it leaves none: exit,
                 // as WinSCP does when its last session closes.
-                tracing::info!("closing: {SESSION_TAB_CLOSED}");
-                self.exit_reason = SESSION_TAB_CLOSED;
-                relm4::main_application().quit();
+                self.quit(SESSION_TAB_CLOSED);
             }
             AppMsg::ShowLoginAtStartup(show) => {
                 tracing::info!("show Login dialog at startup: {show}");
                 self.config.set_show_login_at_startup(show);
                 self.save_config();
             }
-            AppMsg::Quit(reason) => {
-                tracing::info!("closing: {reason}");
-                self.exit_reason = reason;
-                relm4::main_application().quit();
+            AppMsg::Quit(reason)
+                if self.running_transfers.get() > 0
+                    && !QUIT_SIGNALS.iter().any(|&(_, signal)| signal == reason) =>
+            {
+                self.confirm_stopping_transfers(
+                    "Quit",
+                    "Quit GuiSCP?",
+                    "Quit",
+                    &sender,
+                    move || AppMsg::QuitNow(reason),
+                );
             }
+            AppMsg::Quit(reason) | AppMsg::QuitNow(reason) => self.quit(reason),
             AppMsg::LogLevelSelected(level) => {
                 self.logger.set_level(level);
                 self.config.set_log_level(self.logger.level());
@@ -520,6 +571,7 @@ impl SimpleComponent for App {
                 self.request_job(side, kind, paths, &sender);
             }
             AppMsg::StartJob(job) => self.start_job(job),
+            AppMsg::TransfersRunning(count) => self.running_transfers.set(count),
             AppMsg::TransferFinished => {
                 self.local_pane.emit(FilePaneMsg::Refresh);
                 if let Some(connection) = &self.connection {
@@ -584,10 +636,9 @@ impl App {
             }
             self.disconnect_action.set_enabled(false);
             self.transfer_tab.show_connection(None);
-            self.transfers.emit(TransferPanelMsg::ShowConnection(None));
-            // Transfers hold their own handle on the session; stop them so the
-            // connection really closes.
-            self.transfers.emit(TransferPanelMsg::CancelRemote);
+            // Transfers hold their own handle on the session; the panel stops them so
+            // the connection really closes. They can be resumed on the next connection.
+            self.transfers.emit(TransferPanelMsg::Connection(None));
             self.local_pane.emit(FilePaneMsg::PeerAvailable(false));
             // Dropping the pane drops its session, which closes the connection.
             drop(connection);
@@ -633,15 +684,69 @@ impl App {
         self.transfer_tab
             .show_connection(Some(&site.display_name()));
         self.transfers
-            .emit(TransferPanelMsg::ShowConnection(Some(site.display_name())));
+            .emit(TransferPanelMsg::Connection(Some(PanelConnection {
+                site_id: site.id.clone(),
+                remote: remote.clone(),
+            })));
         self.local_pane.emit(FilePaneMsg::PeerAvailable(true));
         self.connection = Some(Connection {
             name: site.display_name(),
             host: remote.host().to_owned(),
             dir: start_dir,
             pane,
-            remote,
         });
+    }
+
+    /// Close the app.
+    fn quit(&mut self, reason: &'static str) {
+        tracing::info!("closing: {reason}");
+        self.exit_reason = reason;
+        self.quitting.set(true);
+        relm4::main_application().quit();
+    }
+
+    /// Ask whether to stop the running transfers, and send `on_yes`'s message if so.
+    ///
+    /// # Arguments
+    ///
+    /// * `title` - Window title
+    /// * `question` - What is about to happen, e.g. "Quit GuiSCP?"
+    /// * `confirm_label` - Label of the button that goes ahead
+    /// * `sender` - Receives the message
+    /// * `on_yes` - Makes the message to send when the user goes ahead
+    fn confirm_stopping_transfers(
+        &self,
+        title: &str,
+        question: &str,
+        confirm_label: &str,
+        sender: &ComponentSender<Self>,
+        on_yes: impl Fn() -> AppMsg + 'static,
+    ) {
+        let detail = match self.running_transfers.get() {
+            1 => String::from(
+                "A transfer is still running. It will stop, and can be resumed the next \
+                 time you connect to this server.",
+            ),
+            count => format!(
+                "{count} transfers are still running. They will stop, and can be resumed \
+                 the next time you connect to this server."
+            ),
+        };
+        let sender = sender.clone();
+        confirm_dialog::ask(
+            self.window.upcast_ref(),
+            Confirmation {
+                title,
+                question,
+                detail: &detail,
+                confirm_label,
+            },
+            move |confirmed| {
+                if confirmed {
+                    sender.input(on_yes());
+                }
+            },
+        );
     }
 
     /// Turn a pane's request into a job: copies go to the folder the other pane shows;
@@ -672,6 +777,7 @@ impl App {
             side,
             sources: paths,
             dest_dir,
+            resume: false,
         };
         if kind != JobKind::Delete {
             self.start_job(job);
@@ -699,13 +805,7 @@ impl App {
     fn start_job(&self, job: Job) {
         tracing::info!("starting: {}", job.title());
         self.bottom_panel.set_current_page(Some(TRANSFERS_PAGE));
-        self.transfers.emit(TransferPanelMsg::Start {
-            job,
-            remote: self
-                .connection
-                .as_ref()
-                .map(|connection| connection.remote.clone()),
-        });
+        self.transfers.emit(TransferPanelMsg::Start(job));
     }
 
     /// Write the settings file, logging instead of failing: losing a preference should
