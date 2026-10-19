@@ -1,0 +1,14 @@
+# Keep line endings identical on every OS. Without this, git on Windows (core.autocrlf)
+# can check text files out with CRLF endings; `git status` may then list them as
+# modified, and builds wrongly show "-dirty" in their build info.
+* text=auto eol=lf
+
+# Windows scripts need CRLF endings to run.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch binary files.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary

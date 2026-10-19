@@ -4,6 +4,14 @@
 //!
 //! Anything that cannot be found (no git, no git checkout) becomes "unknown" rather than
 //! failing the build.
+//!
+//! The build time is when this script runs, so builds of one commit on different
+//! machines differ. Release / CI builds should use the commit's time instead, so every
+//! platform's build of a commit shows the same date (see BUILDING.md):
+//!
+//! ```sh
+//! SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo build --release
+//! ```
 
 use std::path::Path;
 use std::process::Command;
@@ -15,9 +23,16 @@ const UNKNOWN: &str = "unknown";
 
 fn main() {
     let commit = git(&["rev-parse", "--short=7", "HEAD"]);
-    // Changes to tracked files only: stray untracked files do not make a build "dirty".
-    let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
-        .is_some_and(|changes| !changes.is_empty());
+    // Changes to tracked files' contents only: stray untracked files, and permission
+    // bits that look changed on Windows or shared drives, do not make a build "dirty".
+    let dirty = git(&[
+        "-c",
+        "core.fileMode=false",
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ])
+    .is_some_and(|changes| !changes.is_empty());
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| String::from("rustc"));
     let rustc_version = run(&rustc, &["--version"]);
 
