@@ -265,3 +265,19 @@ button.tab-close {
     margin-left: 2px;
     border-radius: 3px;
 }
+
+/* Transfers tab: compact rows, a light line between jobs. */
+.transfer-panel .transfer-job {
+    padding: 2px 6px;
+    border-bottom: 1px solid alpha(currentColor, 0.1);
+}
+.transfer-panel .transfer-row {
+    min-height: 20px;
+}
+.transfer-panel progressbar > trough,
+.transfer-panel progressbar > trough > progress {
+    min-height: 6px;
+}
+.transfer-panel .transfer-info {
+    font-feature-settings: "tnum";
+}

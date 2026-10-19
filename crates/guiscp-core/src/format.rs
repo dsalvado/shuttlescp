@@ -47,6 +47,25 @@ pub fn format_modified(time: SystemTime) -> String {
         .to_string()
 }
 
+/// Format a duration for a "time left" estimate: "0:45", "12:05", "1:02:03".
+///
+/// # Arguments
+///
+/// * `duration` - How long; rounded up to whole seconds, so "0:00" means done
+///
+/// # Returns
+///
+/// Minutes and seconds, with hours in front when there are any
+pub fn format_duration(duration: std::time::Duration) -> String {
+    let total = duration.as_secs() + u64::from(duration.subsec_nanos() > 0);
+    let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
 /// Shorten `text` to at most `max_chars` characters by replacing its middle with "...".
 ///
 /// # Arguments
@@ -122,6 +141,14 @@ mod tests {
         // Assert
         assert!(text.starts_with("2023-11-14 "), "unexpected: {text}");
         assert_eq!(text.len(), "2023-11-14 12:00".len());
+    }
+
+    #[test]
+    fn format_duration_rounds_up_and_adds_hours() {
+        assert_eq!(format_duration(Duration::from_millis(44_200)), "0:45");
+        assert_eq!(format_duration(Duration::from_secs(725)), "12:05");
+        assert_eq!(format_duration(Duration::from_secs(3723)), "1:02:03");
+        assert_eq!(format_duration(Duration::ZERO), "0:00");
     }
 
     #[test]

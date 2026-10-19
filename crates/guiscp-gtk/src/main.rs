@@ -11,6 +11,7 @@ mod passphrase_dialog;
 mod resize_grips;
 mod theme;
 mod theme_list;
+mod transfer_panel;
 
 use relm4::RelmApp;
 
@@ -33,6 +34,14 @@ fn main() {
         tracing::warn!("{error}; using default settings");
         Config::default()
     });
+
+    // Background work (listings, transfers, the SSH connection) runs on relm4's async
+    // runtime, which uses a single worker thread unless told otherwise. One thread per
+    // CPU core (2 to 8) lets several transfers run truly in parallel. It must be set
+    // before the runtime starts.
+    let threads = std::thread::available_parallelism().map_or(2, |count| count.get().clamp(2, 8));
+    let _ = relm4::RELM_THREADS.set(threads);
+    tracing::debug!("background worker threads: {threads}");
 
     let app = RelmApp::new(APP_ID);
     // `include_str!` embeds the file's contents into the binary at compile time.

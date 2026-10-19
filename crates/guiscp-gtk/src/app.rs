@@ -14,14 +14,17 @@ use guiscp_core::local_fs;
 use guiscp_core::logging::{LogLevel, Logger};
 use guiscp_core::remote::Remote;
 use guiscp_core::sites::{Site, SiteBook};
+use guiscp_core::transfer::{Job, JobKind, Side};
 
 use crate::build_info::{build_info, show_about};
-use crate::file_pane::{FilePane, FilePaneInit, FilePaneOutput};
+use crate::confirm_dialog::{self, Confirmation};
+use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput};
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
 use crate::resize_grips;
 use crate::theme;
 use crate::theme_list::ThemeList;
+use crate::transfer_panel::{TransferPanel, TransferPanelMsg, TransferPanelOutput};
 
 /// Window size the first time the app opens; after that, the size it was closed at.
 const FIRST_WINDOW_SIZE: WindowSize = WindowSize {
@@ -53,8 +56,10 @@ const NEW_TAB_ICON: &str = "tab-new-symbolic";
 const NEW_TAB_PAGE: u32 = 1;
 /// Initial height of the session area above the bottom panel, in pixels.
 const SESSION_AREA_HEIGHT: i32 = 470;
-/// Text shown in the remote half of the split while not connected.
-const NOT_CONNECTED: &str = "Not connected";
+/// Text shown in the remote half of the split (and the transfers tab) while not connected.
+pub const NOT_CONNECTED: &str = "Not connected";
+/// Position of the transfers tab in the bottom panel (after the log).
+const TRANSFERS_PAGE: u32 = 1;
 
 // These macros declare marker types that name GIO actions in a type-safe way.
 // "win" is the action group GTK attaches to the window, so actions are "win.quit" etc.
@@ -114,6 +119,19 @@ pub enum AppMsg {
     /// The session tab's X was clicked: disconnect and close the session. It is the
     /// last (only) session tab, so the app exits.
     CloseSession,
+    /// A file pane asked to copy, move or delete its selected items.
+    PaneRequest {
+        /// The pane's side.
+        side: Side,
+        /// What to do.
+        kind: JobKind,
+        /// The selected items.
+        paths: Vec<PathBuf>,
+    },
+    /// Run a job (a delete, once confirmed).
+    StartJob(Job),
+    /// A transfer finished: show the panes' new contents.
+    TransferFinished,
     /// The main window was resized, maximized or restored.
     WindowChanged {
         /// The window's normal size; `None` while maximized (its size then is the
@@ -132,9 +150,10 @@ struct Connection {
     host: String,
     /// Folder shown in the remote pane.
     dir: PathBuf,
-    /// The remote file pane, held only to keep it running: dropping it closes the
-    /// session (the leading `_` tells Rust it is deliberately never read).
-    _pane: Controller<FilePane>,
+    /// The remote file pane; dropping it (with `remote`) closes the session.
+    pane: Controller<FilePane>,
+    /// The SFTP session, for transfers.
+    remote: Remote,
 }
 
 /// Root component of the application.
@@ -164,6 +183,12 @@ pub struct App {
     disconnect_action: RelmAction<DisconnectAction>,
     /// The connection's transfers tab in the bottom panel.
     transfer_tab: TransferTab,
+    /// The transfers list shown in that tab.
+    transfers: Controller<TransferPanel>,
+    /// The bottom panel, to bring the transfers tab forward when a job starts.
+    bottom_panel: gtk::Notebook,
+    /// The main window, for dialogs.
+    window: gtk::ApplicationWindow,
 }
 
 #[relm4::component(pub)]
@@ -338,7 +363,16 @@ impl SimpleComponent for App {
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
         let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
         placeholder.add_css_class("dim-label");
-        let (bottom_panel, transfer_tab) = bottom_panel(logger.file_path().map(Path::to_path_buf));
+        let transfers = TransferPanel::builder().launch(()).forward(
+            sender.input_sender(),
+            |output| match output {
+                TransferPanelOutput::JobFinished => AppMsg::TransferFinished,
+            },
+        );
+        let (bottom_panel, transfer_tab) = bottom_panel(
+            logger.file_path().map(Path::to_path_buf),
+            transfers.widget().upcast_ref(),
+        );
         let menu_model = build_menu();
         let theme_list = ThemeList::new(themes, config.theme());
         quit_on_signals(&sender);
@@ -368,6 +402,11 @@ impl SimpleComponent for App {
                     FilePaneOutput::DirectoryChanged { dir, disk_root } => {
                         AppMsg::LocalDirChanged { dir, disk_root }
                     }
+                    FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
+                        side: Side::Local,
+                        kind,
+                        paths,
+                    },
                 }),
             local_dir: start_dir,
             host: glib::host_name().into(),
@@ -392,6 +431,9 @@ impl SimpleComponent for App {
             placeholder: placeholder.clone(),
             disconnect_action,
             transfer_tab,
+            transfers,
+            bottom_panel: bottom_panel.clone(),
+            window: root.clone(),
         };
         let widgets = view_output!();
         // The session's left/right split is the notebook's first page.
@@ -474,6 +516,16 @@ impl SimpleComponent for App {
                 self.config.set_log_level(self.logger.level());
                 self.save_config();
             }
+            AppMsg::PaneRequest { side, kind, paths } => {
+                self.request_job(side, kind, paths, &sender);
+            }
+            AppMsg::StartJob(job) => self.start_job(job),
+            AppMsg::TransferFinished => {
+                self.local_pane.emit(FilePaneMsg::Refresh);
+                if let Some(connection) = &self.connection {
+                    connection.pane.emit(FilePaneMsg::Refresh);
+                }
+            }
             AppMsg::WindowChanged { size, maximized } => {
                 // Only kept in memory here; written to disk once, in `shutdown`.
                 if let Some(size) = size {
@@ -532,6 +584,11 @@ impl App {
             }
             self.disconnect_action.set_enabled(false);
             self.transfer_tab.show_connection(None);
+            self.transfers.emit(TransferPanelMsg::ShowConnection(None));
+            // Transfers hold their own handle on the session; stop them so the
+            // connection really closes.
+            self.transfers.emit(TransferPanelMsg::CancelRemote);
+            self.local_pane.emit(FilePaneMsg::PeerAvailable(false));
             // Dropping the pane drops its session, which closes the connection.
             drop(connection);
         }
@@ -563,6 +620,11 @@ impl App {
             })
             .forward(sender.input_sender(), |output| match output {
                 FilePaneOutput::DirectoryChanged { dir, .. } => AppMsg::RemoteDirChanged(dir),
+                FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
+                    side: Side::Remote,
+                    kind,
+                    paths,
+                },
             });
         if let Some(split) = &self.split {
             split.set_end_child(Some(pane.widget()));
@@ -570,11 +632,79 @@ impl App {
         self.disconnect_action.set_enabled(true);
         self.transfer_tab
             .show_connection(Some(&site.display_name()));
+        self.transfers
+            .emit(TransferPanelMsg::ShowConnection(Some(site.display_name())));
+        self.local_pane.emit(FilePaneMsg::PeerAvailable(true));
         self.connection = Some(Connection {
             name: site.display_name(),
             host: remote.host().to_owned(),
             dir: start_dir,
-            _pane: pane,
+            pane,
+            remote,
+        });
+    }
+
+    /// Turn a pane's request into a job: copies go to the folder the other pane shows;
+    /// deletes are confirmed first.
+    ///
+    /// # Arguments
+    ///
+    /// * `side` - The pane the items are in
+    /// * `kind` - Copy, move or delete
+    /// * `paths` - The selected items
+    /// * `sender` - Receives the confirmed delete
+    fn request_job(
+        &self,
+        side: Side,
+        kind: JobKind,
+        paths: Vec<PathBuf>,
+        sender: &ComponentSender<Self>,
+    ) {
+        let dest_dir = match side.other() {
+            Side::Local => self.local_dir.clone(),
+            Side::Remote => match &self.connection {
+                Some(connection) => connection.dir.clone(),
+                None => return,
+            },
+        };
+        let job = Job {
+            kind,
+            side,
+            sources: paths,
+            dest_dir,
+        };
+        if kind != JobKind::Delete {
+            self.start_job(job);
+            return;
+        }
+        let question = format!("{}?", job.title());
+        let sender = sender.clone();
+        confirm_dialog::ask(
+            self.window.upcast_ref(),
+            Confirmation {
+                title: "Delete",
+                question: &question,
+                detail: "Folders are deleted with everything in them. This cannot be undone.",
+                confirm_label: "Delete",
+            },
+            move |confirmed| {
+                if confirmed {
+                    sender.input(AppMsg::StartJob(job.clone()));
+                }
+            },
+        );
+    }
+
+    /// Run a job and bring the transfers tab forward to show it.
+    fn start_job(&self, job: Job) {
+        tracing::info!("starting: {}", job.title());
+        self.bottom_panel.set_current_page(Some(TRANSFERS_PAGE));
+        self.transfers.emit(TransferPanelMsg::Start {
+            job,
+            remote: self
+                .connection
+                .as_ref()
+                .map(|connection| connection.remote.clone()),
         });
     }
 
@@ -713,22 +843,20 @@ fn track_window_size(window: &gtk::ApplicationWindow, sender: &ComponentSender<A
 /// # Arguments
 ///
 /// * `log_path` - The log file, if logging to a file works
-fn bottom_panel(log_path: Option<PathBuf>) -> (gtk::Notebook, TransferTab) {
+/// * `transfers` - The transfers list, shown in the transfers tab
+fn bottom_panel(
+    log_path: Option<PathBuf>,
+    transfers: &gtk::Widget,
+) -> (gtk::Notebook, TransferTab) {
     let panel = gtk::Notebook::new();
     panel.add_css_class("bottom-panel");
 
     let (log_tab, _) = panel_tab("text-x-generic-symbolic", "Log");
     panel.append_page(&log_tail(log_path), Some(&log_tab));
 
-    let body = gtk::Label::builder()
-        .vexpand(true)
-        .css_classes(["dim-label"])
-        .build();
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    page.append(&body);
     let (tab, title) = panel_tab("network-transmit-receive-symbolic", "");
-    let transfer_page = panel.append_page(&page, Some(&tab));
-    let transfer_tab = TransferTab { title, body };
+    let transfer_page = panel.append_page(transfers, Some(&tab));
+    let transfer_tab = TransferTab { title };
     transfer_tab.show_connection(None);
 
     // Selected by default: the connection's transfers.
@@ -754,14 +882,11 @@ fn panel_tab(icon: &str, name: &str) -> (gtk::Box, gtk::Label) {
     (label, text)
 }
 
-/// A connection's transfers tab in the bottom panel. It will show the progress of
-/// transfers between the local and remote panes; for now it shows which connection it
-/// belongs to. With several connections, each will get a tab like this.
+/// The title of a connection's transfers tab in the bottom panel; the tab itself shows
+/// a [`TransferPanel`]. With several connections, each will get a tab like this.
 struct TransferTab {
     /// Tab title: the connection it belongs to.
     title: gtk::Label,
-    /// Page content.
-    body: gtk::Label,
 }
 
 impl TransferTab {
@@ -779,13 +904,11 @@ impl TransferTab {
                     .set_label(&shorten_middle(name, TAB_TITLE_MAX_CHARS));
                 self.title
                     .set_tooltip_text(Some(&format!("Transfers for {name}")));
-                self.body.set_label("No transfers yet");
             }
             None => {
                 self.title.set_label(NOT_CONNECTED);
                 self.title
                     .set_tooltip_text(Some("Transfers (not connected)"));
-                self.body.set_label(NOT_CONNECTED);
             }
         }
     }

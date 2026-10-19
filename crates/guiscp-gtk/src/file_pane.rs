@@ -1,5 +1,6 @@
 //! A file explorer pane: refresh button, disk drop-down, path label and a sortable column
-//! view whose first row, "..", goes up one folder.
+//! view whose first row, "..", goes up one folder. Right-clicking selected files offers
+//! to copy, move or delete them.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -8,7 +9,7 @@ use std::iter;
 use std::path::{Path, PathBuf};
 
 use relm4::gtk::prelude::*;
-use relm4::gtk::{gdk, gio, glib};
+use relm4::gtk::{gdk, gio, glib, graphene};
 use relm4::prelude::*;
 use relm4::typed_view::OrdFn;
 use relm4::typed_view::column::{RelmColumn, TypedColumnView};
@@ -18,6 +19,7 @@ use guiscp_core::entry::{EntryKind, FileEntry};
 use guiscp_core::format::{format_modified, format_size};
 use guiscp_core::local_fs;
 use guiscp_core::remote::Remote;
+use guiscp_core::transfer::{JobKind, Side};
 
 use crate::disk_picker::DiskPicker;
 
@@ -40,6 +42,11 @@ const SPECIAL_FOLDER_ICONS: [(glib::UserDirectory, &str); 8] = [
 ];
 /// Theme icon for the user's home folder.
 const HOME_FOLDER_ICON: &str = "user-home";
+/// Name of the pane's action group: its actions are "pane.copy" and so on.
+const ACTION_GROUP: &str = "pane";
+/// Action a right-click on a row triggers, with the row's position and the click's
+/// coordinates in the column view.
+const CONTEXT_MENU_ACTION: &str = "context-menu";
 
 thread_local! {
     // Decoded once and shared by every ".." row. `thread_local!` because GTK objects live
@@ -61,6 +68,19 @@ pub enum FilePaneMsg {
     DiskSelected(u32),
     /// A disk was mounted, unmounted or renamed.
     DisksChanged,
+    /// A row was right-clicked: show the context menu at (`x`, `y`) in the column view.
+    ContextMenu {
+        /// Position of the row in the sorted view.
+        position: u32,
+        /// Click position in the column view.
+        x: f64,
+        /// Click position in the column view.
+        y: f64,
+    },
+    /// Copy, move or delete the selected items (from the context menu or a key).
+    Request(JobKind),
+    /// Whether there is somewhere to copy to (for the local pane: a connected server).
+    PeerAvailable(bool),
 }
 
 /// What a [`FilePane`] starts with.
@@ -84,6 +104,13 @@ pub enum FilePaneOutput {
         dir: PathBuf,
         /// Mount point of the disk holding `dir`.
         disk_root: Option<PathBuf>,
+    },
+    /// The user asked to copy, move or delete these items (full paths).
+    Request {
+        /// What to do.
+        kind: JobKind,
+        /// The selected files and folders.
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -114,7 +141,7 @@ pub struct FilePane {
     current_dir: PathBuf,
     /// Most recently requested directory; listings for anything else are stale.
     requested_dir: PathBuf,
-    entries: TypedColumnView<Row, gtk::SingleSelection>,
+    entries: TypedColumnView<Row, gtk::MultiSelection>,
     status: String,
     disk_picker: DiskPicker,
     /// Last directory shown on each disk, keyed by the disk's mount point, so returning
@@ -122,6 +149,10 @@ pub struct FilePane {
     last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
     /// The server this pane browses; `None` for the local disks.
     remote: Option<Remote>,
+    /// Right-click menu of the selected items.
+    context_menu: gtk::PopoverMenu,
+    /// The menu's copy and move actions, enabled while there is somewhere to copy to.
+    copy_actions: [gio::SimpleAction; 2],
 }
 
 impl FilePane {
@@ -150,6 +181,19 @@ impl FilePane {
                 dir,
             }),
         }
+    }
+
+    /// Full paths of the selected files and folders ("..", if selected, is left out).
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        let selection = &self.entries.selection_model;
+        (0..selection.n_items())
+            .filter(|&position| selection.is_selected(position))
+            .filter_map(|position| self.entries.get_visible(position))
+            .filter_map(|item| match &*item.borrow() {
+                Row::Parent => None,
+                Row::Entry { entry, .. } => Some(self.current_dir.join(entry.name())),
+            })
+            .collect()
     }
 
     /// Replace the list contents with a fresh listing of `dir`.
@@ -273,7 +317,7 @@ impl Component for FilePane {
             last_dir_on_disk,
             remote,
         } = init;
-        let mut entries = TypedColumnView::<Row, gtk::SingleSelection>::new();
+        let mut entries = TypedColumnView::<Row, gtk::MultiSelection>::new();
         entries.append_column::<NameColumn>();
         entries.append_column::<SizeColumn>();
         entries.append_column::<ModifiedColumn>();
@@ -288,6 +332,30 @@ impl Component for FilePane {
         );
         disk_picker.show_dir(&start_dir);
 
+        let side = if remote.is_some() {
+            Side::Remote
+        } else {
+            Side::Local
+        };
+        let (context_menu, copy_actions) = context_menu(&root, side, &sender);
+        // The local pane has nowhere to copy to until a server is connected.
+        for action in &copy_actions {
+            action.set_enabled(side == Side::Remote);
+        }
+        let keys = gtk::EventControllerKey::new();
+        {
+            let sender = sender.clone();
+            keys.connect_key_pressed(move |_, key, _, _| {
+                if key == gdk::Key::Delete {
+                    sender.input(FilePaneMsg::Request(JobKind::Delete));
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            });
+        }
+        entries.view.add_controller(keys);
+
         let mut model = Self {
             current_dir: start_dir.clone(),
             requested_dir: start_dir.clone(),
@@ -296,6 +364,8 @@ impl Component for FilePane {
             disk_picker,
             last_dir_on_disk,
             remote,
+            context_menu,
+            copy_actions,
         };
         model.request_listing(start_dir, &sender);
 
@@ -306,7 +376,7 @@ impl Component for FilePane {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
+    fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match message {
             FilePaneMsg::Refresh => self.request_listing(self.current_dir.clone(), &sender),
             FilePaneMsg::Activate(position) => {
@@ -349,6 +419,47 @@ impl Component for FilePane {
                 );
                 self.request_listing(target, &sender);
             }
+            FilePaneMsg::ContextMenu { position, x, y } => {
+                let is_entry = self
+                    .entries
+                    .get_visible(position)
+                    .is_some_and(|item| matches!(&*item.borrow(), Row::Entry { .. }));
+                if !is_entry {
+                    return;
+                }
+                // Right-clicking outside the selection selects just that row, as file
+                // managers do; inside it, the whole selection is kept.
+                let selection = &self.entries.selection_model;
+                if !selection.is_selected(position) {
+                    selection.select_item(position, true);
+                }
+                let point = self
+                    .entries
+                    .view
+                    .compute_point(root, &graphene::Point::new(x as f32, y as f32))
+                    .unwrap_or_else(|| graphene::Point::new(x as f32, y as f32));
+                self.context_menu.set_pointing_to(Some(&gdk::Rectangle::new(
+                    point.x() as i32,
+                    point.y() as i32,
+                    1,
+                    1,
+                )));
+                self.context_menu.popup();
+            }
+            FilePaneMsg::Request(kind) => {
+                let paths = self.selected_paths();
+                let allowed = kind == JobKind::Delete || self.copy_actions[0].is_enabled();
+                if paths.is_empty() || !allowed {
+                    return;
+                }
+                tracing::debug!("{kind:?} requested for {} items", paths.len());
+                let _ = sender.output(FilePaneOutput::Request { kind, paths });
+            }
+            FilePaneMsg::PeerAvailable(available) => {
+                for action in &self.copy_actions {
+                    action.set_enabled(available);
+                }
+            }
             FilePaneMsg::DisksChanged if self.remote.is_some() => {}
             FilePaneMsg::DisksChanged => {
                 self.disk_picker.reload();
@@ -382,7 +493,10 @@ impl Component for FilePane {
         }
         match listing.result {
             Ok(entries) => {
-                self.status = format!("{} items", entries.len());
+                self.status = match entries.len() {
+                    1 => String::from("1 item"),
+                    count => format!("{count} items"),
+                };
                 self.show_entries(&listing.dir, entries);
                 let disk_root = if self.remote.is_some() {
                     None
@@ -414,6 +528,112 @@ impl Component for FilePane {
     }
 }
 
+/// Build the right-click menu and the actions behind it, attached to the pane.
+///
+/// # Arguments
+///
+/// * `root` - The pane's root widget, which owns the actions and the menu
+/// * `side` - Which side the pane shows, for the wording
+/// * `sender` - Receives the chosen action
+///
+/// # Returns
+///
+/// The menu, and its copy and move actions (to enable or disable)
+fn context_menu(
+    root: &gtk::Box,
+    side: Side,
+    sender: &ComponentSender<FilePane>,
+) -> (gtk::PopoverMenu, [gio::SimpleAction; 2]) {
+    let group = gio::SimpleActionGroup::new();
+    let request = |name: &str, kind: JobKind| {
+        let action = gio::SimpleAction::new(name, None);
+        let sender = sender.clone();
+        action.connect_activate(move |_, _| sender.input(FilePaneMsg::Request(kind)));
+        group.add_action(&action);
+        action
+    };
+    let copy = request("copy", JobKind::Copy);
+    let move_ = request("move", JobKind::Move);
+    request("delete", JobKind::Delete);
+
+    // Triggered by the right-click handlers of the cells (see `attach_context_click`).
+    let menu_action = gio::SimpleAction::new(
+        CONTEXT_MENU_ACTION,
+        Some(&<(u32, f64, f64)>::static_variant_type()),
+    );
+    {
+        let sender = sender.clone();
+        menu_action.connect_activate(move |_, parameter| {
+            if let Some((position, x, y)) =
+                parameter.and_then(|value| value.get::<(u32, f64, f64)>())
+            {
+                sender.input(FilePaneMsg::ContextMenu { position, x, y });
+            }
+        });
+    }
+    group.add_action(&menu_action);
+    root.insert_action_group(ACTION_GROUP, Some(&group));
+
+    let (copy_label, move_label) = match side {
+        Side::Local => ("_Upload", "_Move to Server"),
+        Side::Remote => ("_Download", "_Move to This Computer"),
+    };
+    let transfer_section = gio::Menu::new();
+    transfer_section.append(Some(copy_label), Some("pane.copy"));
+    transfer_section.append(Some(move_label), Some("pane.move"));
+    let delete_section = gio::Menu::new();
+    delete_section.append(Some("_Delete"), Some("pane.delete"));
+    let menu = gio::Menu::new();
+    menu.append_section(None, &transfer_section);
+    menu.append_section(None, &delete_section);
+
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
+    popover.set_parent(root);
+    // A popover is not a regular child: it must be detached before its parent goes.
+    {
+        let popover = popover.clone();
+        root.connect_destroy(move |_| popover.unparent());
+    }
+    (popover, [copy, move_])
+}
+
+/// Make right-clicking a cell open the pane's context menu for its row.
+///
+/// The column view does not report which row was right-clicked, so each cell listens
+/// itself and triggers the pane's context menu action with its row position.
+///
+/// # Arguments
+///
+/// * `cell` - The cell's root widget
+/// * `item` - The list item the cell belongs to (it knows the row's position)
+fn attach_context_click(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
+    let click = gtk::GestureClick::builder()
+        .button(gdk::BUTTON_SECONDARY)
+        .build();
+    let item = item.downgrade();
+    let cell_widget = cell.clone().upcast::<gtk::Widget>();
+    click.connect_pressed(move |gesture, _, x, y| {
+        let (Some(item), Some(view)) = (
+            item.upgrade(),
+            cell_widget.ancestor(gtk::ColumnView::static_type()),
+        ) else {
+            return;
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let point = cell_widget
+            .compute_point(&view, &graphene::Point::new(x as f32, y as f32))
+            .unwrap_or_else(|| graphene::Point::new(x as f32, y as f32));
+        let parameter = (item.position(), f64::from(point.x()), f64::from(point.y()));
+        let _ = cell_widget.activate_action(
+            &format!("{ACTION_GROUP}.{CONTEXT_MENU_ACTION}"),
+            Some(&parameter.to_variant()),
+        );
+    });
+    cell.add_controller(click);
+}
+
 /// Keep the ".." row first whatever column and direction the list is sorted by.
 ///
 /// The column sorters alone cannot do this: GTK reverses their result for descending
@@ -423,7 +643,7 @@ impl Component for FilePane {
 /// # Arguments
 ///
 /// * `entries` - The list view whose sort model gets the wrapping sorter
-fn pin_parent_row(entries: &TypedColumnView<Row, gtk::SingleSelection>) {
+fn pin_parent_row(entries: &TypedColumnView<Row, gtk::MultiSelection>) {
     // relm4 places a `gtk::SortListModel` directly under the selection model.
     let Some(sort_model) = entries
         .selection_model
@@ -543,7 +763,7 @@ impl RelmColumn for NameColumn {
     const ENABLE_RESIZE: bool = true;
     const ENABLE_EXPAND: bool = true;
 
-    fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+    fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         let icon = gtk::Image::new();
         let arrow = UP_ARROW.with(|texture| match texture {
             Some(texture) => gtk::Image::from_paintable(Some(texture)),
@@ -563,6 +783,7 @@ impl RelmColumn for NameColumn {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         root.append(&icon_stack);
         root.append(&label);
+        attach_context_click(&root, item);
         (root, (icon, arrow, label))
     }
 
@@ -607,8 +828,10 @@ impl RelmColumn for SizeColumn {
     const COLUMN_NAME: &'static str = "Size";
     const ENABLE_RESIZE: bool = true;
 
-    fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
-        (text_cell(1.0), ())
+    fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        let cell = text_cell(1.0);
+        attach_context_click(&cell, item);
+        (cell, ())
     }
 
     fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
@@ -636,8 +859,10 @@ impl RelmColumn for ModifiedColumn {
     const COLUMN_NAME: &'static str = "Modified";
     const ENABLE_RESIZE: bool = true;
 
-    fn setup(_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
-        (text_cell(0.0), ())
+    fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        let cell = text_cell(0.0);
+        attach_context_click(&cell, item);
+        (cell, ())
     }
 
     fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {

@@ -13,6 +13,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use russh::client;
 use russh::keys::known_hosts::learn_known_hosts;
 use russh::keys::{HashAlg, PublicKeyOrCertificate, check_known_hosts};
+use russh_sftp::client::fs::{File, Metadata};
+use russh_sftp::protocol::FileAttributes;
 
 /// A server's SSH host key. Re-exported so front ends can pass keys around (for
 /// example after the user agrees to trust one) without depending on the SSH library.
@@ -218,6 +220,123 @@ impl Remote {
         tracing::trace!("read {} remote entries from {dir_text}", entries.len());
         Ok(entries)
     }
+}
+
+/// File operations used by transfers. Paths are absolute paths on the server; errors are
+/// readable messages naming the path.
+impl Remote {
+    /// Details of `path`, following a symbolic link to what it points to.
+    pub(crate) async fn stat(&self, path: &Path) -> Result<Metadata, String> {
+        let text = path_text(path);
+        self.0
+            .sftp
+            .metadata(text.clone())
+            .await
+            .map_err(|error| format!("cannot read {text}: {error}"))
+    }
+
+    /// Details of `path` itself: a symbolic link is described as a link.
+    pub(crate) async fn lstat(&self, path: &Path) -> Result<Metadata, String> {
+        let text = path_text(path);
+        self.0
+            .sftp
+            .symlink_metadata(text.clone())
+            .await
+            .map_err(|error| format!("cannot read {text}: {error}"))
+    }
+
+    /// The entries of a folder (without "." and ".."), each described as itself:
+    /// symbolic links are not followed.
+    pub(crate) async fn read_dir_raw(&self, dir: &Path) -> Result<Vec<(String, Metadata)>, String> {
+        let text = path_text(dir);
+        let listing = self
+            .0
+            .sftp
+            .read_dir(text.clone())
+            .await
+            .map_err(|error| format!("cannot open {text}: {error}"))?;
+        Ok(listing
+            .filter(|entry| entry.file_name() != "." && entry.file_name() != "..")
+            .map(|entry| (entry.file_name(), entry.metadata()))
+            .collect())
+    }
+
+    /// Open a file for reading.
+    pub(crate) async fn open(&self, path: &Path) -> Result<File, String> {
+        let text = path_text(path);
+        self.0
+            .sftp
+            .open(text.clone())
+            .await
+            .map_err(|error| format!("cannot open {text}: {error}"))
+    }
+
+    /// Create a file for writing, emptying it if it exists.
+    pub(crate) async fn create(&self, path: &Path) -> Result<File, String> {
+        let text = path_text(path);
+        self.0
+            .sftp
+            .create(text.clone())
+            .await
+            .map_err(|error| format!("cannot create {text}: {error}"))
+    }
+
+    /// Create a folder; an existing folder is fine.
+    pub(crate) async fn create_dir(&self, path: &Path) -> Result<(), String> {
+        if self
+            .stat(path)
+            .await
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            return Ok(());
+        }
+        let text = path_text(path);
+        self.0
+            .sftp
+            .create_dir(text.clone())
+            .await
+            .map_err(|error| format!("cannot create folder {text}: {error}"))
+    }
+
+    /// Delete a file (or a symbolic link itself).
+    pub(crate) async fn remove_file(&self, path: &Path) -> Result<(), String> {
+        let text = path_text(path);
+        self.0
+            .sftp
+            .remove_file(text.clone())
+            .await
+            .map_err(|error| format!("cannot delete {text}: {error}"))
+    }
+
+    /// Delete an empty folder.
+    pub(crate) async fn remove_dir(&self, path: &Path) -> Result<(), String> {
+        let text = path_text(path);
+        self.0
+            .sftp
+            .remove_dir(text.clone())
+            .await
+            .map_err(|error| format!("cannot delete folder {text}: {error}"))
+    }
+
+    /// Set a file's modification (and access) time.
+    pub(crate) async fn set_modified(&self, path: &Path, seconds: u32) -> Result<(), String> {
+        let text = path_text(path);
+        let attributes = FileAttributes {
+            atime: Some(seconds),
+            mtime: Some(seconds),
+            ..FileAttributes::empty()
+        };
+        self.0
+            .sftp
+            .set_metadata(text.clone(), attributes)
+            .await
+            .map_err(|error| format!("cannot set the time of {text}: {error}"))
+    }
+}
+
+/// A server path as the text SFTP expects.
+fn path_text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 /// SHA256 fingerprint of a host key, as `ssh` shows it (e.g. "SHA256:abc...").

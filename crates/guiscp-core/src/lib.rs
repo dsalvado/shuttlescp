@@ -7,6 +7,7 @@
 //! * [`site_export`] - portable export / import with passphrase-encrypted passwords
 //! * [`secrets`] - passwords in the system's password store
 //! * [`remote`] - SSH host-key checks, login and SFTP listing
+//! * [`transfer`] - copying, moving and deleting files and folders, with progress
 //! * [`session`] - the login, export and import workflows
 //! * [`entry`] / [`local_fs`] / [`disks`] - files, local folders and disks
 //! * [`logging`] / [`log_reader`] - the log file and following it live
@@ -26,3 +27,4 @@ pub mod secrets;
 pub mod session;
 pub mod site_export;
 pub mod sites;
+pub mod transfer;
