@@ -1,6 +1,7 @@
 //! GuiSCP: a graphical SFTP/SCP client for Linux, inspired by WinSCP.
 
 mod app;
+mod build_info;
 mod confirm_dialog;
 mod disk_picker;
 mod file_pane;

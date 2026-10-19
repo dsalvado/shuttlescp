@@ -1343,6 +1343,7 @@ dependencies = [
 name = "guiscp"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "glib-unix",
  "guiscp-core",
  "relm4",

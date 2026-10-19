@@ -15,6 +15,7 @@ default-members = ["crates/guiscp-gtk"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+authors = ["David Salvador"]
 
 # Versions shared by both crates; each crate opts in with `name.workspace = true`.
 [workspace.dependencies]

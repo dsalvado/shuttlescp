@@ -8,13 +8,14 @@ use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
-use guiscp_core::config::{Config, ThemeChoice};
+use guiscp_core::config::{Config, ThemeChoice, WindowSize};
 use guiscp_core::format::shorten_middle;
 use guiscp_core::local_fs;
 use guiscp_core::logging::{LogLevel, Logger};
 use guiscp_core::remote::Remote;
 use guiscp_core::sites::{Site, SiteBook};
 
+use crate::build_info::{build_info, show_about};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneOutput};
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
@@ -22,10 +23,11 @@ use crate::resize_grips;
 use crate::theme;
 use crate::theme_list::ThemeList;
 
-/// Initial window width in pixels; the divider starts at half of it.
-const WINDOW_WIDTH: i32 = 1200;
-/// Initial window height in pixels.
-const WINDOW_HEIGHT: i32 = 720;
+/// Window size the first time the app opens; after that, the size it was closed at.
+const FIRST_WINDOW_SIZE: WindowSize = WindowSize {
+    width: 1200,
+    height: 720,
+};
 /// Menu model id linking the View menu's placeholder item to the theme list widget.
 const THEME_LIST_ID: &str = "theme-list";
 /// Signals that close the app gracefully, with the reason logged for each. The numbers
@@ -61,6 +63,7 @@ relm4::new_stateless_action!(QuitAction, WindowActions, "quit");
 relm4::new_stateless_action!(LoginAction, WindowActions, "login");
 relm4::new_stateless_action!(DisconnectAction, WindowActions, "disconnect");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
+relm4::new_stateless_action!(AboutAction, WindowActions, "about");
 // Target and state are both a `ThemeChoice::key()` string. A stateful action
 // whose state matches the item's target is what makes GTK draw radio items in a menu.
 relm4::new_stateful_action!(ThemeAction, WindowActions, "theme", String, String);
@@ -111,6 +114,14 @@ pub enum AppMsg {
     /// The session tab's X was clicked: disconnect and close the session. It is the
     /// last (only) session tab, so the app exits.
     CloseSession,
+    /// The main window was resized, maximized or restored.
+    WindowChanged {
+        /// The window's normal size; `None` while maximized (its size then is the
+        /// screen's, not one to restore later).
+        size: Option<WindowSize>,
+        /// Whether the window is maximized.
+        maximized: bool,
+    },
 }
 
 /// The open connection shown in the right half of the session.
@@ -167,7 +178,8 @@ impl SimpleComponent for App {
         #[root]
         main_window = gtk::ApplicationWindow {
             set_title: Some("GuiSCP"),
-            set_default_size: (WINDOW_WIDTH, WINDOW_HEIGHT),
+            set_default_size: (window_size.width, window_size.height),
+            set_maximized: window_maximized,
             set_resizable: true,
             // An empty title bar removes GTK's default one; the header bar below is part of
             // the content instead, so the corner resize grips can cover the top corners too.
@@ -207,7 +219,7 @@ impl SimpleComponent for App {
                         // `append_page[label] = page` calls `append_page(page, label)`.
                         append_page[Some(&session_tab)] = &gtk::Paned {
                             set_orientation: gtk::Orientation::Horizontal,
-                            set_position: WINDOW_WIDTH / 2,
+                            set_position: window_size.width / 2,
                             set_wide_handle: true,
                             set_shrink_start_child: false,
                             set_shrink_end_child: false,
@@ -242,6 +254,18 @@ impl SimpleComponent for App {
                         gtk::Label {
                             #[watch]
                             set_label: &format!("Log level: {}", model.logger.level().label()),
+                        },
+                        gtk::Separator {
+                            set_orientation: gtk::Orientation::Vertical,
+                        },
+                        // Build info; full details on hover, the About dialog on click.
+                        #[name = "build_label"]
+                        gtk::Label {
+                            set_label: &build_info().summary(),
+                            set_tooltip_text: Some(&crate::build_info::details(
+                                model.logger.file_path(),
+                            )),
+                            set_cursor_from_name: Some("pointer"),
                         },
                     },
                 },
@@ -327,6 +351,11 @@ impl SimpleComponent for App {
             .unwrap_or_else(|| PathBuf::from("/"));
         tracing::info!("opening local pane at {}", start_dir.display());
         let show_login = config.show_login_at_startup();
+        let window_size = config
+            .window_size()
+            .unwrap_or(FIRST_WINDOW_SIZE)
+            .at_least_min();
+        let window_maximized = config.window_maximized();
         let mut model = Self {
             // `.forward()` converts each pane output into a message for this component.
             local_pane: FilePane::builder()
@@ -371,6 +400,13 @@ impl SimpleComponent for App {
             .menu_bar
             .add_child(model.theme_list.widget(), THEME_LIST_ID);
         resize_grips::add_corner_grips(&root, &widgets.overlay);
+        track_window_size(&root, &sender);
+        let about_click = gtk::GestureClick::new();
+        let about_window = root.clone();
+        about_click.connect_released(move |_, _, _, _| {
+            let _ = WidgetExt::activate_action(&about_window, "win.about", None);
+        });
+        widgets.build_label.add_controller(about_click);
         // Keep the "New Tab" tab from being opened (by click or keyboard) for now. Our
         // handler runs before GTK's default one, which performs the switch, so stopping
         // the emission here cancels it.
@@ -438,6 +474,13 @@ impl SimpleComponent for App {
                 self.config.set_log_level(self.logger.level());
                 self.save_config();
             }
+            AppMsg::WindowChanged { size, maximized } => {
+                // Only kept in memory here; written to disk once, in `shutdown`.
+                if let Some(size) = size {
+                    self.config.set_window_size(size);
+                }
+                self.config.set_window_maximized(maximized);
+            }
             AppMsg::LocalDirChanged { dir, disk_root } => {
                 tracing::debug!("local pane now shows {}", dir.display());
                 // Only kept in memory here; written to disk once, in `shutdown`.
@@ -452,6 +495,14 @@ impl SimpleComponent for App {
 
     /// Runs when the application quits (window closed, File > Quit or a quit signal).
     fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
+        if let Some(size) = self.config.window_size() {
+            tracing::debug!(
+                "window size {}x{}, maximized: {}",
+                size.width,
+                size.height,
+                self.config.window_maximized()
+            );
+        }
         self.save_config();
         self.logger.end_session(self.exit_reason);
     }
@@ -583,6 +634,16 @@ fn register_actions(
     });
     open_log.set_enabled(log_path.is_some());
 
+    // A weak reference: the window owns this action, so a strong one would keep the
+    // window alive forever.
+    let about_window = window.downgrade();
+    let about_log_path = log_path.map(Path::to_path_buf);
+    let about = RelmAction::<AboutAction>::new_stateless(move |_| {
+        if let Some(window) = about_window.upgrade() {
+            show_about(window.upcast_ref(), about_log_path.as_deref());
+        }
+    });
+
     // Closures that outlive this function need their own copy of the sender.
     let theme_sender = sender.clone();
     let theme_action = RelmAction::<ThemeAction>::new_stateful_with_target_value(
@@ -609,6 +670,7 @@ fn register_actions(
     group.add_action(disconnect.clone());
     group.add_action(quit);
     group.add_action(open_log);
+    group.add_action(about);
     group.add_action(theme_action);
     group.add_action(level_action);
     group.register_for_widget(window);
@@ -616,6 +678,32 @@ fn register_actions(
     app.set_accelerators_for_action::<LoginAction>(&["<primary>l"]);
     app.set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
     disconnect
+}
+
+/// Report the window's size and maximized state to the app whenever they change, so
+/// they can be saved when it closes.
+///
+/// # Arguments
+///
+/// * `window` - The main window
+/// * `sender` - Receives [`AppMsg::WindowChanged`]
+fn track_window_size(window: &gtk::ApplicationWindow, sender: &ComponentSender<App>) {
+    let report = {
+        let sender = sender.clone();
+        move |window: &gtk::ApplicationWindow| {
+            let maximized = window.is_maximized();
+            // GTK keeps the default size in step with the user's resizing, and leaves
+            // it at the normal size while maximized.
+            let (width, height) = window.default_size();
+            let size = (!maximized).then_some(WindowSize { width, height });
+            sender.input(AppMsg::WindowChanged { size, maximized });
+        }
+    };
+    let on_width = report.clone();
+    window.connect_default_width_notify(move |window| on_width(window));
+    let on_height = report.clone();
+    window.connect_default_height_notify(move |window| on_height(window));
+    window.connect_maximized_notify(move |window| report(window));
 }
 
 /// The tabbed panel along the bottom of the window: the log first, then the transfers
@@ -720,7 +808,7 @@ fn quit_on_signals(sender: &ComponentSender<App>) {
     }
 }
 
-/// Build the menu bar model: File, View (themes) and Tools (logging).
+/// Build the menu bar model: File, View (themes), Tools (logging) and Help (About).
 ///
 /// Lists sit in sections rather than nested submenus, so every menu opens as a single
 /// popup. The theme section holds one placeholder item that the [`ThemeList`] widget
@@ -761,9 +849,13 @@ fn build_menu() -> gio::Menu {
     tools_menu.append_section(Some("Log Level"), &level_section);
     tools_menu.append_section(None, &log_file_section);
 
+    let help_menu = gio::Menu::new();
+    help_menu.append_item(&RelmAction::<AboutAction>::to_menu_item("_About GuiSCP"));
+
     let menu_bar = gio::Menu::new();
     menu_bar.append_submenu(Some("_File"), &file_menu);
     menu_bar.append_submenu(Some("_View"), &view_menu);
     menu_bar.append_submenu(Some("_Tools"), &tools_menu);
+    menu_bar.append_submenu(Some("_Help"), &help_menu);
     menu_bar
 }

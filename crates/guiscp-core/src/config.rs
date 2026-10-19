@@ -78,6 +78,36 @@ impl ThemeChoice {
     }
 }
 
+/// Size of the main window, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowSize {
+    /// Width in pixels.
+    pub width: i32,
+    /// Height in pixels.
+    pub height: i32,
+}
+
+impl WindowSize {
+    /// Smallest size a saved window is restored at, so a damaged or odd settings file
+    /// can never bring the window back too small to use.
+    pub const MIN: Self = Self {
+        width: 480,
+        height: 320,
+    };
+
+    /// This size, raised to at least [`WindowSize::MIN`] in each direction.
+    ///
+    /// # Returns
+    ///
+    /// A size safe to open the window at
+    pub fn at_least_min(self) -> Self {
+        Self {
+            width: self.width.max(Self::MIN.width),
+            height: self.height.max(Self::MIN.height),
+        }
+    }
+}
+
 /// Persisted user preferences.
 // `#[serde(default)]` fills fields missing from older files from `Config::default()`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +122,11 @@ pub struct Config {
     log_level: LogLevel,
     /// Open the Login dialog when the app starts.
     show_login_at_startup: bool,
+    /// Main window size when the app was last closed (its normal size, even if it was
+    /// maximized then); `None` until the app has been closed once.
+    window_size: Option<WindowSize>,
+    /// Whether the main window was maximized when the app was last closed.
+    window_maximized: bool,
 }
 
 // Written out by hand (not derived) because the Login dialog should show at startup
@@ -104,6 +139,8 @@ impl Default for Config {
             last_dir_on_disk: BTreeMap::new(),
             log_level: LogLevel::default(),
             show_login_at_startup: true,
+            window_size: None,
+            window_maximized: false,
         }
     }
 }
@@ -263,6 +300,35 @@ impl Config {
         self.show_login_at_startup = show;
     }
 
+    /// Main window size when the app was last closed, if known.
+    pub fn window_size(&self) -> Option<WindowSize> {
+        self.window_size
+    }
+
+    /// Remember the main window's normal (not maximized) size (call [`Config::save`] to
+    /// persist it).
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - Current window size
+    pub fn set_window_size(&mut self, size: WindowSize) {
+        self.window_size = Some(size);
+    }
+
+    /// Whether the main window was maximized when the app was last closed.
+    pub fn window_maximized(&self) -> bool {
+        self.window_maximized
+    }
+
+    /// Remember whether the main window is maximized (call [`Config::save`] to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `maximized` - `true` if the window is maximized
+    pub fn set_window_maximized(&mut self, maximized: bool) {
+        self.window_maximized = maximized;
+    }
+
     /// Log level the user picked.
     pub fn log_level(&self) -> LogLevel {
         self.log_level
@@ -294,6 +360,21 @@ mod tests {
     }
 
     #[test]
+    fn window_size_at_least_min_raises_only_small_sides() {
+        let tiny = WindowSize {
+            width: 10,
+            height: 2000,
+        };
+        assert_eq!(
+            tiny.at_least_min(),
+            WindowSize {
+                width: WindowSize::MIN.width,
+                height: 2000
+            }
+        );
+    }
+
+    #[test]
     fn missing_file_loads_defaults() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let config = Config::load(&temp.path().join("absent.json")).expect("load defaults");
@@ -310,6 +391,11 @@ mod tests {
         config.set_last_local_dir(PathBuf::from("/srv/data"));
         config.set_log_level(LogLevel::Warn);
         config.set_last_dir_on_disk(PathBuf::from("/media/usb"), PathBuf::from("/media/usb/a"));
+        config.set_window_size(WindowSize {
+            width: 1400,
+            height: 900,
+        });
+        config.set_window_maximized(true);
 
         // Act
         config.save(&path).expect("save config");

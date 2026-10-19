@@ -11,7 +11,9 @@
 //! * [`entry`] / [`local_fs`] / [`disks`] - files, local folders and disks
 //! * [`logging`] / [`log_reader`] - the log file and following it live
 //! * [`format`] - sizes, dates and shortened titles for display
+//! * [`about`] - the app's name, description and build details
 
+pub mod about;
 pub mod config;
 pub mod disks;
 pub mod entry;
