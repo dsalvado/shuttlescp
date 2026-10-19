@@ -151,6 +151,8 @@ pub struct App {
     placeholder: gtk::Label,
     /// File > Disconnect, enabled only while connected.
     disconnect_action: RelmAction<DisconnectAction>,
+    /// The connection's transfers tab in the bottom panel.
+    transfer_tab: TransferTab,
 }
 
 #[relm4::component(pub)]
@@ -312,7 +314,7 @@ impl SimpleComponent for App {
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
         let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
         placeholder.add_css_class("dim-label");
-        let bottom_panel = bottom_panel(logger.file_path().map(Path::to_path_buf));
+        let (bottom_panel, transfer_tab) = bottom_panel(logger.file_path().map(Path::to_path_buf));
         let menu_model = build_menu();
         let theme_list = ThemeList::new(themes, config.theme());
         quit_on_signals(&sender);
@@ -360,6 +362,7 @@ impl SimpleComponent for App {
             split: None,
             placeholder: placeholder.clone(),
             disconnect_action,
+            transfer_tab,
         };
         let widgets = view_output!();
         // The session's left/right split is the notebook's first page.
@@ -477,6 +480,7 @@ impl App {
                 split.set_end_child(Some(&self.placeholder));
             }
             self.disconnect_action.set_enabled(false);
+            self.transfer_tab.show_connection(None);
             // Dropping the pane drops its session, which closes the connection.
             drop(connection);
         }
@@ -513,6 +517,8 @@ impl App {
             split.set_end_child(Some(pane.widget()));
         }
         self.disconnect_action.set_enabled(true);
+        self.transfer_tab
+            .show_connection(Some(&site.display_name()));
         self.connection = Some(Connection {
             name: site.display_name(),
             host: remote.host().to_owned(),
@@ -617,21 +623,27 @@ fn register_actions(
 /// # Arguments
 ///
 /// * `log_path` - The log file, if logging to a file works
-fn bottom_panel(log_path: Option<PathBuf>) -> gtk::Notebook {
+fn bottom_panel(log_path: Option<PathBuf>) -> (gtk::Notebook, TransferTab) {
     let panel = gtk::Notebook::new();
     panel.add_css_class("bottom-panel");
-    panel.append_page(
-        &log_tail(log_path),
-        Some(&panel_tab("text-x-generic-symbolic", "Log")),
-    );
-    // Empty for now; a place to try out focus changes between tabs.
-    let test_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    test_page.add_css_class("bottom-panel-page");
-    panel.append_page(
-        &test_page,
-        Some(&panel_tab("applications-engineering-symbolic", "Test")),
-    );
-    panel
+
+    // First and selected by default: the connection's transfers.
+    let body = gtk::Label::builder()
+        .vexpand(true)
+        .css_classes(["dim-label"])
+        .build();
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    page.append(&body);
+    let (tab, title) = panel_tab("network-transmit-receive-symbolic", "");
+    panel.append_page(&page, Some(&tab));
+    let transfer_tab = TransferTab { title, body };
+    transfer_tab.show_connection(None);
+
+    let (log_tab, _) = panel_tab("text-x-generic-symbolic", "Log");
+    panel.append_page(&log_tail(log_path), Some(&log_tab));
+
+    panel.set_current_page(Some(0));
+    (panel, transfer_tab)
 }
 
 /// A bottom panel tab label: a small icon and a name.
@@ -640,11 +652,53 @@ fn bottom_panel(log_path: Option<PathBuf>) -> gtk::Notebook {
 ///
 /// * `icon` - Theme icon name
 /// * `name` - Tab name
-fn panel_tab(icon: &str, name: &str) -> gtk::Box {
+///
+/// # Returns
+///
+/// The label widget for the tab, and its text label (to rename the tab later)
+fn panel_tab(icon: &str, name: &str) -> (gtk::Box, gtk::Label) {
     let label = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let text = gtk::Label::new(Some(name));
     label.append(&gtk::Image::from_icon_name(icon));
-    label.append(&gtk::Label::new(Some(name)));
-    label
+    label.append(&text);
+    (label, text)
+}
+
+/// A connection's transfers tab in the bottom panel. It will show the progress of
+/// transfers between the local and remote panes; for now it shows which connection it
+/// belongs to. With several connections, each will get a tab like this.
+struct TransferTab {
+    /// Tab title: the connection it belongs to.
+    title: gtk::Label,
+    /// Page content.
+    body: gtk::Label,
+}
+
+impl TransferTab {
+    /// Show the tab for a connection, or as "Not connected".
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` - Name of the connection (e.g. "me@host"), or `None`
+    fn show_connection(&self, connection: Option<&str>) {
+        match connection {
+            Some(name) => {
+                // Connection names can be long: keep the tab small by shortening the
+                // middle (a GTK ellipsized label would shrink to just "..." in a tab).
+                self.title
+                    .set_label(&shorten_middle(name, TAB_TITLE_MAX_CHARS));
+                self.title
+                    .set_tooltip_text(Some(&format!("Transfers for {name}")));
+                self.body.set_label("No transfers yet");
+            }
+            None => {
+                self.title.set_label(NOT_CONNECTED);
+                self.title
+                    .set_tooltip_text(Some("Transfers (not connected)"));
+                self.body.set_label(NOT_CONNECTED);
+            }
+        }
+    }
 }
 
 /// Close the app gracefully on SIGHUP, SIGINT (Ctrl+C) and SIGTERM, so settings are saved
