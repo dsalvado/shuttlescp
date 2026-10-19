@@ -57,6 +57,8 @@ pub enum LoginMsg {
     Close,
     /// An entry in the site list was clicked.
     SiteClicked(Selection),
+    /// An entry in the site list was double-clicked: open a saved site straight away.
+    SiteDoubleClicked(Selection),
     /// Start editing the selected saved site.
     Edit,
     /// Ask to confirm deleting the selected saved site.
@@ -776,8 +778,11 @@ impl Component for LoginDialog {
         tracing::debug!("loaded {} saved sites", book.sites.len());
 
         let click_sender = sender.clone();
-        let site_list =
-            SiteList::new(move |selection| click_sender.input(LoginMsg::SiteClicked(selection)));
+        let double_click_sender = sender.clone();
+        let site_list = SiteList::new(
+            move |selection| click_sender.input(LoginMsg::SiteClicked(selection)),
+            move |selection| double_click_sender.input(LoginMsg::SiteDoubleClicked(selection)),
+        );
 
         let mut model = Self {
             book,
@@ -817,6 +822,18 @@ impl Component for LoginDialog {
                 root.present();
             }
             LoginMsg::Close => root.close(),
+            LoginMsg::SiteDoubleClicked(selection @ Selection::Saved(_)) => {
+                // The first click of the double-click has already picked the site; this
+                // only makes sure, then logs in as the Login button would.
+                if !self.editing && !self.busy {
+                    if self.selection != selection {
+                        self.select(selection);
+                    }
+                    self.start_login(&sender, None);
+                }
+            }
+            // Double-clicking "New Site" needs nothing beyond its single click.
+            LoginMsg::SiteDoubleClicked(Selection::NewSite | Selection::Nothing) => {}
             LoginMsg::SiteClicked(selection) => {
                 if !self.editing && !self.busy {
                     self.select(selection);
@@ -1120,7 +1137,12 @@ impl SiteList {
     ///
     /// * `on_click` - Called with the clicked entry. Clicks are used rather than selection
     ///   changes so that clicking an already highlighted "New Site" still starts a site.
-    fn new(on_click: impl Fn(Selection) + 'static) -> Self {
+    /// * `on_double_click` - Called with the double-clicked entry (after its first click
+    ///   has reached `on_click`)
+    fn new(
+        on_click: impl Fn(Selection) + 'static,
+        on_double_click: impl Fn(Selection) + 'static,
+    ) -> Self {
         // GTK's own selection is off: it would also highlight whichever row merely has
         // keyboard focus (the first row when the dialog opens). The picked row is marked
         // with the "picked" style class instead.
@@ -1130,6 +1152,24 @@ impl SiteList {
             .css_classes(["site-list"])
             .build();
         list.connect_row_activated(move |_, row| on_click(selection_for_row(row.index())));
+
+        // Watch for double-clicks without taking the clicks away from the list: the
+        // capture phase sees each press before the list does, and the gesture never
+        // claims it, so single-click picking keeps working.
+        let double_click = gtk::GestureClick::new();
+        double_click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak_list = list.downgrade();
+        double_click.connect_pressed(move |_, presses, _x, y| {
+            if presses != 2 {
+                return;
+            }
+            // `y` is a fractional pixel position; rows are found by whole pixels.
+            let row = weak_list.upgrade().and_then(|list| list.row_at_y(y as i32));
+            if let Some(row) = row {
+                on_double_click(selection_for_row(row.index()));
+            }
+        });
+        list.add_controller(double_click);
         Self { list }
     }
 
