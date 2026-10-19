@@ -618,7 +618,9 @@ fn register_actions(
     disconnect
 }
 
-/// The tabbed panel along the bottom of the window. Its first tab follows the log file.
+/// The tabbed panel along the bottom of the window: the log first, then the transfers
+/// tab (one per connection once several connections are supported, each added after
+/// the log).
 ///
 /// # Arguments
 ///
@@ -627,7 +629,9 @@ fn bottom_panel(log_path: Option<PathBuf>) -> (gtk::Notebook, TransferTab) {
     let panel = gtk::Notebook::new();
     panel.add_css_class("bottom-panel");
 
-    // First and selected by default: the connection's transfers.
+    let (log_tab, _) = panel_tab("text-x-generic-symbolic", "Log");
+    panel.append_page(&log_tail(log_path), Some(&log_tab));
+
     let body = gtk::Label::builder()
         .vexpand(true)
         .css_classes(["dim-label"])
@@ -635,14 +639,12 @@ fn bottom_panel(log_path: Option<PathBuf>) -> (gtk::Notebook, TransferTab) {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
     page.append(&body);
     let (tab, title) = panel_tab("network-transmit-receive-symbolic", "");
-    panel.append_page(&page, Some(&tab));
+    let transfer_page = panel.append_page(&page, Some(&tab));
     let transfer_tab = TransferTab { title, body };
     transfer_tab.show_connection(None);
 
-    let (log_tab, _) = panel_tab("text-x-generic-symbolic", "Log");
-    panel.append_page(&log_tail(log_path), Some(&log_tab));
-
-    panel.set_current_page(Some(0));
+    // Selected by default: the connection's transfers.
+    panel.set_current_page(Some(transfer_page));
     (panel, transfer_tab)
 }
 
