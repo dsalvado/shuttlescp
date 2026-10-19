@@ -39,6 +39,8 @@ const QUIT_SIGNALS: [(i32, &str); 3] = [
 const WINDOW_CLOSED: &str = "window closed";
 /// Exit reason for File > Quit and Ctrl+Q.
 const QUIT_COMMAND: &str = "File > Quit";
+/// Exit reason when the last session tab is closed with its X button.
+const SESSION_TAB_CLOSED: &str = "session tab closed";
 /// Longest session tab title, in characters; longer titles are cut in the middle.
 const TAB_TITLE_MAX_CHARS: usize = 32;
 /// Icon of a session tab.
@@ -106,6 +108,9 @@ pub enum AppMsg {
     RemoteDirChanged(PathBuf),
     /// Close the connection (File > Disconnect).
     Disconnect,
+    /// The session tab's X was clicked: disconnect and close the session. It is the
+    /// last (only) session tab, so the app exits.
+    CloseSession,
 }
 
 /// The open connection shown in the right half of the session.
@@ -254,6 +259,16 @@ impl SimpleComponent for App {
                 #[watch]
                 set_label: &shorten_middle(&model.tab_title(), TAB_TITLE_MAX_CHARS),
             },
+            // Close button, shown while connected: disconnects and closes the session.
+            gtk::Button {
+                set_icon_name: "window-close-symbolic",
+                set_has_frame: false,
+                add_css_class: "tab-close",
+                set_tooltip_text: Some("Disconnect and close this session"),
+                #[watch]
+                set_visible: model.connection.is_some(),
+                connect_clicked => AppMsg::CloseSession,
+            },
         },
 
         // Tab label of the "New Tab" placeholder, greyed out while disabled.
@@ -396,16 +411,14 @@ impl SimpleComponent for App {
                     connection.dir = dir;
                 }
             }
-            AppMsg::Disconnect => {
-                if let Some(connection) = self.connection.take() {
-                    tracing::info!("disconnected from {}", connection.name);
-                    if let Some(split) = &self.split {
-                        split.set_end_child(Some(&self.placeholder));
-                    }
-                    self.disconnect_action.set_enabled(false);
-                    // Dropping the pane drops its session, which closes the connection.
-                    drop(connection);
-                }
+            AppMsg::Disconnect => self.disconnect(),
+            AppMsg::CloseSession => {
+                self.disconnect();
+                // There is only one session tab today, so closing it leaves none: exit,
+                // as WinSCP does when its last session closes.
+                tracing::info!("closing: {SESSION_TAB_CLOSED}");
+                self.exit_reason = SESSION_TAB_CLOSED;
+                relm4::main_application().quit();
             }
             AppMsg::ShowLoginAtStartup(show) => {
                 tracing::info!("show Login dialog at startup: {show}");
@@ -454,6 +467,19 @@ impl App {
             .file_name()
             .map_or_else(|| dir.to_string_lossy(), |name| name.to_string_lossy());
         format!("{host} - {folder}")
+    }
+
+    /// Close the current connection, if any, and show "Not connected" again.
+    fn disconnect(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            tracing::info!("disconnected from {}", connection.name);
+            if let Some(split) = &self.split {
+                split.set_end_child(Some(&self.placeholder));
+            }
+            self.disconnect_action.set_enabled(false);
+            // Dropping the pane drops its session, which closes the connection.
+            drop(connection);
+        }
     }
 
     /// Connection text for the status bar.

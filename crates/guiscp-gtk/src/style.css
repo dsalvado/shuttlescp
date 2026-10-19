@@ -256,3 +256,12 @@ list.theme-list > row.separator-row:hover {
     min-width: 20px;
     padding: 2px 4px;
 }
+
+/* Close (X) button on a session tab: small and square, in line with the tab text. */
+button.tab-close {
+    min-height: 0;
+    min-width: 0;
+    padding: 1px;
+    margin-left: 2px;
+    border-radius: 3px;
+}
