@@ -100,6 +100,7 @@ async fn copy_reproduces_the_tree_and_reports_every_item() {
 
     // Assert: 5 items (a, top.txt, one.txt, sub, two.txt), all copied, sources kept.
     assert_eq!(summary.done, 5);
+    assert_eq!(summary.bytes, 600_007, "the three files' sizes");
     assert!(summary.is_complete());
     assert_eq!(
         std::fs::read_to_string(dst.join("a/sub/two.txt")).expect("read"),

@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
@@ -37,7 +37,11 @@ const BAR_WIDTH: i32 = 160;
 const INDENT: i32 = 18;
 /// Width of the slot at the end of each line for the result icon (or a job's Cancel /
 /// Retry button), so bars and texts stay lined up whatever it shows.
-const END_SLOT_WIDTH: i32 = 24;
+const END_SLOT_WIDTH: i32 = 48;
+/// A job that finished without problems starts fading this long after it ends...
+const FADE_AFTER: Duration = Duration::from_secs(8);
+/// ...and leaves the list this long after it ends (the fade itself is in style.css).
+const REMOVE_AFTER: Duration = Duration::from_secs(10);
 /// Width of the slot for the expander arrow; files get an empty one, so their names
 /// line up with folder names.
 const EXPANDER_SLOT_WIDTH: i32 = 20;
@@ -77,6 +81,10 @@ pub enum TransferPanelMsg {
     },
     /// Remove finished jobs from the list.
     ClearFinished,
+    /// Remove one finished job from the list.
+    Dismiss(u64),
+    /// Start fading out a finished job before it is removed.
+    Fade(u64),
     /// A server was connected, or (`None`) disconnected: jobs using the old one stop.
     Connection(Option<PanelConnection>),
     /// Resume the jobs interrupted in an earlier session.
@@ -139,6 +147,8 @@ struct JobState {
     meter: RateMeter,
     summary: Option<JobSummary>,
     expanded: bool,
+    /// Fading out, about to leave the list.
+    fading: bool,
 }
 
 impl JobState {
@@ -161,6 +171,10 @@ struct RowWidgets {
     status: gtk::Image,
     cancel: gtk::Button,
     retry: gtk::Button,
+    /// The whole line, faded out with its job.
+    line: gtk::Box,
+    /// Removes a finished job from the list.
+    remove: gtk::Button,
 }
 
 /// State shared by the panel and its list rows.
@@ -308,6 +322,31 @@ impl Component for TransferPanel {
             TransferPanelMsg::Retry(id) => self.retry(id, &sender),
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
             TransferPanelMsg::ClearFinished => self.clear_finished(),
+            TransferPanelMsg::Dismiss(id) => {
+                let finished = self
+                    .shared
+                    .borrow()
+                    .jobs
+                    .get(&id)
+                    .is_some_and(|job| !job.is_running());
+                if finished {
+                    self.remove_job(id);
+                    self.save_pending();
+                }
+            }
+            TransferPanelMsg::Fade(id) => {
+                let mut shared = self.shared.borrow_mut();
+                if let Some(job) = shared.jobs.get_mut(&id) {
+                    job.fading = true;
+                }
+                let keys: Vec<RowKey> = shared
+                    .bound
+                    .keys()
+                    .filter(|key| key.job == id)
+                    .copied()
+                    .collect();
+                refresh(&shared, &keys, Instant::now());
+            }
             TransferPanelMsg::Connection(connection) => self.set_connection(connection),
             TransferPanelMsg::ResumeInterrupted => {
                 for pending in std::mem::take(&mut self.interrupted) {
@@ -361,7 +400,7 @@ impl Component for TransferPanel {
                 reply,
             } => self.ask_conflict(root, id, item, existing, incoming, reply, now),
             TransferEvent::JobFinished(summary) => {
-                self.job_finished(id, summary, now);
+                self.job_finished(id, summary, now, &sender);
                 self.update_chrome(&sender);
                 let _ = sender.output(TransferPanelOutput::JobFinished);
             }
@@ -416,6 +455,7 @@ impl TransferPanel {
                 meter: RateMeter::new(Instant::now()),
                 summary: None,
                 expanded: true,
+                fading: false,
             },
         );
         self.rows.append(&row_object(RowKey {
@@ -450,6 +490,16 @@ impl TransferPanel {
         self.start(job, old.pending_key, sender);
     }
 
+    /// Remove a job from the list, and its entry in the unfinished-transfers file (the
+    /// user has seen how it ended). Call [`TransferPanel::save_pending`] afterwards.
+    fn remove_job(&mut self, id: u64) {
+        let removed = self.shared.borrow_mut().jobs.remove(&id);
+        if let Some(key) = removed.and_then(|job| job.pending_key) {
+            self.pending.remove(&key);
+        }
+        self.remove_rows(id);
+    }
+
     /// Remove finished jobs (and their entries in the unfinished-transfers file: the
     /// user has seen how they ended).
     fn clear_finished(&mut self) {
@@ -462,11 +512,7 @@ impl TransferPanel {
             .map(|(&id, _)| id)
             .collect();
         for id in finished {
-            let removed = self.shared.borrow_mut().jobs.remove(&id);
-            if let Some(key) = removed.and_then(|job| job.pending_key) {
-                self.pending.remove(&key);
-            }
-            self.remove_rows(id);
+            self.remove_job(id);
         }
         self.save_pending();
     }
@@ -635,7 +681,28 @@ impl TransferPanel {
     }
 
     /// The whole job finished.
-    fn job_finished(&mut self, id: u64, summary: JobSummary, now: Instant) {
+    ///
+    /// A job that went well fades out and leaves the list after a while; one with
+    /// problems stays until removed, so they can be seen (and retried).
+    fn job_finished(
+        &mut self,
+        id: u64,
+        summary: JobSummary,
+        now: Instant,
+        sender: &ComponentSender<Self>,
+    ) {
+        if summary.is_complete() {
+            for (delay, message) in [
+                (
+                    FADE_AFTER,
+                    TransferPanelMsg::Fade as fn(u64) -> TransferPanelMsg,
+                ),
+                (REMOVE_AFTER, TransferPanelMsg::Dismiss),
+            ] {
+                let sender = sender.clone();
+                glib::timeout_add_local_once(delay, move || sender.input(message(id)));
+            }
+        }
         let (fold, forget) = {
             let mut shared = self.shared.borrow_mut();
             let Some(job) = shared.jobs.get_mut(&id) else {
@@ -947,6 +1014,8 @@ struct RowView {
     status: Option<&'static str>,
     can_cancel: bool,
     can_retry: bool,
+    /// A finished job's header: it can be removed from the list.
+    can_remove: bool,
 }
 
 /// Show a row's current state in its widgets.
@@ -984,6 +1053,8 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     widgets
         .status
         .set_visible(!row.can_cancel && !row.can_retry);
+    widgets.remove.set_visible(row.can_remove);
+    set_class(&widgets.line, "fading", job.fading);
 }
 
 /// Add or remove a CSS class.
@@ -1031,10 +1102,12 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         tooltip: title.clone(),
         name: title,
         heading: true,
-        fraction: Some(match &job.summary {
-            Some(summary) if summary.is_complete() => 1.0,
-            _ => fraction,
-        }),
+        fraction: match &job.summary {
+            // A job that could not start has nothing to show progress of.
+            Some(summary) if summary.error.is_some() => None,
+            Some(summary) if summary.is_complete() => Some(1.0),
+            _ => Some(fraction),
+        },
         info,
         error,
         status,
@@ -1043,6 +1116,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             .summary
             .as_ref()
             .is_some_and(|summary| !summary.is_complete()),
+        can_remove: !job.is_running(),
     }
 }
 
@@ -1146,6 +1220,7 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         status,
         can_cancel: false,
         can_retry: false,
+        can_remove: false,
     }
 }
 
@@ -1253,6 +1328,9 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     end_slot.append(&status);
     end_slot.append(&cancel);
     end_slot.append(&retry);
+    // Only finished jobs show it; running ones show Cancel, which looks the same.
+    let remove = small_button("window-close-symbolic", Some("Remove from the list"));
+    end_slot.append(&remove);
     line.append(&indent);
     line.append(&expander_slot);
     line.append(&icon);
@@ -1279,8 +1357,9 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     send(&expander, "toggle");
     send(&cancel, "cancel");
     send(&retry, "retry");
+    send(&remove, "dismiss");
     (
-        line,
+        line.clone(),
         RowWidgets {
             key,
             indent,
@@ -1292,6 +1371,8 @@ fn build_row() -> (gtk::Box, RowWidgets) {
             status,
             cancel,
             retry,
+            line,
+            remove,
         },
     )
 }
@@ -1322,6 +1403,7 @@ fn register_actions(root: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
     };
     add("toggle", |job, item| TransferPanelMsg::Toggle { job, item });
     add("cancel", |job, _| TransferPanelMsg::Cancel(job));
+    add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
     add("retry", |job, _| TransferPanelMsg::Retry(job));
     root.insert_action_group(ACTION_GROUP, Some(&group));
 }

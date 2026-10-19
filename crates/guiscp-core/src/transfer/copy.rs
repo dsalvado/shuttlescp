@@ -14,6 +14,7 @@ use super::{
     CancelFlag, ConflictAnswer, ConflictChoice, ConflictReply, FILES_AT_ONCE, ItemKind,
     ItemOutcome, Job, JobKind, PlanItem, Sink, TransferEvent,
 };
+use crate::format::format_size;
 
 /// Bytes read and written per step of a file copy.
 const CHUNK_BYTES: usize = 256 * 1024;
@@ -121,7 +122,10 @@ pub(super) async fn copy_items(
             // Holding the slot until the copy ends lets the next file start.
             let _slot = slot;
             let outcome = match action {
-                FileAction::AlreadyThere => finish_source(&item, &src, delete_source).await,
+                FileAction::AlreadyThere => {
+                    tracing::info!("already copied earlier: {}", item.dest.display());
+                    finish_source(&item, &src, delete_source).await
+                }
                 FileAction::Copy | FileAction::Overwrite => {
                     let replace = action == FileAction::Overwrite;
                     copy_file(&item, &src, &dst, delete_source, replace, &cancel, &sink).await
@@ -332,6 +336,7 @@ async fn copy_file(
     cancel: &CancelFlag,
     sink: &Sink,
 ) -> ItemOutcome {
+    let started = Instant::now();
     let partial = partial_path(&item.dest);
     let offset = resume_offset(item, src, dst, &partial).await;
     if offset > 0 {
@@ -373,7 +378,41 @@ async fn copy_file(
         // The copy itself is fine; only its date differs.
         tracing::debug!("{error}");
     }
-    finish_source(item, src, delete_source).await
+    let outcome = finish_source(item, src, delete_source).await;
+    if outcome == ItemOutcome::Done {
+        log_copied(item, offset, started.elapsed(), delete_source);
+    }
+    outcome
+}
+
+/// Record a finished file copy in the log: what went where, how big, how fast.
+///
+/// # Arguments
+///
+/// * `offset` - Bytes copied by an earlier, interrupted attempt
+/// * `took` - How long this attempt took
+/// * `moved` - The source was deleted afterwards
+fn log_copied(item: &PlanItem, offset: u64, took: Duration, moved: bool) {
+    let sent = item.size.saturating_sub(offset);
+    let seconds = took.as_secs_f64();
+    let speed = if seconds > 0.0 {
+        // Rounded to whole bytes for display.
+        format!(", {}/s", format_size((sent as f64 / seconds) as u64))
+    } else {
+        String::new()
+    };
+    let resumed = if offset > 0 {
+        format!(", resumed at {}", format_size(offset))
+    } else {
+        String::new()
+    };
+    tracing::info!(
+        "{} {} -> {}: {} in {seconds:.1} s{speed}{resumed}",
+        if moved { "moved" } else { "copied" },
+        item.source.display(),
+        item.dest.display(),
+        format_size(item.size),
+    );
 }
 
 /// Where to continue an earlier partial copy: its size, if it is not longer than the
@@ -488,8 +527,18 @@ pub(super) async fn delete_items(
             }
             .map_or_else(ItemOutcome::Failed, |()| ItemOutcome::Done)
         };
-        if let ItemOutcome::Failed(error) = &outcome {
-            tracing::warn!("{error}");
+        match &outcome {
+            ItemOutcome::Done => tracing::info!(
+                "deleted {}{}",
+                if item.kind == ItemKind::Folder {
+                    "folder "
+                } else {
+                    ""
+                },
+                item.source.display()
+            ),
+            ItemOutcome::Failed(error) => tracing::warn!("{error}"),
+            ItemOutcome::Skipped | ItemOutcome::Cancelled => {}
         }
         sink(TransferEvent::ItemFinished {
             id: item.id,

@@ -291,3 +291,11 @@ button.tab-close {
 .transfer-panel .transfer-list {
     background: transparent;
 }
+
+/* A finished transfer greys out over two seconds before it leaves the list. */
+.transfer-panel .transfer-row {
+    transition: opacity 2s ease-in;
+}
+.transfer-panel .transfer-row.fading {
+    opacity: 0.25;
+}

@@ -35,6 +35,7 @@ use tokio::sync::oneshot;
 pub use meter::{RateMeter, fraction, percent};
 pub use ops::{check_name, create_folder, rename};
 
+use crate::format::format_size;
 use crate::remote::Remote;
 use endpoint::Endpoint;
 
@@ -218,6 +219,8 @@ pub struct JobSummary {
     pub failed: usize,
     /// Items not done because the job was cancelled.
     pub cancelled: usize,
+    /// Bytes of the files copied (0 for deletes).
+    pub bytes: u64,
     /// Why the job could not start at all (e.g. a source could not be read).
     pub error: Option<String>,
 }
@@ -360,6 +363,7 @@ pub async fn run(
     on_event: impl Fn(TransferEvent) + Send + Sync + 'static,
 ) -> JobSummary {
     let sink: Sink = Arc::new(on_event);
+    let started = std::time::Instant::now();
     let endpoint = |side: Side| match side {
         Side::Local => Some(Endpoint::Local),
         Side::Remote => remote.clone().map(Endpoint::Remote),
@@ -371,8 +375,20 @@ pub async fn run(
             execute(&job, source, dest, &cancel, &sink).await
         }
     };
+    let seconds = started.elapsed().as_secs_f64();
+    let amount = if job.kind == JobKind::Delete || summary.bytes == 0 {
+        String::new()
+    } else {
+        // Rounded to whole bytes for display.
+        let speed = (summary.bytes as f64 / seconds.max(0.001)) as u64;
+        format!(
+            "; {} at {}/s",
+            format_size(summary.bytes),
+            format_size(speed)
+        )
+    };
     tracing::info!(
-        "{}: {} done, {} skipped, {} failed, {} cancelled{}",
+        "{}: {} done, {} skipped, {} failed, {} cancelled in {seconds:.1} s{amount}{}",
         job.title(),
         summary.done,
         summary.skipped,
@@ -430,6 +446,13 @@ async fn execute(
         (_, None) => return failed_to_start("not connected to a server"),
     };
     let mut summary = JobSummary::default();
+    if job.kind != JobKind::Delete {
+        summary.bytes = items
+            .iter()
+            .filter(|item| item.kind == ItemKind::File && outcomes[item.id] == ItemOutcome::Done)
+            .map(|item| item.size)
+            .sum();
+    }
     for outcome in outcomes {
         match outcome {
             ItemOutcome::Done => summary.done += 1,
