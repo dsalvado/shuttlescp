@@ -6,9 +6,9 @@ use relm4::gtk;
 use relm4::gtk::glib::variant::ToVariant;
 use relm4::gtk::prelude::*;
 
-use crate::theme::ThemeChoice;
+use guiscp_core::config::ThemeChoice;
 
-/// Action every row triggers; its target is the row's `ThemeChoice::action_target()`.
+/// Action every row triggers; its target is the row's `ThemeChoice::key()`.
 const THEME_ACTION: &str = "win.theme";
 /// Tallest the list grows before it scrolls, in pixels (about ten rows).
 const MAX_HEIGHT: i32 = 240;
@@ -129,7 +129,7 @@ fn theme_row(choice: &ThemeChoice, checked: bool) -> gtk::ListBoxRow {
 
     let row = gtk::ListBoxRow::builder().child(&content).build();
     row.set_action_name(Some(THEME_ACTION));
-    row.set_action_target_value(Some(&choice.action_target().to_variant()));
+    row.set_action_target_value(Some(&choice.key().to_variant()));
     row
 }
 

@@ -1,25 +1,25 @@
-[package]
-name = "guiscp"
+# Workspace: the business logic and the user interface live in separate crates, so the
+# compiler keeps them apart.
+#
+# * `guiscp-core` - everything that is not GUI: sites, settings, encrypted export, the
+#   password keyring, SSH/SFTP, local file listing, logging and the login / import /
+#   export workflows. It must never depend on GTK, GLib or relm4, so other front ends
+#   (for example native Windows or macOS GUIs) can reuse it unchanged.
+# * `guiscp-gtk` - the Linux front end built with relm4 / GTK 4 (binary `guiscp`).
+[workspace]
+resolver = "3"
+members = ["crates/guiscp-core", "crates/guiscp-gtk"]
+# `cargo run` / `cargo build` at the top level build the GTK app by default.
+default-members = ["crates/guiscp-gtk"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-argon2 = "0.5"
-base64 = "0.22"
-chacha20poly1305 = "0.10"
-getrandom = { version = "0.3", features = ["std"] }
-glib-unix = "0.22"
-oo7 = "0.6"
-relm4 = "0.11"
-russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
-russh-sftp = "3"
+# Versions shared by both crates; each crate opts in with `name.workspace = true`.
+[workspace.dependencies]
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = "0.3"
-zeroize = "1"
-
-[dev-dependencies]
 tempfile = "3"

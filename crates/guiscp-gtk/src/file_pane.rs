@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::iter;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use relm4::gtk::prelude::*;
 use relm4::gtk::{gdk, gio, glib};
@@ -14,10 +13,13 @@ use relm4::prelude::*;
 use relm4::typed_view::OrdFn;
 use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 
+use guiscp_core::disks;
+use guiscp_core::entry::{EntryKind, FileEntry};
+use guiscp_core::format::{format_modified, format_size};
+use guiscp_core::local_fs;
+use guiscp_core::remote::Remote;
+
 use crate::disk_picker::DiskPicker;
-use crate::disks;
-use crate::local_fs::{self, EntryKind, FileEntry};
-use crate::remote::Remote;
 
 /// Up-arrow picture drawn over the folder icon of the ".." row, embedded at compile time.
 const UP_ARROW_SVG: &[u8] = include_bytes!("icons/up-arrow.svg");
@@ -528,21 +530,6 @@ fn compare_rows(a: &Row, b: &Row, compare: fn(&FileEntry, &FileEntry) -> Orderin
     }
 }
 
-/// Size order: directories first, then smallest to largest, then by name.
-fn by_size(a: &FileEntry, b: &FileEntry) -> Ordering {
-    a.kind()
-        .cmp(&b.kind())
-        .then_with(|| a.size().cmp(&b.size()))
-        .then_with(|| a.listing_order(b))
-}
-
-/// Date order: oldest to newest, then by name.
-fn by_modified(a: &FileEntry, b: &FileEntry) -> Ordering {
-    a.modified()
-        .cmp(&b.modified())
-        .then_with(|| a.listing_order(b))
-}
-
 /// Name column: the desktop's icon for the item plus its name. Sorts directories first.
 struct NameColumn;
 
@@ -634,7 +621,7 @@ impl RelmColumn for SizeColumn {
     }
 
     fn sort_fn() -> OrdFn<Self::Item> {
-        Some(Box::new(|a, b| compare_rows(a, b, by_size)))
+        Some(Box::new(|a, b| compare_rows(a, b, FileEntry::size_order)))
     }
 }
 
@@ -662,89 +649,15 @@ impl RelmColumn for ModifiedColumn {
     }
 
     fn sort_fn() -> OrdFn<Self::Item> {
-        Some(Box::new(|a, b| compare_rows(a, b, by_modified)))
+        Some(Box::new(|a, b| {
+            compare_rows(a, b, FileEntry::modified_order)
+        }))
     }
-}
-
-/// Format a byte count with binary units, e.g. `1536` becomes `"1.5 KiB"`.
-///
-/// # Arguments
-///
-/// * `bytes` - Size in bytes
-///
-/// # Returns
-///
-/// Whole bytes below 1 KiB, otherwise one decimal place in the largest fitting unit
-fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    // `as f64` is an explicit numeric cast; Rust never converts number types implicitly.
-    let mut value = bytes as f64 / 1024.0;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
-}
-
-/// Format a timestamp as `YYYY-MM-DD HH:MM` in the local time zone.
-///
-/// # Arguments
-///
-/// * `time` - Timestamp to format
-///
-/// # Returns
-///
-/// The formatted time, or an empty string for times GLib cannot represent
-fn format_modified(time: SystemTime) -> String {
-    let seconds = match time.duration_since(UNIX_EPOCH) {
-        Ok(after) => i64::try_from(after.as_secs()).ok(),
-        // Pre-1970 timestamps come back as an error holding the distance before the epoch.
-        Err(before) => i64::try_from(before.duration().as_secs()).ok().map(|s| -s),
-    };
-    seconds
-        .and_then(|seconds| glib::DateTime::from_unix_local(seconds).ok())
-        .and_then(|date| date.format("%Y-%m-%d %H:%M").ok())
-        .map(String::from)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
-
-    #[test]
-    fn format_size_uses_bytes_below_one_kibibyte() {
-        assert_eq!(format_size(0), "0 B");
-        assert_eq!(format_size(1023), "1023 B");
-    }
-
-    #[test]
-    fn format_size_scales_to_largest_unit() {
-        assert_eq!(format_size(1024), "1.0 KiB");
-        assert_eq!(format_size(1536), "1.5 KiB");
-        assert_eq!(format_size(5 * 1024 * 1024 * 1024), "5.0 GiB");
-        assert_eq!(format_size(u64::MAX), "16.0 EiB");
-    }
-
-    #[test]
-    fn format_modified_produces_date_and_minutes() {
-        // Arrange: noon UTC keeps the date stable in every time zone within +-11h.
-        let time =
-            UNIX_EPOCH + Duration::from_secs(1_700_000_000 - 1_700_000_000 % 86_400 + 43_200);
-
-        // Act
-        let text = format_modified(time);
-
-        // Assert
-        assert!(text.starts_with("2023-11-14 "), "unexpected: {text}");
-        assert_eq!(text.len(), "2023-11-14 12:00".len());
-    }
 
     #[test]
     fn compare_rows_puts_parent_first() {
@@ -760,10 +673,16 @@ mod tests {
         };
 
         // Act + Assert
-        assert_eq!(compare_rows(&Row::Parent, &row, by_size), Ordering::Less);
-        assert_eq!(compare_rows(&row, &Row::Parent, by_size), Ordering::Greater);
         assert_eq!(
-            compare_rows(&Row::Parent, &Row::Parent, by_size),
+            compare_rows(&Row::Parent, &row, FileEntry::size_order),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_rows(&row, &Row::Parent, FileEntry::size_order),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_rows(&Row::Parent, &Row::Parent, FileEntry::size_order),
             Ordering::Equal
         );
     }

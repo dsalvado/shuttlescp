@@ -1,13 +1,12 @@
 //! Application logging to a file (and stderr) with a level that can change at runtime.
 
-use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use relm4::gtk::glib;
+use chrono::{Local, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{Event, Subscriber};
@@ -18,13 +17,16 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{Registry, fmt, reload};
 
-/// Crate name, used as the tracing target prefix of every event this app emits.
-const APP_TARGET: &str = env!("CARGO_PKG_NAME");
+/// The app's name: names the log folder and file, and is the tracing target prefix of
+/// every event the app emits. It matches the module paths of both the core crate
+/// (`guiscp_core::...`) and the front end (`guiscp::...`), since target filters match
+/// by prefix.
+const APP_TARGET: &str = "guiscp";
 /// Target for level-change notices. It is always enabled, so a change is recorded even
 /// when the new (or old) level would hide informational messages.
-const LEVEL_CHANGE_TARGET: &str = concat!(env!("CARGO_PKG_NAME"), "::log_level");
+const LEVEL_CHANGE_TARGET: &str = "guiscp::log_level";
 /// Target for the start and end of each app session; always enabled for the same reason.
-const SESSION_TARGET: &str = concat!(env!("CARGO_PKG_NAME"), "::session");
+const SESSION_TARGET: &str = "guiscp::session";
 /// When the log file grows past this size it is moved to `<name>.1` at startup.
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 /// Also echo log lines to the terminal. Off now that the Log tab in the bottom panel
@@ -174,15 +176,17 @@ impl Logger {
     }
 }
 
-/// Default log file location: `$XDG_STATE_HOME/guiscp/logs/guiscp.log`
-/// (`~/.local/state/guiscp/logs/guiscp.log` when the variable is unset).
+/// Default log file location: `$XDG_STATE_HOME/guiscp/logs/guiscp.log` on Linux
+/// (`~/.local/state/guiscp/logs/guiscp.log` when the variable is unset), and the
+/// platform's local app-data folder elsewhere.
 pub fn default_log_path() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(|| glib::home_dir().join(".local/state"), PathBuf::from)
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+        .unwrap_or_default()
         .join(APP_TARGET)
         .join("logs")
-        .join(concat!(env!("CARGO_PKG_NAME"), ".log"))
+        .join(format!("{APP_TARGET}.log"))
 }
 
 /// Install the global logger, writing to `log_path` (and stderr while `LOG_TO_STDERR`).
@@ -199,8 +203,9 @@ pub fn default_log_path() -> PathBuf {
 ///
 /// A [`Logger`] used to change the level later
 pub fn init(level: LogLevel, log_path: &Path) -> Logger {
-    let tag = session_tag(glib::random_int());
-    let session_label = session_label(glib::DateTime::now_local().ok(), &tag);
+    // A failing random source only makes the tag less unique, so fall back to 0.
+    let tag = session_tag(getrandom::u32().unwrap_or(0));
+    let session_label = session_label(Some(Local::now().naive_local()), &tag);
     let line_format = LineFormat {
         session: Arc::from(tag),
     };
@@ -290,10 +295,11 @@ fn session_tag(random: u32) -> String {
 ///
 /// * `start` - Local start time, or `None` if the clock could not be read
 /// * `tag` - The session tag from [`session_tag`]
-fn session_label(start: Option<glib::DateTime>, tag: &str) -> String {
-    let time = start
-        .and_then(|time| time.format("%Y%m%d-%H%M%S").ok())
-        .map_or_else(|| String::from("unknown-time"), String::from);
+fn session_label(start: Option<NaiveDateTime>, tag: &str) -> String {
+    let time = start.map_or_else(
+        || String::from("unknown-time"),
+        |time| time.format("%Y%m%d-%H%M%S").to_string(),
+    );
     format!("{time}-{tag}")
 }
 
@@ -340,15 +346,7 @@ where
 
 /// Current local time as `YYYY-MM-DD HH:MM:SS.mmm`.
 fn local_timestamp() -> String {
-    let Ok(now) = glib::DateTime::now_local() else {
-        return String::from("unknown time");
-    };
-    let mut text = now
-        .format("%Y-%m-%d %H:%M:%S")
-        .map_or_else(|_| String::from("unknown time"), String::from);
-    // Writing into a `String` cannot fail, so the result is safely ignored.
-    let _ = write!(text, ".{:03}", now.microsecond() / 1000);
-    text
+    Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
 /// Format a duration as `H:MM:SS`, e.g. 3725 seconds becomes `"1:02:05"`.
@@ -448,7 +446,9 @@ mod tests {
     #[test]
     fn session_label_combines_start_time_and_tag() {
         // Arrange
-        let start = glib::DateTime::from_local(2026, 10, 18, 7, 5, 12.0).expect("valid date");
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 18)
+            .and_then(|date| date.and_hms_opt(7, 5, 12))
+            .expect("valid date");
 
         // Act + Assert
         assert_eq!(
@@ -471,7 +471,8 @@ mod tests {
     #[test]
     fn filter_caps_other_crates_at_warn() {
         let filter = filter_for(LogLevel::Trace);
-        assert!(filter.would_enable(concat!(env!("CARGO_PKG_NAME"), "::app"), &Level::TRACE));
+        assert!(filter.would_enable("guiscp::app", &Level::TRACE));
+        assert!(filter.would_enable("guiscp_core::remote", &Level::TRACE));
         assert!(filter.would_enable("relm4", &Level::WARN));
         assert!(!filter.would_enable("relm4", &Level::DEBUG));
     }

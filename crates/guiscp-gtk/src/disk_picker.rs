@@ -6,7 +6,12 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 
-use crate::disks::{self, Disk};
+use guiscp_core::disks::{self, Disk};
+
+/// Display name of the root filesystem entry: its path, as Linux users know it.
+const ROOT_DISK_NAME: &str = "/";
+/// Theme icon of the root filesystem entry.
+const ROOT_DISK_ICON: &str = "drive-harddisk";
 
 /// Disk drop-down plus the data behind it.
 pub struct DiskPicker {
@@ -76,7 +81,7 @@ impl DiskPicker {
     /// Re-read the list of mounted disks. Leaves nothing selected; follow with
     /// [`DiskPicker::show_dir`].
     pub fn reload(&mut self) {
-        self.disks = disks::list_disks(&self.monitor);
+        self.disks = list_disks(&self.monitor);
         tracing::debug!("found {} disks", self.disks.len());
         let rows: Vec<glib::BoxedAnyObject> = self
             .disks
@@ -129,7 +134,11 @@ fn disk_row_factory() -> gtk::SignalListItemFactory {
             return;
         };
         if let Some(icon) = row.first_child().and_downcast::<gtk::Image>() {
-            icon.set_from_gicon(disk.icon());
+            // The core crate keeps the icon as text; turn it back into a GIO icon.
+            match gio::Icon::for_string(disk.icon()) {
+                Ok(gicon) => icon.set_from_gicon(&gicon),
+                Err(_) => icon.set_icon_name(Some(ROOT_DISK_ICON)),
+            }
         }
         if let Some(label) = row.last_child().and_downcast::<gtk::Label>() {
             label.set_label(disk.name());
@@ -137,4 +146,35 @@ fn disk_row_factory() -> gtk::SignalListItemFactory {
         }
     });
     factory
+}
+
+/// List the root filesystem followed by every user-visible local mount, as the desktop's
+/// file manager shows them.
+///
+/// # Arguments
+///
+/// * `monitor` - The GIO volume monitor (the file manager's source of mounts)
+///
+/// # Returns
+///
+/// Disks in display order; mounts without a local path (e.g. network shares) are skipped
+fn list_disks(monitor: &gio::VolumeMonitor) -> Vec<Disk> {
+    let root = Path::new("/");
+    let mounts = monitor.mounts();
+    // `with_capacity` reserves room for every disk up front, avoiding regrowth.
+    let mut found = Vec::with_capacity(mounts.len() + 1);
+    found.push(Disk::new(
+        ROOT_DISK_NAME.to_owned(),
+        root.to_path_buf(),
+        ROOT_DISK_ICON.to_owned(),
+    ));
+    found.extend(mounts.iter().filter_map(|mount| {
+        // `?` on an `Option` returns `None` from the closure when there is no local path.
+        let path = mount.root().path()?;
+        // The icon is kept as GIO's text form, so the core crate needs no GIO types.
+        let icon = IconExt::to_string(&mount.icon())
+            .map_or_else(|| ROOT_DISK_ICON.to_owned(), |text| text.to_string());
+        (path != root).then(|| Disk::new(mount.name().into(), path, icon))
+    }));
+    found
 }

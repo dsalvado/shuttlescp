@@ -1,28 +1,22 @@
 //! GuiSCP: a graphical SFTP/SCP client for Linux, inspired by WinSCP.
 
 mod app;
-mod config;
 mod confirm_dialog;
 mod disk_picker;
-mod disks;
 mod file_pane;
-mod local_fs;
 mod log_tail;
-mod logging;
 mod login_dialog;
 mod passphrase_dialog;
-mod remote;
 mod resize_grips;
-mod secrets;
-mod site_export;
-mod sites;
 mod theme;
 mod theme_list;
 
 use relm4::RelmApp;
 
+use guiscp_core::config::Config;
+use guiscp_core::logging;
+
 use crate::app::{App, AppInit};
-use crate::config::Config;
 
 /// GTK application identifier (reverse-DNS form, used for D-Bus and desktop integration).
 const APP_ID: &str = "io.github.guiscp.GuiScp";

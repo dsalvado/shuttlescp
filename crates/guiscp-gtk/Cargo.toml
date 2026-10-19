@@ -1,0 +1,16 @@
+[package]
+# Keeps the binary name `guiscp`; the directory name says which front end it is.
+name = "guiscp"
+description = "GuiSCP for Linux: relm4 / GTK 4 front end"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+guiscp-core = { path = "../guiscp-core" }
+glib-unix = "0.22"
+relm4 = "0.11"
+secrecy.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

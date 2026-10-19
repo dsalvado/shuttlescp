@@ -42,6 +42,45 @@ const NONCE_LEN: usize = 24;
 /// Shortest passphrase accepted for encrypting passwords.
 pub const MIN_PASSPHRASE_CHARS: usize = 8;
 
+/// Why a passphrase is being asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassphrasePurpose {
+    /// Choosing a passphrase to encrypt passwords in a new export.
+    Export,
+    /// Entering the passphrase an export was made with.
+    Import,
+}
+
+/// Why a passphrase cannot be accepted yet, if anything.
+///
+/// # Arguments
+///
+/// * `purpose` - Export or Import
+/// * `include_passwords` - Export only: whether passwords are being included
+/// * `passphrase` - Passphrase typed so far
+/// * `confirm` - Export only: repeated passphrase
+///
+/// # Returns
+///
+/// A short message for the user, or `None` when the input is acceptable
+pub fn passphrase_problem(
+    purpose: PassphrasePurpose,
+    include_passwords: bool,
+    passphrase: &str,
+    confirm: &str,
+) -> Option<&'static str> {
+    match purpose {
+        PassphrasePurpose::Import if passphrase.is_empty() => Some("Enter the passphrase"),
+        PassphrasePurpose::Import => None,
+        PassphrasePurpose::Export if !include_passwords => None,
+        PassphrasePurpose::Export if passphrase.chars().count() < MIN_PASSPHRASE_CHARS => {
+            Some("Use at least 8 characters")
+        }
+        PassphrasePurpose::Export if passphrase != confirm => Some("Passphrases do not match"),
+        PassphrasePurpose::Export => None,
+    }
+}
+
 /// Argon2id cost settings, stored in the file so imports can repeat the derivation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KdfCost {
@@ -445,6 +484,34 @@ mod tests {
 
     fn secret(text: &str) -> SecretString {
         SecretString::from(text)
+    }
+
+    #[test]
+    fn export_passphrase_must_be_long_and_confirmed_unless_passwords_left_out() {
+        let export = PassphrasePurpose::Export;
+        assert_eq!(passphrase_problem(export, false, "", ""), None);
+        assert_eq!(
+            passphrase_problem(export, true, "short", "short"),
+            Some("Use at least 8 characters")
+        );
+        assert_eq!(
+            passphrase_problem(export, true, "long enough", "long enoug"),
+            Some("Passphrases do not match")
+        );
+        assert_eq!(
+            passphrase_problem(export, true, "long enough", "long enough"),
+            None
+        );
+    }
+
+    #[test]
+    fn import_only_needs_a_passphrase() {
+        let import = PassphrasePurpose::Import;
+        assert_eq!(
+            passphrase_problem(import, true, "", ""),
+            Some("Enter the passphrase")
+        );
+        assert_eq!(passphrase_problem(import, true, "x", ""), None);
     }
 
     #[test]

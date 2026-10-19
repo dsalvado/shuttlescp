@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
+use guiscp_core::config::ThemeChoice;
 use relm4::gtk;
 use relm4::gtk::glib;
-use serde::{Deserialize, Serialize};
 
 /// Themes compiled into GTK itself, available even when nothing is installed on disk.
 const BUILTIN_THEMES: [&str; 3] = ["Adwaita", "Adwaita-dark", "HighContrast"];
@@ -16,49 +16,6 @@ const FALLBACK_CURSOR_THEME: &str = "Adwaita";
 
 /// Name of the GTK settings property holding the theme.
 const THEME_PROPERTY: &str = "gtk-theme-name";
-
-/// Theme selected by the user.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThemeChoice {
-    /// Follow the desktop's theme.
-    #[default]
-    System,
-    /// Use a specific GTK theme by name.
-    Named(String),
-}
-
-impl ThemeChoice {
-    /// Parse the string carried by a theme menu action; the empty string means
-    /// [`ThemeChoice::System`] (no theme directory can have an empty name).
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - The action's target value
-    ///
-    /// # Returns
-    ///
-    /// The choice the target represents
-    pub fn from_action_target(target: &str) -> Self {
-        if target.is_empty() {
-            Self::System
-        } else {
-            Self::Named(target.to_owned())
-        }
-    }
-
-    /// Inverse of [`ThemeChoice::from_action_target`].
-    ///
-    /// # Returns
-    ///
-    /// The empty string for [`ThemeChoice::System`], otherwise the theme name
-    pub fn action_target(&self) -> &str {
-        match self {
-            Self::System => "",
-            Self::Named(name) => name,
-        }
-    }
-}
 
 /// Directories GTK searches for themes, in GTK's own lookup order.
 ///
@@ -203,19 +160,5 @@ mod tests {
         assert!(cursor_theme_installed("Inheriting", &dirs));
         assert!(!cursor_theme_installed("IconsOnly", &dirs));
         assert!(!cursor_theme_installed("DMZ-Black", &dirs));
-    }
-
-    #[test]
-    fn action_target_round_trips() {
-        for choice in [
-            ThemeChoice::System,
-            ThemeChoice::Named(String::from("Zorin")),
-        ] {
-            assert_eq!(
-                ThemeChoice::from_action_target(choice.action_target()),
-                choice
-            );
-        }
-        assert_eq!(ThemeChoice::System.action_target(), "");
     }
 }

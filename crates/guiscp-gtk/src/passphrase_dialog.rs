@@ -7,16 +7,8 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 use secrecy::SecretString;
 
-use crate::site_export::MIN_PASSPHRASE_CHARS;
-
-/// Why the passphrase is needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PassphrasePurpose {
-    /// Choosing a passphrase to encrypt passwords in a new export.
-    Export,
-    /// Entering the passphrase an export was made with.
-    Import,
-}
+pub use guiscp_core::site_export::PassphrasePurpose;
+use guiscp_core::site_export::passphrase_problem;
 
 /// What the user decided.
 #[derive(Debug)]
@@ -118,7 +110,7 @@ pub fn ask(
             ok.clone(),
         );
         move || {
-            let problem = input_problem(
+            let problem = passphrase_problem(
                 purpose,
                 include.is_active(),
                 &passphrase.text(),
@@ -186,36 +178,6 @@ pub fn ask(
     window.present();
 }
 
-/// Why the current input cannot be accepted yet, if anything.
-///
-/// # Arguments
-///
-/// * `purpose` - Export or Import
-/// * `include_passwords` - Export only: whether passwords are being included
-/// * `passphrase` - Passphrase typed so far
-/// * `confirm` - Export only: repeated passphrase
-///
-/// # Returns
-///
-/// A short message for the user, or `None` when the input is acceptable
-fn input_problem(
-    purpose: PassphrasePurpose,
-    include_passwords: bool,
-    passphrase: &str,
-    confirm: &str,
-) -> Option<&'static str> {
-    match purpose {
-        PassphrasePurpose::Import if passphrase.is_empty() => Some("Enter the passphrase"),
-        PassphrasePurpose::Import => None,
-        PassphrasePurpose::Export if !include_passwords => None,
-        PassphrasePurpose::Export if passphrase.chars().count() < MIN_PASSPHRASE_CHARS => {
-            Some("Use at least 8 characters")
-        }
-        PassphrasePurpose::Export if passphrase != confirm => Some("Passphrases do not match"),
-        PassphrasePurpose::Export => None,
-    }
-}
-
 /// A password-style entry (characters hidden).
 ///
 /// # Arguments
@@ -228,37 +190,4 @@ fn password_entry(placeholder: &str) -> gtk::Entry {
         .placeholder_text(placeholder)
         .width_chars(32)
         .build()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn export_requires_matching_long_passphrase_unless_passwords_left_out() {
-        let export = PassphrasePurpose::Export;
-        assert_eq!(input_problem(export, false, "", ""), None);
-        assert_eq!(
-            input_problem(export, true, "short", "short"),
-            Some("Use at least 8 characters")
-        );
-        assert_eq!(
-            input_problem(export, true, "long enough", "long enoug"),
-            Some("Passphrases do not match")
-        );
-        assert_eq!(
-            input_problem(export, true, "long enough", "long enough"),
-            None
-        );
-    }
-
-    #[test]
-    fn import_only_needs_a_passphrase() {
-        let import = PassphrasePurpose::Import;
-        assert_eq!(
-            input_problem(import, true, "", ""),
-            Some("Enter the passphrase")
-        );
-        assert_eq!(input_problem(import, true, "x", ""), None);
-    }
 }

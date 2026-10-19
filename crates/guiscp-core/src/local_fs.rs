@@ -1,135 +1,41 @@
 //! Listing of directories on the local filesystem.
 //!
-//! This module is deliberately free of any GUI code so it can be unit tested and
-//! called from a background thread.
+//! Free of any GUI code, so it can be unit tested and called from a background thread.
 
-use std::cmp::Ordering;
-use std::ffi::OsString;
 use std::fs::{self, DirEntry, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use thiserror::Error;
 
-/// Whether an entry can be navigated into or not.
+use crate::entry::{EntryKind, FileEntry};
+
+/// Build an entry from a `read_dir` result, following symbolic links so a link to a
+/// directory is reported as a directory.
 ///
-/// The variant order matters: deriving `Ord` compares variants in declaration
-/// order, so directories sort before files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum EntryKind {
-    /// A directory, or a symbolic link pointing to one.
-    Directory,
-    /// Anything else (regular files, devices, broken links, ...).
-    File,
-}
-
-/// A single item inside a listed directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileEntry {
-    /// Raw file name. Unix file names are arbitrary bytes, not guaranteed UTF-8,
-    /// so we keep the original `OsString` to be able to rebuild the exact path.
-    name: OsString,
-    /// Lower-cased display name, computed once so sorting never allocates.
-    sort_key: String,
-    kind: EntryKind,
-    size: u64,
-    modified: Option<SystemTime>,
-}
-
-impl FileEntry {
-    /// Build an entry from its parts (used for remote listings).
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - File name
-    /// * `kind` - Directory or file
-    /// * `size` - Size in bytes
-    /// * `modified` - Last modification time, if known
-    pub fn new(name: OsString, kind: EntryKind, size: u64, modified: Option<SystemTime>) -> Self {
-        Self {
-            sort_key: name.to_string_lossy().to_lowercase(),
-            name,
-            kind,
-            size,
-            modified,
-        }
-    }
-
-    /// Build an entry from a `read_dir` result, following symbolic links so a link to a
-    /// directory is reported as a directory.
-    ///
-    /// # Arguments
-    ///
-    /// * `entry` - The directory entry returned by [`fs::read_dir`]
-    ///
-    /// # Returns
-    ///
-    /// The entry; metadata fields fall back to empty values when they cannot be read
-    fn from_dir_entry(entry: &DirEntry) -> Self {
-        // `fs::metadata` follows symlinks; if the target is missing (broken link) fall back
-        // to the metadata of the link itself. `.ok()` turns a `Result` into an `Option`.
-        let metadata: Option<Metadata> = fs::metadata(entry.path())
-            .or_else(|_| entry.metadata())
-            .ok();
-        let kind = match metadata.as_ref().map(Metadata::is_dir) {
-            Some(true) => EntryKind::Directory,
-            Some(false) | None => EntryKind::File,
-        };
-        Self::new(
-            entry.file_name(),
-            kind,
-            metadata.as_ref().map_or(0, Metadata::len),
-            metadata.and_then(|meta| meta.modified().ok()),
-        )
-    }
-
-    /// Raw file name, suitable for joining onto the parent directory path.
-    pub fn name(&self) -> &OsString {
-        &self.name
-    }
-
-    /// File name for display; invalid UTF-8 sequences are replaced with U+FFFD.
-    ///
-    /// # Returns
-    ///
-    /// A borrowed `&str` when the name is valid UTF-8 (the common case, no allocation),
-    /// otherwise an owned, repaired `String`
-    pub fn display_name(&self) -> std::borrow::Cow<'_, str> {
-        self.name.to_string_lossy()
-    }
-
-    /// Whether the entry is a directory or a file.
-    pub fn kind(&self) -> EntryKind {
-        self.kind
-    }
-
-    /// Size in bytes (0 when unknown).
-    pub fn size(&self) -> u64 {
-        self.size
-    }
-
-    /// Last modification time, if the filesystem reports one.
-    pub fn modified(&self) -> Option<SystemTime> {
-        self.modified
-    }
-
-    /// Ordering used by file explorers: directories first, then case-insensitive name,
-    /// with the raw name as a tie-breaker so the order is total and stable.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The entry to compare against
-    ///
-    /// # Returns
-    ///
-    /// The relative order of `self` and `other`
-    pub fn listing_order(&self, other: &Self) -> Ordering {
-        self.kind
-            .cmp(&other.kind)
-            .then_with(|| self.sort_key.cmp(&other.sort_key))
-            .then_with(|| self.name.cmp(&other.name))
-    }
+/// # Arguments
+///
+/// * `entry` - The directory entry returned by [`fs::read_dir`]
+///
+/// # Returns
+///
+/// The entry; metadata fields fall back to empty values when they cannot be read
+fn entry_from_dir_entry(entry: &DirEntry) -> FileEntry {
+    // `fs::metadata` follows symlinks; if the target is missing (broken link) fall back
+    // to the metadata of the link itself. `.ok()` turns a `Result` into an `Option`.
+    let metadata: Option<Metadata> = fs::metadata(entry.path())
+        .or_else(|_| entry.metadata())
+        .ok();
+    let kind = match metadata.as_ref().map(Metadata::is_dir) {
+        Some(true) => EntryKind::Directory,
+        Some(false) | None => EntryKind::File,
+    };
+    FileEntry::new(
+        entry.file_name(),
+        kind,
+        metadata.as_ref().map_or(0, Metadata::len),
+        metadata.and_then(|meta| meta.modified().ok()),
+    )
 }
 
 /// Error returned when a directory cannot be listed.
@@ -163,7 +69,7 @@ pub fn list_dir(dir: &Path) -> Result<Vec<FileEntry>, ListError> {
     })?;
     let mut entries: Vec<FileEntry> = reader
         .filter_map(|result| match result {
-            Ok(entry) => Some(FileEntry::from_dir_entry(&entry)),
+            Ok(entry) => Some(entry_from_dir_entry(&entry)),
             Err(error) => {
                 tracing::warn!("skipping entry in {}: {error}", dir.display());
                 None
@@ -226,6 +132,7 @@ mod tests {
         assert!(entries[2].modified().is_some());
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlink_to_directory_is_a_directory_and_broken_link_is_a_file() {
         // Arrange

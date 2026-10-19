@@ -1,23 +1,15 @@
-//! The disks (mounted filesystems) a user can browse, as the desktop's file manager sees
-//! them: the root filesystem plus every user-visible mount such as USB drives.
+//! Browsable disks (mounted filesystems). How disks are discovered depends on the
+//! platform and front end (the GTK front end asks GIO, like the file manager does);
+//! this module holds what is common: the disk record and which disk holds a folder.
 
 use std::path::{Path, PathBuf};
 
-use relm4::gtk::gio;
-use relm4::gtk::prelude::*;
-
-/// Display name of the root filesystem entry: its path, as Linux users know it.
-const ROOT_DISK_NAME: &str = "/";
-/// Theme icon of the root filesystem entry.
-const ROOT_DISK_ICON: &str = "drive-harddisk";
-
 /// A browsable disk.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disk {
     name: String,
     root: PathBuf,
-    /// `gio::Icon` is a reference-counted GObject, so cloning it is cheap.
-    icon: gio::Icon,
+    icon: String,
 }
 
 impl Disk {
@@ -27,8 +19,9 @@ impl Disk {
     ///
     /// * `name` - Label shown to the user
     /// * `root` - Mount point
-    /// * `icon` - Icon shown next to the label
-    pub fn new(name: String, root: PathBuf, icon: gio::Icon) -> Self {
+    /// * `icon` - Icon reference in a form the front end understands (for GTK, a
+    ///   serialized `GIcon` such as a theme icon name)
+    pub fn new(name: String, root: PathBuf, icon: String) -> Self {
         Self { name, root, icon }
     }
 
@@ -42,37 +35,10 @@ impl Disk {
         &self.root
     }
 
-    /// Icon the desktop uses for this disk.
-    pub fn icon(&self) -> &gio::Icon {
+    /// Icon reference given to [`Disk::new`].
+    pub fn icon(&self) -> &str {
         &self.icon
     }
-}
-
-/// List the root filesystem followed by every user-visible local mount.
-///
-/// # Arguments
-///
-/// * `monitor` - The GIO volume monitor (the file manager's source of mounts)
-///
-/// # Returns
-///
-/// Disks in display order; mounts without a local path (e.g. network shares) are skipped
-pub fn list_disks(monitor: &gio::VolumeMonitor) -> Vec<Disk> {
-    let root = Path::new("/");
-    let mounts = monitor.mounts();
-    // `with_capacity` reserves room for every disk up front, avoiding regrowth.
-    let mut disks = Vec::with_capacity(mounts.len() + 1);
-    disks.push(Disk::new(
-        ROOT_DISK_NAME.to_owned(),
-        root.to_path_buf(),
-        gio::ThemedIcon::new(ROOT_DISK_ICON).upcast(),
-    ));
-    disks.extend(mounts.iter().filter_map(|mount| {
-        // `?` on an `Option` returns `None` from the closure when there is no local path.
-        let path = mount.root().path()?;
-        (path != root).then(|| Disk::new(mount.name().into(), path, mount.icon()))
-    }));
-    disks
 }
 
 /// Find the disk holding `dir`: the one whose mount point is the longest prefix of it.
@@ -104,7 +70,7 @@ mod tests {
         Disk::new(
             root.to_owned(),
             PathBuf::from(root),
-            gio::ThemedIcon::new(ROOT_DISK_ICON).upcast(),
+            String::from("drive-harddisk"),
         )
     }
 

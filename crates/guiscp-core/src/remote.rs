@@ -10,15 +10,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-use relm4::tokio;
 use russh::client;
 use russh::keys::known_hosts::learn_known_hosts;
-use russh::keys::{HashAlg, PublicKey, PublicKeyOrCertificate, check_known_hosts};
+use russh::keys::{HashAlg, PublicKeyOrCertificate, check_known_hosts};
+
+/// A server's SSH host key. Re-exported so front ends can pass keys around (for
+/// example after the user agrees to trust one) without depending on the SSH library.
+pub use russh::keys::PublicKey as HostKey;
 use russh_sftp::client::SftpSession;
 use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
 
-use crate::local_fs::{EntryKind, FileEntry};
+use crate::entry::{EntryKind, FileEntry};
 use crate::sites::{Protocol, Site};
 
 /// Give up connecting after this long.
@@ -47,7 +50,7 @@ pub enum ConnectError {
         /// SHA256 fingerprint to show the user.
         fingerprint: String,
         /// The key, to trust and remember if the user agrees.
-        key: Box<PublicKey>,
+        key: Box<HostKey>,
     },
     /// The server's key differs from the one recorded: possibly an attack.
     #[error(
@@ -74,7 +77,7 @@ pub enum ConnectError {
 /// What the host key check found, recorded by the SSH handler for after the handshake.
 #[derive(Debug)]
 enum HostKeyVerdict {
-    Unknown(PublicKey),
+    Unknown(HostKey),
     Changed(usize),
     Failed(String),
 }
@@ -84,7 +87,7 @@ struct HostKeyCheck {
     host: String,
     port: u16,
     /// A key the user has just agreed to trust (it gets recorded in `known_hosts`).
-    approved: Option<PublicKey>,
+    approved: Option<HostKey>,
     /// Shared with `connect`, which turns a rejection into a meaningful error.
     verdict: Arc<Mutex<Option<HostKeyVerdict>>>,
 }
@@ -222,7 +225,7 @@ impl Remote {
 /// # Arguments
 ///
 /// * `key` - Host key
-pub fn fingerprint(key: &PublicKey) -> String {
+pub fn fingerprint(key: &HostKey) -> String {
     key.fingerprint(HashAlg::Sha256).to_string()
 }
 
@@ -241,7 +244,7 @@ pub fn fingerprint(key: &PublicKey) -> String {
 pub async fn connect(
     site: &Site,
     password: Option<SecretString>,
-    approved_key: Option<PublicKey>,
+    approved_key: Option<HostKey>,
 ) -> Result<Remote, ConnectError> {
     if site.protocol == Protocol::Ftp {
         return Err(ConnectError::Unsupported(Protocol::Ftp.label()));

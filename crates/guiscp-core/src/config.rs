@@ -5,13 +5,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use relm4::gtk::glib;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::logging::LogLevel;
-use crate::theme::ThemeChoice;
 
 /// Error raised while loading or saving the configuration file.
 #[derive(Debug, Error)]
@@ -34,6 +32,50 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
+}
+
+/// Appearance the user picked. Which themes exist, and how one is applied, is up to the
+/// front end; this only records the choice.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    /// Follow the desktop's theme.
+    #[default]
+    System,
+    /// Use a specific theme by name.
+    Named(String),
+}
+
+impl ThemeChoice {
+    /// Parse a key made by [`ThemeChoice::key`]; the empty string means
+    /// [`ThemeChoice::System`] (no theme can have an empty name).
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key
+    ///
+    /// # Returns
+    ///
+    /// The choice the key represents
+    pub fn from_key(key: &str) -> Self {
+        if key.is_empty() {
+            Self::System
+        } else {
+            Self::Named(key.to_owned())
+        }
+    }
+
+    /// A single string identifying the choice, e.g. for a menu item's value.
+    ///
+    /// # Returns
+    ///
+    /// The empty string for [`ThemeChoice::System`], otherwise the theme name
+    pub fn key(&self) -> &str {
+        match self {
+            Self::System => "",
+            Self::Named(name) => name,
+        }
+    }
 }
 
 /// Persisted user preferences.
@@ -66,9 +108,14 @@ impl Default for Config {
     }
 }
 
-/// The app's folder for user files: `$XDG_CONFIG_HOME/guiscp`.
+/// The app's folder for user files: `$XDG_CONFIG_HOME/guiscp` on Linux (usually
+/// `~/.config/guiscp`), and the platform's equivalent elsewhere (e.g. `%APPDATA%\guiscp`
+/// on Windows, `~/Library/Application Support/guiscp` on macOS).
 pub fn config_dir() -> PathBuf {
-    glib::user_config_dir().join("guiscp")
+    dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .unwrap_or_default()
+        .join("guiscp")
 }
 
 /// Read a JSON file into `T`.
@@ -128,7 +175,7 @@ pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), ConfigError
 }
 
 impl Config {
-    /// Default location: `$XDG_CONFIG_HOME/guiscp/settings.json`.
+    /// Default location: `settings.json` in [`config_dir`].
     pub fn default_path() -> PathBuf {
         config_dir().join("settings.json")
     }
@@ -234,6 +281,17 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_choice_key_round_trips() {
+        for choice in [
+            ThemeChoice::System,
+            ThemeChoice::Named(String::from("Zorin")),
+        ] {
+            assert_eq!(ThemeChoice::from_key(choice.key()), choice);
+        }
+        assert_eq!(ThemeChoice::System.key(), "");
+    }
 
     #[test]
     fn missing_file_loads_defaults() {

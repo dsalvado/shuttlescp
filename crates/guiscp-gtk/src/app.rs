@@ -1,7 +1,6 @@
 //! Main window: menu bar on top, then one tab per session, each holding a local explorer
 //! on the left and a remote explorer on the right.
 
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use relm4::actions::{AccelsPlus, RelmAction, RelmActionGroup};
@@ -9,17 +8,18 @@ use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
-use crate::config::Config;
+use guiscp_core::config::{Config, ThemeChoice};
+use guiscp_core::format::shorten_middle;
+use guiscp_core::local_fs;
+use guiscp_core::logging::{LogLevel, Logger};
+use guiscp_core::remote::Remote;
+use guiscp_core::sites::{Site, SiteBook};
+
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneOutput};
-use crate::local_fs;
 use crate::log_tail::log_tail;
-use crate::logging::{LogLevel, Logger};
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
-use crate::remote::Remote;
 use crate::resize_grips;
-use crate::sites::Site;
-use crate::sites::SiteBook;
-use crate::theme::{self, ThemeChoice};
+use crate::theme;
 use crate::theme_list::ThemeList;
 
 /// Initial window width in pixels; the divider starts at half of it.
@@ -41,8 +41,6 @@ const WINDOW_CLOSED: &str = "window closed";
 const QUIT_COMMAND: &str = "File > Quit";
 /// Longest session tab title, in characters; longer titles are cut in the middle.
 const TAB_TITLE_MAX_CHARS: usize = 32;
-/// Marker inserted where a tab title was shortened.
-const TAB_TITLE_ELLIPSIS: &str = "...";
 /// Icon of a session tab.
 const SESSION_TAB_ICON: &str = "computer-symbolic";
 /// Icon of the "New Tab" tab, which will open a new connection.
@@ -61,7 +59,7 @@ relm4::new_stateless_action!(QuitAction, WindowActions, "quit");
 relm4::new_stateless_action!(LoginAction, WindowActions, "login");
 relm4::new_stateless_action!(DisconnectAction, WindowActions, "disconnect");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
-// Target and state are both a `ThemeChoice::action_target()` string. A stateful action
+// Target and state are both a `ThemeChoice::key()` string. A stateful action
 // whose state matches the item's target is what makes GTK draw radio items in a menu.
 relm4::new_stateful_action!(ThemeAction, WindowActions, "theme", String, String);
 // Target and state are both a `LogLevel::as_str()` string.
@@ -556,11 +554,9 @@ fn register_actions(
     // Closures that outlive this function need their own copy of the sender.
     let theme_sender = sender.clone();
     let theme_action = RelmAction::<ThemeAction>::new_stateful_with_target_value(
-        &config.theme().action_target().to_owned(),
+        &config.theme().key().to_owned(),
         move |_, state, target| {
-            theme_sender.input(AppMsg::ThemeSelected(ThemeChoice::from_action_target(
-                &target,
-            )));
+            theme_sender.input(AppMsg::ThemeSelected(ThemeChoice::from_key(&target)));
             *state = target;
         },
     );
@@ -688,81 +684,4 @@ fn build_menu() -> gio::Menu {
     menu_bar.append_submenu(Some("_View"), &view_menu);
     menu_bar.append_submenu(Some("_Tools"), &tools_menu);
     menu_bar
-}
-
-/// Shorten `text` to at most `max_chars` characters by replacing its middle with "...".
-///
-/// # Arguments
-///
-/// * `text` - Text to shorten
-/// * `max_chars` - Maximum length in characters (Unicode scalar values), including "..."
-///
-/// # Returns
-///
-/// `text` unchanged (borrowed, no allocation) when it fits, otherwise its start and end
-/// joined by "..."
-///
-/// # Examples
-///
-/// ```ignore
-/// assert_eq!(shorten_middle("abcdefghij", 7), "ab...ij");
-/// ```
-fn shorten_middle(text: &str, max_chars: usize) -> Cow<'_, str> {
-    let length = text.chars().count();
-    if length <= max_chars {
-        return Cow::Borrowed(text);
-    }
-    let kept = max_chars.saturating_sub(TAB_TITLE_ELLIPSIS.len());
-    // The start gets the extra character when `kept` is odd.
-    let head_chars = kept.div_ceil(2);
-    let tail_chars = kept - head_chars;
-    // Convert character counts to byte offsets: Rust strings are UTF-8, so slicing by a
-    // character count directly could split a multi-byte character.
-    let head_end = text
-        .char_indices()
-        .nth(head_chars)
-        .map_or(text.len(), |(offset, _)| offset);
-    let tail_start = text
-        .char_indices()
-        .nth(length - tail_chars)
-        .map_or(text.len(), |(offset, _)| offset);
-    Cow::Owned(format!(
-        "{}{TAB_TITLE_ELLIPSIS}{}",
-        &text[..head_end],
-        &text[tail_start..]
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shorten_middle_keeps_short_text() {
-        assert!(matches!(
-            shorten_middle("host - home", 32),
-            Cow::Borrowed("host - home")
-        ));
-        let exact = "a".repeat(32);
-        assert_eq!(shorten_middle(&exact, 32), exact);
-    }
-
-    #[test]
-    fn shorten_middle_cuts_long_text_to_the_limit() {
-        // Arrange
-        let title = "workstation.example.com - a-very-long-project-folder-name";
-
-        // Act
-        let short = shorten_middle(title, 32);
-
-        // Assert
-        assert_eq!(short.chars().count(), 32);
-        assert_eq!(short, "workstation.exa...ct-folder-name");
-    }
-
-    #[test]
-    fn shorten_middle_counts_characters_not_bytes() {
-        let short = shorten_middle("ééééééééééééééé", 9);
-        assert_eq!(short, "ééé...ééé");
-    }
 }

@@ -2,24 +2,26 @@
 //! on the right (with Save and Cancel), and Import / Export / Login / Close at the bottom.
 //!
 //! The session fields stay disabled until the user clicks "New Site", or picks a saved
-//! site and clicks Edit. Passwords are kept in the desktop keyring (see `secrets`); the
-//! form shows whether one is saved. Keyring work runs as background commands so the
-//! window never freezes, e.g. while the desktop asks to unlock the keyring.
+//! site and clicks Edit. Passwords are kept in the desktop keyring; the form shows
+//! whether one is saved. The work itself (keyring, login, export / import) is done by
+//! `guiscp_core::session` and friends, run as background commands so the window never
+//! freezes, e.g. while the desktop asks to unlock the keyring. This file only presents it.
 
 use std::path::PathBuf;
 
 use relm4::RelmRemoveAllExt;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
-use russh::keys::PublicKey;
 use secrecy::SecretString;
+
+use guiscp_core::remote::{ConnectError, HostKey, Remote};
+use guiscp_core::secrets;
+use guiscp_core::session::{self, ExportReport, ImportReport, KeyringAction};
+use guiscp_core::site_export::ExportFile;
+use guiscp_core::sites::{Protocol, Site, SiteBook, new_site_id};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
-use crate::remote::{self, ConnectError, Remote};
-use crate::secrets;
-use crate::site_export::{self, ExportFile};
-use crate::sites::{Protocol, Site, SiteBook, new_site_id};
 
 /// Label of the first entry in the site list, which starts a new site.
 const NEW_SITE_LABEL: &str = "New Site";
@@ -102,7 +104,7 @@ pub enum LoginMsg {
     /// Connect to the selected site.
     Login,
     /// The user trusts this new host key: remember it and connect.
-    TrustHostKey(Box<PublicKey>),
+    TrustHostKey(Box<HostKey>),
 }
 
 /// What the Login dialog starts with.
@@ -143,10 +145,10 @@ pub enum LoginCmd {
     /// The keyring entry of a deleted site was removed.
     PasswordForgotten(Result<(), String>),
     /// An export finished, with a summary or an error.
-    Exported(Result<String, String>),
+    Exported(Result<ExportReport, String>),
     /// An import finished: the sites (with `password_saved` set where the keyring
     /// accepted the password) and how many passwords could not be stored.
-    Imported(Result<(Vec<Site>, usize), String>),
+    Imported(Result<ImportReport, String>),
     /// A login attempt finished.
     Connected(Result<(Site, Remote), ConnectError>),
 }
@@ -240,7 +242,7 @@ impl LoginDialog {
     ///
     /// * `sender` - Used to run the connection attempt
     /// * `approved_key` - A host key the user has just agreed to trust
-    fn start_login(&mut self, sender: &ComponentSender<Self>, approved_key: Option<PublicKey>) {
+    fn start_login(&mut self, sender: &ComponentSender<Self>, approved_key: Option<HostKey>) {
         if !self.can_login() {
             return;
         }
@@ -252,18 +254,7 @@ impl LoginDialog {
         self.busy = true;
         self.status = format!("Connecting to {}...", site.display_name());
         sender.oneshot_command(async move {
-            let password = match typed {
-                Some(password) => Some(password),
-                None if site.password_saved => match secrets::load_password(&site.id).await {
-                    Ok(password) => password,
-                    Err(error) => {
-                        tracing::warn!("cannot read the saved password: {error}");
-                        None
-                    }
-                },
-                None => None,
-            };
-            let result = remote::connect(&site, password, approved_key).await;
+            let result = session::login(&site, typed, approved_key).await;
             LoginCmd::Connected(result.map(|remote| (site, remote)))
         });
     }
@@ -319,9 +310,10 @@ impl LoginDialog {
         // reloads the form for the saved site, which clears the field and resets the box.
         let typed = (!self.password.text().is_empty())
             .then(|| SecretString::from(self.password.text().as_str()));
-        let keyring_action = self.save_password_choice(site.password_saved);
+        let keyring_action =
+            KeyringAction::decide(self.save_password, typed.is_some(), site.password_saved);
         let name = site.display_name();
-        let (site_id, label) = (site.id.clone(), format!("GuiSCP: {name}"));
+        let (site_id, label) = (site.id.clone(), session::keyring_label(&site));
 
         let index = match self.selection {
             Selection::Saved(index) if index < self.book.sites.len() => {
@@ -337,7 +329,7 @@ impl LoginDialog {
         self.select(Selection::Saved(index));
 
         match (keyring_action, typed) {
-            (Some(true), Some(password)) => {
+            (KeyringAction::Store, Some(password)) => {
                 self.status = String::from("Saving password to the keyring...");
                 sender.oneshot_command(async move {
                     let result = secrets::store_password(&site_id, &label, &password).await;
@@ -348,7 +340,7 @@ impl LoginDialog {
                     }
                 });
             }
-            (Some(false), _) => {
+            (KeyringAction::Remove, _) => {
                 sender.oneshot_command(async move {
                     let result = secrets::delete_password(&site_id).await;
                     LoginCmd::PasswordChanged {
@@ -358,21 +350,7 @@ impl LoginDialog {
                     }
                 });
             }
-            (Some(true), None) | (None, _) => {}
-        }
-    }
-
-    /// What Save should do with the keyring: `Some(true)` store the typed password,
-    /// `Some(false)` remove the saved one, `None` leave it as it is.
-    ///
-    /// # Arguments
-    ///
-    /// * `was_saved` - Whether the site had a saved password before this save
-    fn save_password_choice(&self, was_saved: bool) -> Option<bool> {
-        match (self.save_password, was_saved) {
-            (true, _) => Some(true),
-            (false, true) => Some(false),
-            (false, false) => None,
+            (KeyringAction::Store, None) | (KeyringAction::Keep, _) => {}
         }
     }
 
@@ -947,7 +925,9 @@ impl Component for LoginDialog {
                 self.busy = true;
                 self.status = String::from("Exporting...");
                 let sites = self.book.sites.clone();
-                sender.oneshot_command(export(sites, path, passphrase));
+                sender.oneshot_command(async move {
+                    LoginCmd::Exported(session::export_to_file(sites, path, passphrase).await)
+                });
             }
             LoginMsg::ImportFrom(path) => {
                 self.chooser = None;
@@ -978,7 +958,9 @@ impl Component for LoginDialog {
             LoginMsg::ImportConfirmed { file, passphrase } => {
                 self.busy = true;
                 self.status = String::from("Importing...");
-                sender.oneshot_command(import(file, passphrase));
+                sender.oneshot_command(async move {
+                    LoginCmd::Imported(session::import_from_file(file, passphrase).await)
+                });
             }
         }
     }
@@ -1071,7 +1053,19 @@ impl Component for LoginDialog {
             LoginCmd::Exported(result) => {
                 self.busy = false;
                 self.status = match result {
-                    Ok(summary) => {
+                    Ok(report) => {
+                        let mut summary = format!(
+                            "Exported {} sites ({} with passwords) to {}",
+                            report.sites,
+                            report.with_passwords,
+                            report.path.display()
+                        );
+                        if report.unreadable > 0 {
+                            summary.push_str(&format!(
+                                "; {} passwords could not be read",
+                                report.unreadable
+                            ));
+                        }
                         tracing::info!("{summary}");
                         summary
                     }
@@ -1084,7 +1078,10 @@ impl Component for LoginDialog {
             LoginCmd::Imported(result) => {
                 self.busy = false;
                 match result {
-                    Ok((sites, failed_passwords)) => {
+                    Ok(ImportReport {
+                        sites,
+                        failed_passwords,
+                    }) => {
                         let with_passwords = sites.iter().filter(|s| s.password_saved).count();
                         let (added, replaced) = self.book.merge(sites);
                         let mut summary = format!(
@@ -1109,87 +1106,6 @@ impl Component for LoginDialog {
             }
         }
     }
-}
-
-/// Background export: read the passwords from the keyring (if they are included),
-/// encrypt them and write the file.
-///
-/// # Arguments
-///
-/// * `sites` - Sites to export
-/// * `path` - File to write
-/// * `passphrase` - Passphrase protecting the passwords, or `None` to leave them out
-async fn export(sites: Vec<Site>, path: PathBuf, passphrase: Option<SecretString>) -> LoginCmd {
-    let mut passwords = Vec::new();
-    let mut unreadable = 0;
-    if passphrase.is_some() {
-        for site in sites.iter().filter(|site| site.password_saved) {
-            match secrets::load_password(&site.id).await {
-                Ok(Some(password)) => passwords.push((site.id.clone(), password)),
-                Ok(None) | Err(_) => unreadable += 1,
-            }
-        }
-    }
-    let included = passwords.len();
-    // Key derivation is deliberately slow, so it runs on a worker thread, not the UI's.
-    let written = relm4::tokio::task::spawn_blocking(move || {
-        site_export::export_sites(
-            &sites,
-            &passwords,
-            passphrase.as_ref(),
-            site_export::DEFAULT_COST,
-        )
-        .and_then(|file| file.write(&path).map(|()| (file.sites.len(), path)))
-    })
-    .await;
-    LoginCmd::Exported(match written {
-        Ok(Ok((count, path))) => {
-            let mut summary = format!(
-                "Exported {count} sites ({included} with passwords) to {}",
-                path.display()
-            );
-            if unreadable > 0 {
-                summary.push_str(&format!("; {unreadable} passwords could not be read"));
-            }
-            Ok(summary)
-        }
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(error) => Err(error.to_string()),
-    })
-}
-
-/// Background import: decrypt the passwords and store them in the keyring.
-///
-/// # Arguments
-///
-/// * `file` - The export to import
-/// * `passphrase` - Passphrase the export was made with
-async fn import(file: ExportFile, passphrase: Option<SecretString>) -> LoginCmd {
-    let decrypted = relm4::tokio::task::spawn_blocking(move || {
-        site_export::import_sites(&file, passphrase.as_ref())
-    })
-    .await;
-    let entries = match decrypted {
-        Ok(Ok(entries)) => entries,
-        Ok(Err(error)) => return LoginCmd::Imported(Err(error.to_string())),
-        Err(error) => return LoginCmd::Imported(Err(error.to_string())),
-    };
-    let mut sites = Vec::with_capacity(entries.len());
-    let mut failed = 0;
-    for (mut site, password) in entries {
-        if let Some(password) = password {
-            let label = format!("GuiSCP: {}", site.display_name());
-            match secrets::store_password(&site.id, &label, &password).await {
-                Ok(()) => site.password_saved = true,
-                Err(error) => {
-                    tracing::warn!("could not store an imported password: {error}");
-                    failed += 1;
-                }
-            }
-        }
-        sites.push(site);
-    }
-    LoginCmd::Imported(Ok((sites, failed)))
 }
 
 /// The site list: "New Site" followed by every saved site.
