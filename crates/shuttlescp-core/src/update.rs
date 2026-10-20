@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 
 /// Public half of the release signing key: a raw Ed25519 key, base64. Empty in builds
 /// made before a key existed, which can then only report that updates are unavailable.
-pub const RELEASE_PUBLIC_KEY: &str = "";
+pub const RELEASE_PUBLIC_KEY: &str = "6ZeIUFLRLUUKMrp+p+/PkbY44Yn7jAJwNzGbpkDZGaw=";
 
 /// Where the latest release's manifest is downloaded from.
 pub const MANIFEST_URL: &str = concat!(
