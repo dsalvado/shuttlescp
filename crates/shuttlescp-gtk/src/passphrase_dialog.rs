@@ -10,6 +10,8 @@ use secrecy::SecretString;
 pub use shuttlescp_core::site_export::PassphrasePurpose;
 use shuttlescp_core::site_export::passphrase_problem;
 
+use crate::dialog::{self, ButtonKind, Dialog};
+
 /// What the user decided.
 #[derive(Debug)]
 pub enum PassphraseAnswer {
@@ -33,28 +35,24 @@ pub fn ask(
     on_answer: impl Fn(Option<PassphraseAnswer>) + 'static,
 ) {
     let exporting = purpose == PassphrasePurpose::Export;
-    let window = gtk::Window::builder()
-        .title(if exporting {
+    let dialog = Dialog::new(
+        parent,
+        if exporting {
             "Export Sites"
         } else {
             "Import Sites"
-        })
-        .transient_for(parent)
-        .modal(true)
-        .resizable(false)
-        .build();
-
-    let explanation = gtk::Label::builder()
-        .label(if exporting {
-            "Saved passwords are encrypted with a passphrase you choose.\n\
-             You will need it to import the file on another computer."
+        },
+    );
+    let explanation = dialog::text(
+        if exporting {
+            "Saved passwords are encrypted with a passphrase you choose. You will need it \
+             to import the file on another computer."
         } else {
-            "This file contains encrypted passwords.\n\
-             Enter the passphrase it was exported with."
-        })
-        .xalign(0.0)
-        .wrap(true)
-        .build();
+            "This file contains encrypted passwords. Enter the passphrase it was exported \
+             with."
+        },
+        &[],
+    );
     let include = gtk::CheckButton::builder()
         .label("Include saved passwords")
         .active(true)
@@ -67,38 +65,26 @@ pub fn ask(
     });
     let confirm = password_entry("Repeat passphrase");
     confirm.set_visible(exporting);
-    let hint = gtk::Label::builder()
-        .xalign(0.0)
-        .css_classes(["dim-label"])
-        .build();
-
-    let cancel = gtk::Button::with_label("Cancel");
-    let ok = gtk::Button::builder()
-        .label(if exporting { "Export" } else { "Import" })
-        .css_classes(["suggested-action"])
-        .sensitive(false)
-        .build();
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    buttons.set_halign(gtk::Align::End);
-    buttons.append(&cancel);
-    buttons.append(&ok);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    for margin in [
-        gtk::Widget::set_margin_top,
-        gtk::Widget::set_margin_bottom,
-        gtk::Widget::set_margin_start,
-        gtk::Widget::set_margin_end,
+    let hint = dialog::text("", &["hint"]);
+    for widget in [
+        explanation.upcast_ref::<gtk::Widget>(),
+        include.upcast_ref(),
+        passphrase.upcast_ref(),
+        confirm.upcast_ref(),
+        hint.upcast_ref(),
     ] {
-        margin(content.upcast_ref(), 12);
+        dialog.content.append(widget);
     }
-    content.append(&explanation);
-    content.append(&include);
-    content.append(&passphrase);
-    content.append(&confirm);
-    content.append(&hint);
-    content.append(&buttons);
-    window.set_child(Some(&content));
+
+    dialog.add_close_button("Cancel");
+    // Its action is connected below, once the answer slot exists.
+    let ok = dialog.add_button(
+        if exporting { "Export" } else { "Import" },
+        ButtonKind::Suggested,
+        || {},
+    );
+    ok.set_sensitive(false);
+    let window = dialog.window;
 
     // Re-check the inputs whenever any of them changes.
     let validate = {
@@ -166,10 +152,6 @@ pub fn ask(
                 activate_ok();
             }
         });
-    }
-    {
-        let window = window.clone();
-        cancel.connect_clicked(move |_| window.close());
     }
     window.connect_close_request(move |_| {
         on_answer(answer.borrow_mut().take());

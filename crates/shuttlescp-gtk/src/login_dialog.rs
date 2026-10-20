@@ -21,6 +21,7 @@ use shuttlescp_core::site_export::ExportFile;
 use shuttlescp_core::sites::{FtpEncryption, FtpOptions, Protocol, Site, SiteBook, new_site_id};
 
 use crate::confirm_dialog::{self, Confirmation};
+use crate::dialog;
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
 
 /// Label of the first entry in the site list, which starts a new site.
@@ -482,8 +483,6 @@ impl Component for LoginDialog {
             // Closing only hides the dialog, so it can be shown again from the menu.
             set_hide_on_close: true,
             set_default_size: (760, 420),
-            // Sized down in style.css.
-            add_css_class: "login-dialog",
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
@@ -865,6 +864,8 @@ impl Component for LoginDialog {
         let encryption_labels: Vec<&str> = FtpEncryption::ALL.iter().map(|e| e.label()).collect();
         let site_list_box = model.site_list.widget();
         let widgets = view_output!();
+        // The same title bar and compact controls as the other dialogs.
+        dialog::style_window(&root, "Login");
         ComponentParts { model, widgets }
     }
 

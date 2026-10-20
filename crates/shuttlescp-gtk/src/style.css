@@ -35,7 +35,7 @@ columnview.column-separators > header > button:first-child {
 label.path-label {
     padding: 3px 6px;
     border: 1px solid alpha(currentColor, 0.15);
-    border-radius: 4px;
+    border-radius: 3px;
     background-color: alpha(currentColor, 0.04);
 }
 
@@ -97,64 +97,134 @@ list.site-list > row {
     padding: 2px 6px;
 }
 
-/* Title bars (main window header and dialog title bars) a shade darker than the
-   window. A translucent black layer over the theme's own colour works in light and dark
-   themes alike. */
+/* Title bars: slim, the same on the main window and every dialog (the "compact-titlebar"
+   class, see dialog.rs), a shade darker than the window. A translucent black layer over
+   the theme's own colour works in light and dark themes alike. */
 headerbar,
 headerbar:backdrop {
     background-image: linear-gradient(alpha(black, 0.09), alpha(black, 0.09));
 }
 
-/* Controls in the Login dialog: slim text fields and squarer buttons. */
-window.login-dialog entry,
-window.login-dialog spinbutton {
-    min-height: 22px;
+/* The main window's title bar is an empty box (its header bar is part of the content,
+   see app.rs). Some themes, such as Adwaita, give every title bar a header bar's height,
+   which would leave an empty band above the window. */
+window > .titlebar:not(headerbar) {
+    min-height: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    box-shadow: none;
 }
 
-window.login-dialog button,
-window.login-dialog dropdown > button {
-    min-height: 24px;
-    padding: 2px 12px;
+headerbar.compact-titlebar {
+    min-height: 28px;
+    padding: 0 4px;
+    box-shadow: inset 0 -1px alpha(currentColor, 0.12);
+}
+
+headerbar.compact-titlebar .title {
+    font-weight: normal;
+}
+
+/* Small square window buttons instead of the theme's large round ones. */
+headerbar.compact-titlebar windowcontrols > button {
+    min-height: 20px;
+    min-width: 24px;
+    margin: 0 1px;
+    padding: 0;
+    border-radius: 3px;
+    background: none;
+    box-shadow: none;
+}
+
+headerbar.compact-titlebar windowcontrols > button > image {
+    padding: 0;
+    background: none;
+    box-shadow: none;
+    -gtk-icon-size: 12px;
+}
+
+headerbar.compact-titlebar windowcontrols > button:hover {
+    background-color: alpha(currentColor, 0.12);
+}
+
+headerbar.compact-titlebar windowcontrols > button.close:hover {
+    background-color: #e01b24;
+    color: white;
+}
+
+/* Controls everywhere: slim text fields and squarer buttons. Only text buttons and
+   drop-downs: icon buttons (toolbars, tab close) and column headers keep their own
+   rules. */
+entry,
+spinbutton {
+    min-height: 22px;
     border-radius: 3px;
 }
 
-window.login-dialog entry {
+entry {
     padding-left: 6px;
     padding-right: 6px;
+}
+
+button.text-button,
+dropdown > button {
+    min-height: 22px;
+    padding: 1px 12px;
     border-radius: 3px;
 }
 
-window.login-dialog spinbutton {
-    border-radius: 3px;
-}
-
-/* Port box: slim +/- buttons that fit inside the field's height, instead of full-size
-   buttons (this is more specific than the dialog-wide button rule above). */
-window.login-dialog spinbutton > text {
+/* Port box: slim +/- buttons that fit inside the field's height. */
+spinbutton > text {
     min-height: 0;
     padding: 0 4px;
 }
 
-window.login-dialog spinbutton > button {
+spinbutton > button {
     min-height: 0;
     min-width: 14px;
     padding: 0 3px;
     border-radius: 0;
 }
 
-/* Bottom panel: compact, square tabs. The selected tab takes the page's colour and an
-   outline that runs into the page, so it reads as attached to the pane below it. */
-notebook.bottom-panel > header {
+/* Small print under a field: what is wrong with it, or what it needs. */
+label.hint {
+    font-size: smaller;
+}
+
+label.hint:not(.error) {
+    opacity: 0.7;
+}
+
+/* About dialog. */
+label.about-name {
+    font-size: 13pt;
+    font-weight: bold;
+}
+
+label.about-details {
+    font-family: monospace;
+    font-size: 8pt;
+    padding: 4px 0 0 2px;
+}
+
+/* Bottom panel and session tabs: compact, square tabs. The selected tab takes the page's
+   colour and an outline that runs into the page, so it reads as attached to the pane
+   below it. */
+notebook.bottom-panel > header,
+notebook.session-tabs > header {
     padding: 3px 4px 0 4px;
     background: none;
     box-shadow: inset 0 -1px alpha(currentColor, 0.15);
 }
 
-notebook.bottom-panel > header > tabs {
+notebook.bottom-panel > header > tabs,
+notebook.session-tabs > header > tabs {
     margin: 0;
 }
 
-notebook.bottom-panel > header > tabs > tab {
+notebook.bottom-panel > header > tabs > tab,
+notebook.session-tabs > header > tabs > tab {
     min-height: 0;
     min-width: 0;
     margin: 0 2px 0 0;
@@ -168,12 +238,19 @@ notebook.bottom-panel > header > tabs > tab {
     font-size: smaller;
 }
 
-notebook.bottom-panel > header > tabs > tab:hover:not(:checked) {
+notebook.bottom-panel > header > tabs > tab:hover:not(:checked),
+notebook.session-tabs > header > tabs > tab:hover:not(:checked) {
     background-color: alpha(currentColor, 0.06);
 }
 
 notebook.bottom-panel > header > tabs > tab:checked {
     background-color: @view_bg_color;
+    border-color: alpha(currentColor, 0.15);
+}
+
+/* A session tab sits on the window colour of the file panes below it. */
+notebook.session-tabs > header > tabs > tab:checked {
+    background-color: @window_bg_color;
     border-color: alpha(currentColor, 0.15);
 }
 

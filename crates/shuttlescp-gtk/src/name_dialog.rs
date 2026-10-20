@@ -5,6 +5,8 @@ use relm4::gtk::prelude::*;
 
 use shuttlescp_core::transfer::check_name;
 
+use crate::dialog::{self, ButtonKind, Dialog};
+
 /// Wording and starting text of a name prompt.
 #[derive(Debug, Clone, Copy)]
 pub struct NamePrompt<'a> {
@@ -30,51 +32,30 @@ pub struct NamePrompt<'a> {
 /// * `wording` - Texts shown in the prompt
 /// * `on_name` - Receives the confirmed name
 pub fn ask(parent: &gtk::Window, wording: NamePrompt<'_>, on_name: impl Fn(String) + 'static) {
-    let window = gtk::Window::builder()
-        .title(wording.title)
-        .transient_for(parent)
-        .modal(true)
-        .resizable(false)
-        .build();
-    // Added rather than set with the builder, which would drop the window's own classes.
-    window.add_css_class("login-dialog");
-
-    let prompt = gtk::Label::builder()
-        .label(wording.prompt)
-        .xalign(0.0)
-        .wrap(true)
-        .max_width_chars(48)
-        .build();
+    let dialog = Dialog::new(parent, wording.title);
     let entry = gtk::Entry::builder()
         .text(wording.initial)
         .activates_default(true)
         .width_chars(40)
         .build();
-    let problem = gtk::Label::builder()
-        .xalign(0.0)
-        .css_classes(["error", "dim-label"])
-        .build();
-    let cancel = gtk::Button::with_label("Cancel");
-    let confirm = gtk::Button::builder()
-        .label(wording.confirm_label)
-        .css_classes(["suggested-action"])
-        .build();
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    buttons.set_halign(gtk::Align::End);
-    buttons.set_margin_top(6);
-    buttons.append(&cancel);
-    buttons.append(&confirm);
+    // Shown only while the name cannot be used.
+    let problem = dialog::text("", &["error", "hint"]);
+    dialog.content.append(&dialog::text(wording.prompt, &[]));
+    dialog.content.append(&entry);
+    dialog.content.append(&problem);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(14);
-    content.set_margin_end(14);
-    content.append(&prompt);
-    content.append(&entry);
-    content.append(&problem);
-    content.append(&buttons);
-    window.set_child(Some(&content));
+    dialog.add_close_button("Cancel");
+    let confirm = {
+        let (window, entry) = (dialog.window.clone(), entry.clone());
+        dialog.add_button(wording.confirm_label, ButtonKind::Suggested, move || {
+            let name = entry.text().to_string();
+            if check_name(&name).is_ok() {
+                window.close();
+                on_name(name);
+            }
+        })
+    };
+    let window = dialog.window;
     window.set_default_widget(Some(&confirm));
 
     // Check the name as it is typed.
@@ -83,39 +64,12 @@ pub fn ask(parent: &gtk::Window, wording: NamePrompt<'_>, on_name: impl Fn(Strin
         move |text: &str| {
             let result = check_name(text);
             confirm.set_sensitive(result.is_ok());
+            problem.set_visible(result.is_err());
             problem.set_label(&result.err().unwrap_or_default());
         }
     };
     validate(wording.initial);
     entry.connect_changed(move |entry| validate(&entry.text()));
-
-    {
-        let (window, entry) = (window.clone(), entry.clone());
-        confirm.connect_clicked(move |_| {
-            let name = entry.text().to_string();
-            if check_name(&name).is_ok() {
-                window.close();
-                on_name(name);
-            }
-        });
-    }
-    {
-        let window = window.clone();
-        cancel.connect_clicked(move |_| window.close());
-    }
-    let keys = gtk::EventControllerKey::new();
-    {
-        let window = window.clone();
-        keys.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape {
-                window.close();
-                gtk::glib::Propagation::Stop
-            } else {
-                gtk::glib::Propagation::Proceed
-            }
-        });
-    }
-    window.add_controller(keys);
 
     window.present();
     entry.grab_focus();

@@ -5,6 +5,7 @@ mod build_info;
 mod confirm_dialog;
 mod conflict_dialog;
 mod desktop_entry;
+mod dialog;
 mod disk_picker;
 mod file_pane;
 mod log_tail;
@@ -15,6 +16,8 @@ mod resize_grips;
 mod theme;
 mod theme_list;
 mod transfer_panel;
+#[cfg(debug_assertions)]
+mod ui_gallery;
 
 use relm4::RelmApp;
 
@@ -51,7 +54,17 @@ fn main() {
     let _ = relm4::RELM_THREADS.set(threads);
     tracing::debug!("background worker threads: {threads}");
 
-    let app = RelmApp::new(APP_ID);
+    // The UI gallery registers under its own ID, so it runs even while ShuttleSCP is
+    // open (a second launch would otherwise hand over to the running app and exit).
+    #[cfg(debug_assertions)]
+    let app_id = if std::env::var_os(ui_gallery::ENV_VAR).is_some() {
+        ui_gallery::APP_ID
+    } else {
+        APP_ID
+    };
+    #[cfg(not(debug_assertions))]
+    let app_id = APP_ID;
+    let app = RelmApp::new(app_id);
     // `include_str!` embeds the file's contents into the binary at compile time.
     relm4::set_global_css(include_str!("style.css"));
     desktop_entry::install(APP_ID);

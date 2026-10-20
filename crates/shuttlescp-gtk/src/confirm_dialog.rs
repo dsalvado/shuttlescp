@@ -6,6 +6,8 @@ use std::rc::Rc;
 use relm4::gtk;
 use relm4::gtk::prelude::*;
 
+use crate::dialog::{self, ButtonKind, Dialog};
+
 /// Wording of a confirmation prompt.
 #[derive(Debug, Clone, Copy)]
 pub struct Confirmation<'a> {
@@ -30,82 +32,28 @@ pub struct Confirmation<'a> {
 /// * `wording` - Texts shown in the prompt
 /// * `on_answer` - Receives the decision
 pub fn ask(parent: &gtk::Window, wording: Confirmation<'_>, on_answer: impl Fn(bool) + 'static) {
-    let window = gtk::Window::builder()
-        .title(wording.title)
-        .transient_for(parent)
-        .modal(true)
-        .resizable(false)
-        .build();
-    // Added rather than set with the builder: setting `css_classes` would replace the
-    // window's built-in classes (such as "background"), leaving its text unstyled.
-    window.add_css_class("login-dialog");
-
-    let question = gtk::Label::builder()
-        .label(wording.question)
-        .xalign(0.0)
-        .wrap(true)
-        .css_classes(["heading"])
-        .build();
-    let detail = gtk::Label::builder()
-        .label(wording.detail)
-        .xalign(0.0)
-        .wrap(true)
-        .max_width_chars(48)
-        .build();
-    let cancel = gtk::Button::with_label("Cancel");
-    let confirm = gtk::Button::builder()
-        .label(wording.confirm_label)
-        .css_classes(["destructive-action"])
-        .build();
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    buttons.set_halign(gtk::Align::End);
-    buttons.set_margin_top(6);
-    buttons.append(&cancel);
-    buttons.append(&confirm);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(14);
-    content.set_margin_end(14);
-    content.append(&question);
-    content.append(&detail);
-    content.append(&buttons);
-    window.set_child(Some(&content));
+    let dialog = Dialog::new(parent, wording.title);
+    dialog
+        .content
+        .append(&dialog::text(wording.question, &["heading"]));
+    dialog.content.append(&dialog::text(wording.detail, &[]));
 
     // Set by the confirm button, read when the window closes, so `on_answer` runs once
-    // whichever way the prompt is dismissed.
+    // whichever way the prompt is dismissed (Cancel, Escape or the title bar).
     let confirmed = Rc::new(Cell::new(false));
+    let cancel = dialog.add_close_button("Cancel");
     {
-        let (confirmed, window) = (Rc::clone(&confirmed), window.clone());
-        confirm.connect_clicked(move |_| {
+        let (confirmed, window) = (Rc::clone(&confirmed), dialog.window.clone());
+        dialog.add_button(wording.confirm_label, ButtonKind::Destructive, move || {
             confirmed.set(true);
             window.close();
         });
     }
-    {
-        let window = window.clone();
-        cancel.connect_clicked(move |_| window.close());
-    }
-    // Escape cancels, like in standard dialogs.
-    let keys = gtk::EventControllerKey::new();
-    {
-        let window = window.clone();
-        keys.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape {
-                window.close();
-                gtk::glib::Propagation::Stop
-            } else {
-                gtk::glib::Propagation::Proceed
-            }
-        });
-    }
-    window.add_controller(keys);
-    window.connect_close_request(move |_| {
+    dialog.window.connect_close_request(move |_| {
         on_answer(confirmed.get());
         gtk::glib::Propagation::Proceed
     });
 
-    window.present();
+    dialog.window.present();
     cancel.grab_focus();
 }

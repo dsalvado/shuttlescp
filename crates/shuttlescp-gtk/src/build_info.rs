@@ -6,8 +6,10 @@ use relm4::gtk::prelude::*;
 
 use shuttlescp_core::about::{self, BuildInfo};
 
-/// About dialog size (width, height) in pixels.
-const ABOUT_SIZE: (i32, i32) = (620, 470);
+use crate::dialog::{self, ButtonKind, Dialog};
+
+/// Size of the app icon in the About dialog, in pixels.
+const LOGO_SIZE: i32 = 64;
 
 /// How this program was built.
 pub fn build_info() -> BuildInfo {
@@ -22,7 +24,7 @@ pub fn build_info() -> BuildInfo {
     }
 }
 
-/// Full build and system details, as shown on the About dialog's System page.
+/// Full build and system details, as shown in the About dialog.
 ///
 /// # Arguments
 ///
@@ -49,7 +51,8 @@ pub fn details(log_path: Option<&std::path::Path>) -> String {
     build_info().details(&extra)
 }
 
-/// Open the About dialog over `parent`.
+/// Open the About dialog over `parent`: the app, its version, and the build and system
+/// details (folded away, with a button to copy them for a bug report).
 ///
 /// # Arguments
 ///
@@ -57,23 +60,60 @@ pub fn details(log_path: Option<&std::path::Path>) -> String {
 /// * `log_path` - The log file, listed with the system details
 pub fn show_about(parent: &gtk::Window, log_path: Option<&std::path::Path>) {
     let info = build_info();
-    // Cargo lists authors separated by ':'.
+    let dialog = Dialog::new(parent, &format!("About {}", about::APP_NAME));
+
+    let logo = gtk::Image::builder()
+        .icon_name(crate::desktop_entry::APP_ICON)
+        .pixel_size(LOGO_SIZE)
+        .valign(gtk::Align::Start)
+        .build();
+    let name = dialog::text(about::APP_NAME, &["about-name"]);
+    let version = dialog::text(
+        &format!("Version {} ({})", info.version, info.revision()),
+        &["dim-label"],
+    );
+    let description = dialog::text(about::DESCRIPTION, &[]);
     let authors: Vec<&str> = env!("CARGO_PKG_AUTHORS")
         .split(':')
         .filter(|name| !name.is_empty())
         .collect();
-    let dialog = gtk::AboutDialog::builder()
-        .transient_for(parent)
-        .modal(true)
-        .program_name(about::APP_NAME)
-        .version(format!("{} ({})", info.version, info.revision()))
-        .comments(about::DESCRIPTION)
-        .authors(authors)
-        .logo_icon_name(crate::desktop_entry::APP_ICON)
-        .system_information(details(log_path))
-        // Tall enough to show every System line without scrolling.
-        .default_width(ABOUT_SIZE.0)
-        .default_height(ABOUT_SIZE.1)
+    let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    heading.set_hexpand(true);
+    heading.append(&name);
+    heading.append(&version);
+    heading.append(&description);
+    if !authors.is_empty() {
+        heading.append(&dialog::text(
+            &format!("By {}", authors.join(", ")),
+            &["dim-label"],
+        ));
+    }
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    top.append(&logo);
+    top.append(&heading);
+
+    let system = details(log_path);
+    let details_text = gtk::Label::builder()
+        .label(&system)
+        .xalign(0.0)
+        .selectable(true)
+        .css_classes(["about-details"])
         .build();
-    dialog.present();
+    let expander = gtk::Expander::builder()
+        .label("System details")
+        .child(&details_text)
+        .margin_top(dialog::SPACING)
+        .build();
+    dialog.content.append(&top);
+    dialog.content.append(&expander);
+
+    dialog.add_button("Copy Details", ButtonKind::Normal, move || {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&system);
+        }
+    });
+    let close = dialog.add_close_button("Close");
+    dialog.window.set_default_widget(Some(&close));
+    dialog.window.present();
+    close.grab_focus();
 }

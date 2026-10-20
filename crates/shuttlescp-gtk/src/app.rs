@@ -258,7 +258,11 @@ impl SimpleComponent for App {
                 set_child = &gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
 
-                    gtk::HeaderBar {},
+                    gtk::HeaderBar {
+                        // Slim, with small square window buttons (see style.css).
+                        add_css_class: "compact-titlebar",
+                        set_decoration_layout: Some(":minimize,maximize,close"),
+                    },
 
                     #[name = "menu_bar"]
                     gtk::PopoverMenuBar::from_model(Some(&menu_model)) {},
@@ -281,6 +285,8 @@ impl SimpleComponent for App {
                     set_start_child = &gtk::Notebook {
                         set_vexpand: true,
                         set_scrollable: true,
+                        // Square tabs, like the bottom panel's (see style.css).
+                        add_css_class: "session-tabs",
 
                         // `append_page[label] = page` calls `append_page(page, label)`.
                         append_page[Some(&session_tab)] = &gtk::Paned {
@@ -545,6 +551,12 @@ impl SimpleComponent for App {
                     notebook.stop_signal_emission_by_name("switch-page");
                 }
             });
+        // Development aid: save pictures of every window (see `ui_gallery`).
+        #[cfg(debug_assertions)]
+        if let Some(dir) = std::env::var_os(crate::ui_gallery::ENV_VAR) {
+            let sender = sender.clone();
+            crate::ui_gallery::run(&root, dir.into(), move || sender.input(AppMsg::ShowLogin));
+        }
         if show_login {
             open_login_after_first_frame(&root, sender);
         }
