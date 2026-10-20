@@ -1,7 +1,7 @@
 //! Main window: menu bar on top, then one tab per session, each holding a local explorer
 //! on the left and a remote explorer on the right.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -63,8 +63,10 @@ const NEW_TAB_PAGE: u32 = 1;
 const SESSION_AREA_HEIGHT: i32 = 470;
 /// Text shown in the remote half of the split (and the transfers tab) while not connected.
 pub const NOT_CONNECTED: &str = "Not connected";
-/// Position of the transfers tab in the bottom panel (after the log).
+/// Position of the transfer Queue tab in the bottom panel (after the log).
 const TRANSFERS_PAGE: u32 = 1;
+/// How long the Completed tab stays highlighted after a transfer lands in it.
+const TAB_HIGHLIGHT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 // These macros declare marker types that name GIO actions in a type-safe way.
 // "win" is the action group GTK attaches to the window, so actions are "win.quit" etc.
@@ -143,8 +145,15 @@ pub enum AppMsg {
     StartJob(Job),
     /// A transfer finished: show the panes' new contents.
     TransferFinished,
-    /// The number of running transfers changed.
-    TransfersRunning(usize),
+    /// The number of transfers running, completed or failed changed.
+    TransferCounts {
+        /// Jobs running.
+        running: usize,
+        /// Jobs in the Completed list.
+        completed: usize,
+        /// Jobs in the Failed list.
+        failed: usize,
+    },
     /// The main window was resized, maximized or restored.
     WindowChanged {
         /// The window's normal size; `None` while maximized (its size then is the
@@ -194,7 +203,7 @@ pub struct App {
     /// File > Disconnect, enabled only while connected.
     disconnect_action: RelmAction<DisconnectAction>,
     /// The connection's transfers tab in the bottom panel.
-    transfer_tab: TransferTab,
+    transfer_tab: TransferTabs,
     /// The transfers list shown in that tab.
     transfers: Controller<TransferPanel>,
     /// The bottom panel, to bring the transfers tab forward when a job starts.
@@ -383,7 +392,15 @@ impl SimpleComponent for App {
             .launch(PendingTransfers::default_path())
             .forward(sender.input_sender(), |output| match output {
                 TransferPanelOutput::JobFinished => AppMsg::TransferFinished,
-                TransferPanelOutput::Running(count) => AppMsg::TransfersRunning(count),
+                TransferPanelOutput::Counts {
+                    running,
+                    completed,
+                    failed,
+                } => AppMsg::TransferCounts {
+                    running,
+                    completed,
+                    failed,
+                },
             });
         let running_transfers = Rc::new(Cell::new(0));
         let quitting = Rc::new(Cell::new(false));
@@ -403,9 +420,14 @@ impl SimpleComponent for App {
                 }
             });
         }
+        let (completed_page, failed_page) = transfers.model().history_pages();
         let (bottom_panel, transfer_tab) = bottom_panel(
             logger.file_path().map(Path::to_path_buf),
-            transfers.widget().upcast_ref(),
+            [
+                transfers.widget().upcast_ref(),
+                &completed_page,
+                &failed_page,
+            ],
         );
         let menu_model = build_menu();
         let theme_list = ThemeList::new(themes, config.theme());
@@ -571,7 +593,14 @@ impl SimpleComponent for App {
                 self.request_job(side, kind, paths, &sender);
             }
             AppMsg::StartJob(job) => self.start_job(job),
-            AppMsg::TransfersRunning(count) => self.running_transfers.set(count),
+            AppMsg::TransferCounts {
+                running,
+                completed,
+                failed,
+            } => {
+                self.running_transfers.set(running);
+                self.transfer_tab.show_counts(running, completed, failed);
+            }
             AppMsg::TransferFinished => {
                 self.local_pane.emit(FilePaneMsg::Refresh);
                 if let Some(connection) = &self.connection {
@@ -936,32 +965,45 @@ fn track_window_size(window: &gtk::ApplicationWindow, sender: &ComponentSender<A
     window.connect_maximized_notify(move |window| report(window));
 }
 
-/// The tabbed panel along the bottom of the window: the log first, then the transfers
-/// tab (one per connection once several connections are supported, each added after
-/// the log).
+/// The tabbed panel along the bottom of the window: the log, then the transfer Queue,
+/// Completed and Failed lists (one set per connection once several connections are
+/// supported, each added after the log).
 ///
 /// # Arguments
 ///
 /// * `log_path` - The log file, if logging to a file works
-/// * `transfers` - The transfers list, shown in the transfers tab
+/// * `pages` - The Queue, Completed and Failed pages
 fn bottom_panel(
     log_path: Option<PathBuf>,
-    transfers: &gtk::Widget,
-) -> (gtk::Notebook, TransferTab) {
+    pages: [&gtk::Widget; 3],
+) -> (gtk::Notebook, TransferTabs) {
     let panel = gtk::Notebook::new();
     panel.add_css_class("bottom-panel");
 
     let (log_tab, _) = panel_tab("text-x-generic-symbolic", "Log");
     panel.append_page(&log_tail(log_path), Some(&log_tab));
 
-    let (tab, title) = panel_tab("network-transmit-receive-symbolic", "");
-    let transfer_page = panel.append_page(transfers, Some(&tab));
-    let transfer_tab = TransferTab { title };
-    transfer_tab.show_connection(None);
+    let [queue_page, completed_page, failed_page] = pages;
+    let (queue_tab, queue) = panel_tab("network-transmit-receive-symbolic", "");
+    let queue_position = panel.append_page(queue_page, Some(&queue_tab));
+    let (completed_tab, completed) = panel_tab("object-select-symbolic", "");
+    panel.append_page(completed_page, Some(&completed_tab));
+    let (failed_tab, failed) = panel_tab("dialog-error-symbolic", "");
+    panel.append_page(failed_page, Some(&failed_tab));
+    let tabs = TransferTabs {
+        queue,
+        completed,
+        completed_tab,
+        failed,
+        connection: RefCell::new(None),
+        counts: Cell::new((0, 0, 0)),
+    };
+    tabs.show_connection(None);
+    tabs.show_counts(0, 0, 0);
 
-    // Selected by default: the connection's transfers.
-    panel.set_current_page(Some(transfer_page));
-    (panel, transfer_tab)
+    // Selected by default: the transfer queue.
+    panel.set_current_page(Some(queue_position));
+    (panel, tabs)
 }
 
 /// A bottom panel tab label: a small icon and a name.
@@ -982,35 +1024,71 @@ fn panel_tab(icon: &str, name: &str) -> (gtk::Box, gtk::Label) {
     (label, text)
 }
 
-/// The title of a connection's transfers tab in the bottom panel; the tab itself shows
-/// a [`TransferPanel`]. With several connections, each will get a tab like this.
-struct TransferTab {
-    /// Tab title: the connection it belongs to.
-    title: gtk::Label,
+/// The titles of the transfer tabs (Queue, Completed, Failed); the tabs themselves
+/// show a [`TransferPanel`]'s lists. With several connections, each will get a set.
+struct TransferTabs {
+    queue: gtk::Label,
+    completed: gtk::Label,
+    /// The Completed tab's label box, highlighted when a transfer lands in it.
+    completed_tab: gtk::Box,
+    failed: gtk::Label,
+    /// Name of the connection the Queue belongs to.
+    connection: RefCell<Option<String>>,
+    /// Running, completed and failed jobs.
+    counts: Cell<(usize, usize, usize)>,
 }
 
-impl TransferTab {
-    /// Show the tab for a connection, or as "Not connected".
+impl TransferTabs {
+    /// Name the Queue after its connection, or none.
     ///
     /// # Arguments
     ///
     /// * `connection` - Name of the connection (e.g. "me@host"), or `None`
     fn show_connection(&self, connection: Option<&str>) {
-        match connection {
-            Some(name) => {
-                // Connection names can be long: keep the tab small by shortening the
-                // middle (a GTK ellipsized label would shrink to just "..." in a tab).
-                self.title
-                    .set_label(&shorten_middle(name, TAB_TITLE_MAX_CHARS));
-                self.title
-                    .set_tooltip_text(Some(&format!("Transfers for {name}")));
-            }
-            None => {
-                self.title.set_label(NOT_CONNECTED);
-                self.title
-                    .set_tooltip_text(Some("Transfers (not connected)"));
-            }
+        self.queue.set_tooltip_text(Some(&match connection {
+            Some(name) => format!("Transfers for {name}"),
+            None => String::from("Transfers (not connected)"),
+        }));
+        self.connection.replace(connection.map(str::to_owned));
+        self.update_queue_title();
+    }
+
+    /// Show how many jobs each list holds; highlight the Completed tab briefly when a
+    /// transfer lands in it.
+    fn show_counts(&self, running: usize, completed: usize, failed: usize) {
+        let (_, completed_before, _) = self.counts.replace((running, completed, failed));
+        self.update_queue_title();
+        self.completed.set_label(&titled("Completed", completed));
+        self.failed.set_label(&titled("Failed", failed));
+        if completed > completed_before {
+            self.completed_tab.add_css_class("tab-highlight");
+            let tab = self.completed_tab.clone();
+            glib::timeout_add_local_once(TAB_HIGHLIGHT, move || {
+                tab.remove_css_class("tab-highlight");
+            });
         }
+    }
+
+    /// "Queue (2) · me@host": the running count and the connection, shortened to fit.
+    fn update_queue_title(&self) {
+        let mut title = titled("Queue", self.counts.get().0);
+        if let Some(name) = self.connection.borrow().as_deref() {
+            title.push_str(" · ");
+            title.push_str(name);
+        }
+        // Connection names can be long: keep the tab small by shortening the middle
+        // (a GTK ellipsized label would shrink to just "..." in a tab).
+        self.queue
+            .set_label(&shorten_middle(&title, TAB_TITLE_MAX_CHARS));
+    }
+}
+
+/// "Name" or "Name (n)" when there are any.
+fn titled(name: &str, count: usize) -> String {
+    if count == 0 {
+        name.to_owned()
+    } else {
+        format!("{name} ({count})")
     }
 }
 

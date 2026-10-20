@@ -300,10 +300,27 @@ button.tab-close {
     background: transparent;
 }
 
-/* A finished transfer greys out over two seconds before it leaves the list. */
+/* A finished transfer flashes green (or red if it failed), then fades out before it
+   moves from the Queue to Completed (or Failed). The fade matches FADE_FOR in
+   transfer_panel.rs. */
 .transfer-panel .transfer-row {
-    transition: opacity 2s ease-in;
+    transition: opacity 400ms ease-in, background-color 250ms ease-out;
+}
+.transfer-panel .transfer-row.finished-ok {
+    background-color: alpha(#2ec27e, 0.28);
+}
+.transfer-panel .transfer-row.finished-bad {
+    background-color: alpha(#e01b24, 0.2);
 }
 .transfer-panel .transfer-row.fading {
-    opacity: 0.25;
+    opacity: 0;
+}
+
+/* The Completed tab lights up briefly when a transfer lands in it. */
+notebook.bottom-panel > header tab box {
+    transition: background-color 400ms ease-out;
+    border-radius: 3px;
+}
+notebook.bottom-panel > header tab box.tab-highlight {
+    background-color: alpha(#2ec27e, 0.35);
 }

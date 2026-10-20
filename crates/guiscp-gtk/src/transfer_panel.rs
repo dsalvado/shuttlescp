@@ -1,11 +1,13 @@
-//! The transfers tab: one entry per job, each showing its folders and files as a tree
-//! with a progress bar per item, speeds, and a time-left estimate for long transfers.
+//! The transfer lists: Queue (jobs running), Completed and Failed. Each job shows its
+//! folders and files as a tree with a progress bar per item, speeds, and a time-left
+//! estimate for long transfers. A finished job flashes green (or red), fades, and moves
+//! from the Queue to Completed (or Failed, where it can be retried).
 //!
 //! Every job runs as its own background task (see [`guiscp_core::transfer`]), so jobs
 //! proceed side by side; their progress arrives here as command messages.
 //!
-//! The list is a single [`gtk::ListView`] of the rows currently expanded: only the rows
-//! on screen have widgets, so a job with hundreds of thousands of files stays fast.
+//! Each list is a [`gtk::ListView`] of the rows currently expanded: only the rows on
+//! screen have widgets, so a job with hundreds of thousands of files stays fast.
 //! Progress updates go straight to the widgets of visible rows.
 
 use std::cell::{Cell, RefCell};
@@ -38,10 +40,12 @@ const INDENT: i32 = 18;
 /// Width of the slot at the end of each line for the result icon (or a job's Cancel /
 /// Retry button), so bars and texts stay lined up whatever it shows.
 const END_SLOT_WIDTH: i32 = 48;
-/// A job that finished without problems starts fading this long after it ends...
-const FADE_AFTER: Duration = Duration::from_secs(8);
-/// ...and leaves the list this long after it ends (the fade itself is in style.css).
-const REMOVE_AFTER: Duration = Duration::from_secs(10);
+/// A finished job flashes (green, or red if it failed) in the Queue this long...
+const FLASH_FOR: Duration = Duration::from_millis(900);
+/// ...then fades out this long (matching style.css) before moving to Completed or Failed.
+const FADE_FOR: Duration = Duration::from_millis(450);
+/// The Completed list keeps this many jobs; older ones are dropped.
+const MAX_COMPLETED: usize = 500;
 /// Width of the slot for the expander arrow; files get an empty one, so their names
 /// line up with folder names.
 const EXPANDER_SLOT_WIDTH: i32 = 20;
@@ -53,6 +57,28 @@ const FAILED_ICON: &str = "dialog-error-symbolic";
 const STOPPED_ICON: &str = "process-stop-symbolic";
 /// Name of the panel's action group, used by the row buttons.
 const ACTION_GROUP: &str = "transfers";
+
+/// The three transfer lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKind {
+    /// Jobs running (and just finished, on their way out).
+    Queue,
+    /// Jobs that finished without problems.
+    Completed,
+    /// Jobs that failed or were cancelled; they can be retried.
+    Failed,
+}
+
+impl ListKind {
+    /// Position in arrays indexed by list.
+    fn index(self) -> usize {
+        match self {
+            Self::Queue => 0,
+            Self::Completed => 1,
+            Self::Failed => 2,
+        }
+    }
+}
 
 /// The server connection jobs use.
 #[derive(Debug, Clone)]
@@ -79,12 +105,14 @@ pub enum TransferPanelMsg {
         /// The folder, or `None` for the whole job.
         item: Option<usize>,
     },
-    /// Remove finished jobs from the list.
-    ClearFinished,
-    /// Remove one finished job from the list.
+    /// Remove every job from the Completed or Failed list.
+    Clear(ListKind),
+    /// Remove one finished job from its list.
     Dismiss(u64),
-    /// Start fading out a finished job before it is removed.
+    /// Start fading out a finished job in the Queue.
     Fade(u64),
+    /// Move a finished job from the Queue to Completed or Failed.
+    Shelve(u64),
     /// A server was connected, or (`None`) disconnected: jobs using the old one stop.
     Connection(Option<PanelConnection>),
     /// Resume the jobs interrupted in an earlier session.
@@ -98,8 +126,15 @@ pub enum TransferPanelMsg {
 pub enum TransferPanelOutput {
     /// A job finished; the file panes may need refreshing.
     JobFinished,
-    /// The number of jobs still running changed.
-    Running(usize),
+    /// The number of jobs in the lists changed.
+    Counts {
+        /// Jobs still running.
+        running: usize,
+        /// Jobs in the Completed list.
+        completed: usize,
+        /// Jobs in the Failed list.
+        failed: usize,
+    },
 }
 
 /// Identifies a row: a job's header line, or one of its items.
@@ -147,8 +182,14 @@ struct JobState {
     meter: RateMeter,
     summary: Option<JobSummary>,
     expanded: bool,
-    /// Fading out, about to leave the list.
+    /// Which list it is in.
+    list: ListKind,
+    /// Just finished: flashing before it leaves the Queue.
+    flashing: bool,
+    /// Fading out, about to leave the Queue.
     fading: bool,
+    /// When it reached Completed or Failed (a counter), to drop the oldest first.
+    shelved: u64,
 }
 
 impl JobState {
@@ -185,23 +226,32 @@ struct Shared {
     bound: HashMap<RowKey, RowWidgets>,
 }
 
-/// The transfers panel component.
+/// The transfers panel component. Its root is the Queue page; the Completed and Failed
+/// pages are added to the window separately (see [`TransferPanel::history_pages`]).
 pub struct TransferPanel {
     shared: Rc<RefCell<Shared>>,
-    /// The visible rows, in order (each a `BoxedAnyObject` holding a [`RowKey`]).
-    rows: gio::ListStore,
+    /// The visible rows of each list, in order (each a `BoxedAnyObject` holding a
+    /// [`RowKey`]), indexed by [`ListKind::index`].
+    rows: [gio::ListStore; 3],
     next_id: u64,
     connection: Option<PanelConnection>,
     pending: PendingTransfers,
     pending_path: PathBuf,
     /// Jobs of this site interrupted in an earlier session, offered for resuming.
     interrupted: Vec<PendingJob>,
-    placeholder: gtk::Label,
-    clear_button: gtk::Button,
+    /// "Queue empty" and the like, shown over each list while it is empty.
+    placeholders: [gtk::Label; 3],
+    /// The Completed and Failed pages.
+    completed_page: gtk::Box,
+    failed_page: gtk::Box,
+    /// The Clear buttons of the Completed and Failed pages.
+    clear_buttons: [gtk::Button; 2],
     banner: gtk::Box,
     banner_text: gtk::Label,
-    /// Running jobs last reported to the main window.
-    running: usize,
+    /// Counts last reported to the main window: running, completed, failed.
+    counts: (usize, usize, usize),
+    /// Counter giving each shelved job its place in time.
+    next_shelf: u64,
 }
 
 #[relm4::component(pub)]
@@ -239,19 +289,6 @@ impl Component for TransferPanel {
                     connect_clicked => TransferPanelMsg::DiscardInterrupted,
                 },
             },
-            gtk::Box {
-                set_orientation: gtk::Orientation::Horizontal,
-                add_css_class: "compact-toolbar",
-                set_halign: gtk::Align::End,
-
-                #[local_ref]
-                clear_button -> gtk::Button {
-                    set_label: "Clear Finished",
-                    set_has_frame: false,
-                    set_sensitive: false,
-                    connect_clicked => TransferPanelMsg::ClearFinished,
-                },
-            },
             gtk::Overlay {
                 set_vexpand: true,
                 add_overlay: placeholder,
@@ -272,18 +309,46 @@ impl Component for TransferPanel {
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let shared = Rc::new(RefCell::new(Shared::default()));
-        let rows = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let list = gtk::ListView::new(
-            Some(gtk::NoSelection::new(Some(rows.clone()))),
-            Some(row_factory(&shared)),
-        );
-        list.add_css_class("transfer-list");
-        register_actions(&root, &sender);
+        let rows: [gio::ListStore; 3] =
+            std::array::from_fn(|_| gio::ListStore::new::<glib::BoxedAnyObject>());
+        let lists: [gtk::ListView; 3] = std::array::from_fn(|index| {
+            let list = gtk::ListView::new(
+                Some(gtk::NoSelection::new(Some(rows[index].clone()))),
+                Some(row_factory(&shared)),
+            );
+            list.add_css_class("transfer-list");
+            list
+        });
+        let placeholders = [
+            "Queue empty",
+            "No completed transfers",
+            "No failed transfers",
+        ]
+        .map(|text| {
+            let placeholder = gtk::Label::new(Some(text));
+            placeholder.add_css_class("dim-label");
+            // Clicks go through to the list underneath.
+            placeholder.set_can_target(false);
+            placeholder
+        });
+        let clear_buttons = [ListKind::Completed, ListKind::Failed].map(|kind| {
+            let button = gtk::Button::builder()
+                .label("Clear")
+                .has_frame(false)
+                .sensitive(false)
+                .build();
+            let sender = sender.clone();
+            button.connect_clicked(move |_| sender.input(TransferPanelMsg::Clear(kind)));
+            button
+        });
+        let [queue_list, completed_list, failed_list] = lists;
+        let completed_page = history_page(&completed_list, &placeholders[1], &clear_buttons[0]);
+        let failed_page = history_page(&failed_list, &placeholders[2], &clear_buttons[1]);
+        // The row buttons of all three pages trigger the same actions.
+        for page in [&root, &completed_page, &failed_page] {
+            register_actions(page, &sender);
+        }
 
-        let placeholder = gtk::Label::new(Some(crate::app::NOT_CONNECTED));
-        placeholder.add_css_class("dim-label");
-        // Clicks go through to the list underneath.
-        placeholder.set_can_target(false);
         let model = Self {
             shared,
             rows,
@@ -292,18 +357,20 @@ impl Component for TransferPanel {
             pending: PendingTransfers::load(&pending_path),
             pending_path,
             interrupted: Vec::new(),
-            placeholder,
-            clear_button: gtk::Button::default(),
+            placeholders,
+            completed_page,
+            failed_page,
+            clear_buttons,
             banner: gtk::Box::default(),
             banner_text: gtk::Label::default(),
-            running: 0,
+            counts: (0, 0, 0),
+            next_shelf: 0,
         };
-        let (placeholder, clear_button, banner, banner_text, list) = (
-            &model.placeholder,
-            &model.clear_button,
+        let (placeholder, banner, banner_text, list) = (
+            &model.placeholders[0],
             &model.banner,
             &model.banner_text,
-            &list,
+            &queue_list,
         );
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -321,7 +388,7 @@ impl Component for TransferPanel {
             }
             TransferPanelMsg::Retry(id) => self.retry(id, &sender),
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
-            TransferPanelMsg::ClearFinished => self.clear_finished(),
+            TransferPanelMsg::Clear(kind) => self.clear(kind),
             TransferPanelMsg::Dismiss(id) => {
                 let finished = self
                     .shared
@@ -339,14 +406,9 @@ impl Component for TransferPanel {
                 if let Some(job) = shared.jobs.get_mut(&id) {
                     job.fading = true;
                 }
-                let keys: Vec<RowKey> = shared
-                    .bound
-                    .keys()
-                    .filter(|key| key.job == id)
-                    .copied()
-                    .collect();
-                refresh(&shared, &keys, Instant::now());
+                refresh_job(&shared, id);
             }
+            TransferPanelMsg::Shelve(id) => self.shelve(id),
             TransferPanelMsg::Connection(connection) => self.set_connection(connection),
             TransferPanelMsg::ResumeInterrupted => {
                 for pending in std::mem::take(&mut self.interrupted) {
@@ -400,7 +462,7 @@ impl Component for TransferPanel {
                 reply,
             } => self.ask_conflict(root, id, item, existing, incoming, reply, now),
             TransferEvent::JobFinished(summary) => {
-                self.job_finished(id, summary, now, &sender);
+                self.job_finished(id, summary, &sender);
                 self.update_chrome(&sender);
                 let _ = sender.output(TransferPanelOutput::JobFinished);
             }
@@ -455,10 +517,13 @@ impl TransferPanel {
                 meter: RateMeter::new(Instant::now()),
                 summary: None,
                 expanded: true,
+                list: ListKind::Queue,
+                flashing: false,
                 fading: false,
+                shelved: 0,
             },
         );
-        self.rows.append(&row_object(RowKey {
+        self.store(ListKind::Queue).append(&row_object(RowKey {
             job: id,
             item: None,
         }));
@@ -478,12 +543,13 @@ impl TransferPanel {
         });
     }
 
-    /// Run a finished, incomplete job again in its place, continuing where it stopped.
+    /// Run a finished, incomplete job again (back in the Queue), continuing where it
+    /// stopped.
     fn retry(&mut self, id: u64, sender: &ComponentSender<Self>) {
         let Some(old) = self.shared.borrow_mut().jobs.remove(&id) else {
             return;
         };
-        self.remove_rows(id);
+        self.remove_rows(id, old.list);
         tracing::info!("retrying: {}", old.job.title());
         let mut job = old.job;
         job.resume = true;
@@ -493,28 +559,84 @@ impl TransferPanel {
     /// Remove a job from the list, and its entry in the unfinished-transfers file (the
     /// user has seen how it ended). Call [`TransferPanel::save_pending`] afterwards.
     fn remove_job(&mut self, id: u64) {
-        let removed = self.shared.borrow_mut().jobs.remove(&id);
-        if let Some(key) = removed.and_then(|job| job.pending_key) {
-            self.pending.remove(&key);
+        let Some(removed) = self.shared.borrow_mut().jobs.remove(&id) else {
+            return;
+        };
+        if let Some(key) = &removed.pending_key {
+            self.pending.remove(key);
         }
-        self.remove_rows(id);
+        self.remove_rows(id, removed.list);
     }
 
-    /// Remove finished jobs (and their entries in the unfinished-transfers file: the
-    /// user has seen how they ended).
-    fn clear_finished(&mut self) {
-        let finished: Vec<u64> = self
+    /// Empty the Completed or Failed list (and forget its jobs' entries in the
+    /// unfinished-transfers file: the user has seen how they ended).
+    fn clear(&mut self, kind: ListKind) {
+        let cleared: Vec<u64> = self
             .shared
             .borrow()
             .jobs
             .iter()
-            .filter(|(_, job)| !job.is_running())
+            .filter(|(_, job)| job.list == kind && !job.is_running())
             .map(|(&id, _)| id)
             .collect();
-        for id in finished {
+        for id in cleared {
             self.remove_job(id);
         }
         self.save_pending();
+    }
+
+    /// Move a finished job from the Queue to the top of Completed (or Failed), folded
+    /// to its header line.
+    fn shelve(&mut self, id: u64) {
+        let target = {
+            let shared = self.shared.borrow();
+            match shared.jobs.get(&id) {
+                Some(job) if job.list == ListKind::Queue && !job.is_running() => {
+                    if job.summary.as_ref().is_some_and(JobSummary::is_complete) {
+                        ListKind::Completed
+                    } else {
+                        ListKind::Failed
+                    }
+                }
+                _ => return,
+            }
+        };
+        self.remove_rows(id, ListKind::Queue);
+        self.next_shelf += 1;
+        if let Some(job) = self.shared.borrow_mut().jobs.get_mut(&id) {
+            job.list = target;
+            job.expanded = false;
+            job.flashing = false;
+            job.fading = false;
+            job.shelved = self.next_shelf;
+        }
+        self.store(target).insert(
+            0,
+            &row_object(RowKey {
+                job: id,
+                item: None,
+            }),
+        );
+        // Keep the Completed list from growing without end.
+        let oldest: Vec<u64> = {
+            let shared = self.shared.borrow();
+            let mut completed: Vec<(u64, u64)> = shared
+                .jobs
+                .iter()
+                .filter(|(_, job)| job.list == ListKind::Completed)
+                .map(|(&id, job)| (job.shelved, id))
+                .collect();
+            completed.sort_unstable();
+            let excess = completed.len().saturating_sub(MAX_COMPLETED);
+            completed
+                .into_iter()
+                .take(excess)
+                .map(|(_, id)| id)
+                .collect()
+        };
+        for id in oldest {
+            self.remove_job(id);
+        }
     }
 
     /// Switch to a new connection (or none): stop jobs using the old one, and offer to
@@ -550,11 +672,6 @@ impl TransferPanel {
         self.banner_text.set_label(&match count {
             1 => String::from("1 transfer was interrupted and can be resumed."),
             count => format!("{count} transfers were interrupted and can be resumed."),
-        });
-        self.placeholder.set_label(if connection.is_some() {
-            "No transfers yet"
-        } else {
-            crate::app::NOT_CONNECTED
         });
         self.connection = connection;
     }
@@ -671,77 +788,51 @@ impl TransferPanel {
             rows
         };
         // The borrow is released first: adding rows makes GTK fill them right away.
-        if let Some(position) = self.position_of(RowKey {
+        if let Some((list, position)) = self.position_of(RowKey {
             job: id,
             item: None,
         }) {
             let objects: Vec<glib::Object> = new_rows.into_iter().map(row_object).collect();
-            self.rows.splice(position + 1, 0, &objects);
+            self.store(list).splice(position + 1, 0, &objects);
         }
     }
 
-    /// The whole job finished.
-    ///
-    /// A job that went well fades out and leaves the list after a while; one with
-    /// problems stays until removed, so they can be seen (and retried).
-    fn job_finished(
-        &mut self,
-        id: u64,
-        summary: JobSummary,
-        now: Instant,
-        sender: &ComponentSender<Self>,
-    ) {
-        if summary.is_complete() {
-            for (delay, message) in [
-                (
-                    FADE_AFTER,
-                    TransferPanelMsg::Fade as fn(u64) -> TransferPanelMsg,
-                ),
-                (REMOVE_AFTER, TransferPanelMsg::Dismiss),
-            ] {
-                let sender = sender.clone();
-                glib::timeout_add_local_once(delay, move || sender.input(message(id)));
-            }
-        }
-        let (fold, forget) = {
+    /// The whole job finished: it flashes green (or red), fades, and moves to
+    /// Completed (or Failed).
+    fn job_finished(&mut self, id: u64, summary: JobSummary, sender: &ComponentSender<Self>) {
+        let forget = {
             let mut shared = self.shared.borrow_mut();
             let Some(job) = shared.jobs.get_mut(&id) else {
                 return;
             };
-            let complete = summary.is_complete();
             // Nothing left to resume: done, or the user chose to stop it.
-            let forget = (complete || job.user_cancelled)
+            let forget = (summary.is_complete() || job.user_cancelled)
                 .then(|| job.pending_key.clone())
                 .flatten();
-            // A job that went well folds to its header line; one with problems stays
-            // open so they can be seen.
-            let fold = complete && job.expanded;
             job.summary = Some(summary);
-            refresh(
-                &shared,
-                &[RowKey {
-                    job: id,
-                    item: None,
-                }],
-                now,
-            );
-            (fold, forget)
+            job.flashing = true;
+            refresh_job(&shared, id);
+            forget
         };
         if let Some(key) = forget {
             self.pending.remove(&key);
             self.save_pending();
         }
-        if fold {
-            self.toggle(RowKey {
-                job: id,
-                item: None,
-            });
+        for (delay, message) in [
+            (
+                FLASH_FOR,
+                TransferPanelMsg::Fade as fn(u64) -> TransferPanelMsg,
+            ),
+            (FLASH_FOR + FADE_FOR, TransferPanelMsg::Shelve),
+        ] {
+            let sender = sender.clone();
+            glib::timeout_add_local_once(delay, move || sender.input(message(id)));
         }
     }
 
     /// Expand or collapse a job or folder.
     fn toggle(&mut self, key: RowKey) {
-        let Some(position) = self.position_of(key) else {
+        let Some((list, position)) = self.position_of(key) else {
             return;
         };
         let (removed, added) = {
@@ -765,51 +856,79 @@ impl TransferPanel {
         let objects: Vec<glib::Object> = added.into_iter().map(row_object).collect();
         // `splice` counts in u32; a job never has anywhere near 4 billion rows.
         let removed = u32::try_from(removed).unwrap_or(u32::MAX);
-        self.rows.splice(position + 1, removed, &objects);
+        self.store(list).splice(position + 1, removed, &objects);
     }
 
-    /// Remove a job's rows from the list.
-    fn remove_rows(&mut self, id: u64) {
-        let Some(start) = self.position_of(RowKey {
+    /// Remove a job's rows from a list.
+    fn remove_rows(&mut self, id: u64, list: ListKind) {
+        let store = self.store(list);
+        let header = row_object(RowKey {
             job: id,
             item: None,
-        }) else {
+        });
+        let Some(start) = position_in(store, row_key(&header)) else {
             return;
         };
         let mut end = start + 1;
-        while self
-            .rows
+        while store
             .item(end)
             .is_some_and(|object| row_key(&object).is_some_and(|key| key.job == id))
         {
             end += 1;
         }
-        self.rows.splice(start, end - start, &[] as &[glib::Object]);
+        store.splice(start, end - start, &[] as &[glib::Object]);
     }
 
-    /// Position of a row in the list.
-    fn position_of(&self, key: RowKey) -> Option<u32> {
-        (0..self.rows.n_items()).find(|&position| {
-            self.rows.item(position).and_then(|object| row_key(&object)) == Some(key)
-        })
+    /// The list a row is in, and its position there.
+    fn position_of(&self, key: RowKey) -> Option<(ListKind, u32)> {
+        let list = self.shared.borrow().jobs.get(&key.job)?.list;
+        position_in(self.store(list), Some(key)).map(|position| (list, position))
     }
 
-    /// Show the placeholder only while the list is empty, enable "Clear Finished" while
-    /// there is something to clear, and tell the main window how many jobs run.
+    /// The rows of a list.
+    fn store(&self, list: ListKind) -> &gio::ListStore {
+        &self.rows[list.index()]
+    }
+
+    /// The Completed and Failed pages, for the main window to show as tabs.
+    pub fn history_pages(&self) -> (gtk::Widget, gtk::Widget) {
+        (
+            self.completed_page.clone().upcast(),
+            self.failed_page.clone().upcast(),
+        )
+    }
+
+    /// Show each list's placeholder while it is empty, enable the Clear buttons while
+    /// there is something to clear, and tell the main window the counts.
     fn update_chrome(&mut self, sender: &ComponentSender<Self>) {
-        let (empty, any_finished, running) = {
+        let counts = {
             let shared = self.shared.borrow();
+            let count =
+                |list: ListKind| shared.jobs.values().filter(|job| job.list == list).count();
             (
-                shared.jobs.is_empty(),
-                shared.jobs.values().any(|job| !job.is_running()),
                 shared.jobs.values().filter(|job| job.is_running()).count(),
+                count(ListKind::Completed),
+                count(ListKind::Failed),
             )
         };
-        self.placeholder.set_visible(empty);
-        self.clear_button.set_sensitive(any_finished);
-        if running != self.running {
-            self.running = running;
-            let _ = sender.output(TransferPanelOutput::Running(running));
+        let queued = self
+            .shared
+            .borrow()
+            .jobs
+            .values()
+            .any(|job| job.list == ListKind::Queue);
+        self.placeholders[0].set_visible(!queued);
+        self.placeholders[1].set_visible(counts.1 == 0);
+        self.placeholders[2].set_visible(counts.2 == 0);
+        self.clear_buttons[0].set_sensitive(counts.1 > 0);
+        self.clear_buttons[1].set_sensitive(counts.2 > 0);
+        if counts != self.counts {
+            self.counts = counts;
+            let _ = sender.output(TransferPanelOutput::Counts {
+                running: counts.0,
+                completed: counts.1,
+                failed: counts.2,
+            });
         }
     }
 
@@ -819,6 +938,46 @@ impl TransferPanel {
             tracing::warn!("cannot record unfinished transfers: {error}");
         }
     }
+}
+
+/// Position of a row in a list.
+fn position_in(store: &gio::ListStore, key: Option<RowKey>) -> Option<u32> {
+    let key = key?;
+    (0..store.n_items())
+        .find(|&position| store.item(position).and_then(|object| row_key(&object)) == Some(key))
+}
+
+/// A Completed or Failed page: a Clear button over the list.
+fn history_page(list: &gtk::ListView, placeholder: &gtk::Label, clear: &gtk::Button) -> gtk::Box {
+    let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    toolbar.add_css_class("compact-toolbar");
+    toolbar.set_halign(gtk::Align::End);
+    toolbar.append(clear);
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(list)
+        .build();
+    let overlay = gtk::Overlay::builder()
+        .vexpand(true)
+        .child(&scrolled)
+        .build();
+    overlay.add_overlay(placeholder);
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    page.add_css_class("transfer-panel");
+    page.append(&toolbar);
+    page.append(&overlay);
+    page
+}
+
+/// Redraw every visible row of a job.
+fn refresh_job(shared: &Shared, id: u64) {
+    let keys: Vec<RowKey> = shared
+        .bound
+        .keys()
+        .filter(|key| key.job == id)
+        .copied()
+        .collect();
+    refresh(shared, &keys, Instant::now());
 }
 
 /// A list item holding a row key.
@@ -1054,6 +1213,9 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
         .status
         .set_visible(!row.can_cancel && !row.can_retry);
     widgets.remove.set_visible(row.can_remove);
+    let complete = job.summary.as_ref().is_some_and(JobSummary::is_complete);
+    set_class(&widgets.line, "finished-ok", job.flashing && complete);
+    set_class(&widgets.line, "finished-bad", job.flashing && !complete);
     set_class(&widgets.line, "fading", job.fading);
 }
 
@@ -1116,7 +1278,8 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             .summary
             .as_ref()
             .is_some_and(|summary| !summary.is_complete()),
-        can_remove: !job.is_running(),
+        // Finished jobs in the Queue are on their way out on their own.
+        can_remove: !job.is_running() && job.list != ListKind::Queue,
     }
 }
 
@@ -1389,7 +1552,7 @@ fn small_button(icon: &str, tooltip: Option<&str>) -> gtk::Button {
 }
 
 /// The panel's actions, triggered by the row buttons with a (job, item) parameter.
-fn register_actions(root: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
+fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
     let group = gio::SimpleActionGroup::new();
     let add = |name: &str, message: fn(u64, Option<usize>) -> TransferPanelMsg| {
         let action = gio::SimpleAction::new(name, Some(&<(u64, i64)>::static_variant_type()));
@@ -1405,5 +1568,5 @@ fn register_actions(root: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
     add("cancel", |job, _| TransferPanelMsg::Cancel(job));
     add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
     add("retry", |job, _| TransferPanelMsg::Retry(job));
-    root.insert_action_group(ACTION_GROUP, Some(&group));
+    page.insert_action_group(ACTION_GROUP, Some(&group));
 }
