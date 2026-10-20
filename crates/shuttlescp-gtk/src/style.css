@@ -652,6 +652,38 @@ notebook.bottom-panel > header > tabs > tab.group-end {
     border-top-right-radius: 3px;
 }
 
+/* The transfer tabs of the session shown join its lists as one unit: all three have an
+   opaque background and cover the strip's base line, the selected one with exactly the
+   page's tint, the others a little stronger. An engraved line (dark, then light)
+   divides them. */
+notebook.bottom-panel > header > tabs > tab.group-start ~ tab {
+    box-shadow: inset 1px 0 alpha(black, 0.18), inset 2px 0 alpha(white, 0.22);
+}
+notebook.bottom-panel.shows-group-0 > header > tabs > tab.group-0:not(:checked) {
+    background-color: @view_bg_color;
+    background-image: linear-gradient(alpha(#3584e4, 0.14), alpha(#3584e4, 0.14));
+}
+notebook.bottom-panel.shows-group-1 > header > tabs > tab.group-1:not(:checked) {
+    background-color: @view_bg_color;
+    background-image: linear-gradient(alpha(#2ec27e, 0.14), alpha(#2ec27e, 0.14));
+}
+notebook.bottom-panel.shows-group-2 > header > tabs > tab.group-2:not(:checked) {
+    background-color: @view_bg_color;
+    background-image: linear-gradient(alpha(#ff7800, 0.14), alpha(#ff7800, 0.14));
+}
+notebook.bottom-panel.shows-group-3 > header > tabs > tab.group-3:not(:checked) {
+    background-color: @view_bg_color;
+    background-image: linear-gradient(alpha(#9141ac, 0.14), alpha(#9141ac, 0.14));
+}
+notebook.bottom-panel.shows-group-4 > header > tabs > tab.group-4:not(:checked) {
+    background-color: @view_bg_color;
+    background-image: linear-gradient(alpha(#2190a4, 0.14), alpha(#2190a4, 0.14));
+}
+notebook.bottom-panel.shows-group-5 > header > tabs > tab.group-5:not(:checked) {
+    background-color: @view_bg_color;
+    background-image: linear-gradient(alpha(#e5a50a, 0.14), alpha(#e5a50a, 0.14));
+}
+
 /* Scroll arrows of the tab strips (shown when the tabs do not fit). Themes give them
    negative margins, which make GTK briefly size them below zero while a tab is added. */
 notebook > header > arrow {
