@@ -56,8 +56,21 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
 ## Installing
 
-There are no packages yet. Build it from source as described below; the first run adds
-ShuttleSCP to your desktop's app launcher.
+Download the AppImage from the [ShuttleSCP web page](https://dsalvado.github.io/shuttlescp/)
+or the [latest release](https://github.com/dsalvado/shuttlescp/releases/latest). It is one
+file holding ShuttleSCP and everything it needs, for 64-bit Linux from 2024 or later
+(Ubuntu 24.04, Fedora 40, Debian 13 and the like):
+
+```sh
+chmod +x ShuttleSCP-*-x86_64.AppImage
+./ShuttleSCP-*-x86_64.AppImage
+```
+
+The first run adds ShuttleSCP to your desktop's app launcher. It checks for new versions
+(at most once a day; Help › Check for Updates to check now, or to turn it off) and
+installs them only when they are signed with the ShuttleSCP release key.
+
+You can also build it from source, as described below.
 
 ## Building
 
@@ -83,8 +96,10 @@ cd shuttlescp
 cargo run --release
 ```
 
-The program is `target/release/shuttlescp`. See [BUILDING.md](BUILDING.md) for release
-builds and the build information shown in the app.
+The program is `target/release/shuttlescp`. To build the AppImage yourself, run
+`packaging/linux/build-appimage.sh`. See [BUILDING.md](BUILDING.md) for release builds
+and the build information shown in the app, and [docs/RELEASING.md](docs/RELEASING.md)
+for how releases are made, signed and published.
 
 ## Where it keeps things
 

@@ -5,3 +5,6 @@
 /.agents/
 /skills-lock.json
 /claude.me
+
+# Built AppImages (packaging/linux/build-appimage.sh).
+/dist/

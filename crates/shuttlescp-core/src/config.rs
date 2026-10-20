@@ -127,6 +127,10 @@ pub struct Config {
     window_size: Option<WindowSize>,
     /// Whether the main window was maximized when the app was last closed.
     window_maximized: bool,
+    /// Look for a newer release at startup (at most once a day).
+    check_for_updates: bool,
+    /// When the app last looked for a newer release, in seconds since 1970.
+    last_update_check: Option<u64>,
 }
 
 // Written out by hand (not derived) because the Login dialog should show at startup
@@ -141,6 +145,8 @@ impl Default for Config {
             show_login_at_startup: true,
             window_size: None,
             window_maximized: false,
+            check_for_updates: true,
+            last_update_check: None,
         }
     }
 }
@@ -376,6 +382,27 @@ impl Config {
     /// * `show` - `true` to open it at startup
     pub fn set_show_login_at_startup(&mut self, show: bool) {
         self.show_login_at_startup = show;
+    }
+
+    /// Whether to look for a newer release at startup.
+    pub fn check_for_updates(&self) -> bool {
+        self.check_for_updates
+    }
+
+    /// Change whether to look for a newer release at startup (call [`Config::save`] to
+    /// persist).
+    pub fn set_check_for_updates(&mut self, check: bool) {
+        self.check_for_updates = check;
+    }
+
+    /// When the app last looked for a newer release, in seconds since 1970.
+    pub fn last_update_check(&self) -> Option<u64> {
+        self.last_update_check
+    }
+
+    /// Record that the app looked for a newer release at `when` (seconds since 1970).
+    pub fn set_last_update_check(&mut self, when: u64) {
+        self.last_update_check = Some(when);
     }
 
     /// Main window size when the app was last closed, if known.

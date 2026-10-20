@@ -31,3 +31,4 @@ pub mod session;
 pub mod site_export;
 pub mod sites;
 pub mod transfer;
+pub mod update;

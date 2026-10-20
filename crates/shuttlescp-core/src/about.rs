@@ -17,6 +17,9 @@ pub const LICENSE: &str = "GNU General Public License, version 3 or later";
 /// Where the source code is published.
 pub const WEBSITE: &str = env!("CARGO_PKG_REPOSITORY");
 
+/// The project's web page, with the latest release to download.
+pub const HOMEPAGE: &str = env!("CARGO_PKG_HOMEPAGE");
+
 /// How the running program was built. Front ends fill this in from their build script.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildInfo {

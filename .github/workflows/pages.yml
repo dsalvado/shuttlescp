@@ -1,0 +1,53 @@
+# Publish the project's web page (site/) on GitHub Pages:
+# https://dsalvado.github.io/shuttlescp/
+#
+# The page reads the latest release from GitHub when someone opens it, so it does not
+# need publishing again for each release, only when site/ itself changes.
+name: Web page
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "site/**"
+      - "docs/screenshot.png"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Publishing to Pages needs these two; reading the code needs the first.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One publication at a time; a newer one waits rather than cancelling a running one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-24.04
+    # Shows the page's address on the run's summary.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Set up Pages
+        uses: actions/configure-pages@v6
+
+      - name: Add the screenshot
+        run: cp docs/screenshot.png site/screenshot.png
+
+      - name: Package the page
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: Publish it
+        id: deployment
+        uses: actions/deploy-pages@v5

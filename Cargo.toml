@@ -18,6 +18,7 @@ edition = "2024"
 authors = ["David Salvador"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/dsalvado/shuttlescp"
+homepage = "https://dsalvado.github.io/shuttlescp/"
 
 # Versions shared by both crates; each crate opts in with `name.workspace = true`.
 [workspace.dependencies]

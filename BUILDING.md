@@ -43,3 +43,16 @@ Git must be on the `PATH`. Without it, or when building from a source archive wi
 
 `.gitattributes` keeps text files at LF line endings on every OS. Without it, a Windows
 checkout could convert them to CRLF and every build would be marked `-dirty`.
+
+## AppImage
+
+```sh
+packaging/linux/build-appimage.sh
+```
+
+This builds the release program and packs it, with GTK 4 and the libraries it needs, into
+`dist/ShuttleSCP-<version>-x86_64.AppImage`. The first run downloads the packing tools
+(linuxdeploy and its GTK plugin) into `target/appimage/tools`. An AppImage runs on
+systems with the same or a newer C library than the one it was built on, so official
+releases are built on Ubuntu 24.04 by the release workflow; see
+[docs/RELEASING.md](docs/RELEASING.md).

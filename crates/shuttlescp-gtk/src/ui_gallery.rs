@@ -20,6 +20,7 @@ use crate::confirm_dialog::{self, Confirmation};
 use crate::conflict_dialog;
 use crate::name_dialog::{self, NamePrompt};
 use crate::passphrase_dialog::{self, PassphrasePurpose};
+use crate::update_dialog;
 
 /// Environment variable naming the folder the pictures go into.
 pub const ENV_VAR: &str = "SHUTTLESCP_UI_GALLERY";
@@ -117,6 +118,33 @@ pub fn run(
             "passphrase-export",
             Box::new(|window| {
                 passphrase_dialog::ask(window, PassphrasePurpose::Export, |_| {});
+            }),
+        ),
+        (
+            "update-available",
+            Box::new(|window| {
+                let repository = env!("CARGO_PKG_REPOSITORY");
+                update_dialog::offer(
+                    window,
+                    shuttlescp_core::update::Manifest {
+                        version: String::from("1.0.0"),
+                        published: String::from("2026-11-02T09:00:00Z"),
+                        notes_url: format!("{repository}/releases/tag/v1.0.0"),
+                        appimage: shuttlescp_core::update::Asset {
+                            name: String::from("ShuttleSCP-1.0.0-x86_64.AppImage"),
+                            url: format!("{repository}/releases/download/v1.0.0/x.AppImage"),
+                            size: 0,
+                            sha256: String::new(),
+                        },
+                    },
+                    |_| {},
+                );
+            }),
+        ),
+        (
+            "update-error",
+            Box::new(|window| {
+                update_dialog::report_error(window, "this build cannot check for updates");
             }),
         ),
         (

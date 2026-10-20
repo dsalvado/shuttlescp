@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShuttleSCP</title>
+<meta name="description" content="ShuttleSCP: a graphical SFTP, SCP and FTP client for Linux, in the spirit of WinSCP.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M24 56c0-8.8 7.2-16 16-16h56l20 20h100c8.8 0 16 7.2 16 16v124c0 8.8-7.2 16-16 16H40c-8.8 0-16-7.2-16-16z' fill='%233a7bd5'/%3E%3Crect x='24' y='84' width='208' height='132' rx='16' fill='%2362a8f0'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='14' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M76 128h96M150 106l22 22-22 22M180 174H84M106 152l-22 22 22 22'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+  /* Colours: the app's blue on a plain page; dark when the visitor's system is. */
+  :root {
+    --bg: #f6f8fb;
+    --card: #ffffff;
+    --text: #1f2933;
+    --muted: #5b6876;
+    --line: #dbe2ea;
+    --accent: #3a7bd5;
+    --accent-text: #ffffff;
+    --accent-soft: #e6effb;
+    --code: #eef2f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16191d;
+      --card: #1f2328;
+      --text: #e6e9ed;
+      --muted: #9aa5b1;
+      --line: #313840;
+      --accent: #5b9bf0;
+      --accent-text: #0d1117;
+      --accent-soft: #1c2a3d;
+      --code: #2a3038;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Cantarell, Ubuntu, sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 16px 48px; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 0.9em; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--code); padding: 10px 12px; border-radius: 4px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  h2 { font-size: 1.25rem; margin: 40px 0 12px; }
+
+  header { display: flex; align-items: center; gap: 16px; }
+  header svg { width: 64px; height: 64px; flex: none; }
+  header h1 { margin: 0; font-size: 2rem; line-height: 1.1; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+
+  .download {
+    margin-top: 28px;
+    background: var(--card);
+    border: 2px solid var(--accent);
+    border-radius: 6px;
+    padding: 20px;
+  }
+  .download .version { font-size: 1.15rem; font-weight: 600; }
+  .download .meta { color: var(--muted); font-size: 0.92rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 14px; }
+  .button {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--accent-text);
+    text-decoration: none;
+    font-weight: 600;
+    padding: 9px 18px;
+    border-radius: 4px;
+  }
+  .button:hover { filter: brightness(1.08); }
+  .notes {
+    margin-top: 16px;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    font-size: 0.95rem;
+  }
+  .notes h1, .notes h2, .notes h3 { font-size: 1rem; margin: 12px 0 6px; }
+  .notes ul { padding-left: 20px; }
+
+  .screenshot {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-top: 28px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .feature { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+  .feature h3 { margin: 0 0 4px; font-size: 1rem; }
+  .feature p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+
+  ol li { margin-bottom: 6px; }
+  footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <svg viewBox="0 0 256 256" aria-hidden="true">
+      <path d="M24 56c0-8.8 7.2-16 16-16h56l20 20h100c8.8 0 16 7.2 16 16v124c0 8.8-7.2 16-16 16H40c-8.8 0-16-7.2-16-16z" fill="#3a7bd5"/>
+      <rect x="24" y="84" width="208" height="132" rx="16" fill="#62a8f0"/>
+      <g fill="none" stroke="#fff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M76 128h96M150 106l22 22-22 22M180 174H84M106 152l-22 22 22 22"/>
+      </g>
+    </svg>
+    <div>
+      <h1>ShuttleSCP</h1>
+      <p>A graphical SFTP, SCP and FTP client for Linux, in the spirit of WinSCP.</p>
+    </div>
+  </header>
+
+  <!-- Filled in from the latest GitHub release when the page opens (script below). -->
+  <section class="download" id="download" aria-live="polite">
+    <div class="version" id="release-version">Looking up the latest release…</div>
+    <div class="meta" id="release-meta"></div>
+    <div class="actions">
+      <a class="button" id="download-button" href="https://github.com/dsalvado/shuttlescp/releases/latest">Download</a>
+      <a id="all-releases" href="https://github.com/dsalvado/shuttlescp/releases">All releases</a>
+      <a id="checksums" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>SHA-256 checksums</a>
+    </div>
+    <div class="notes" id="release-notes" hidden></div>
+  </section>
+
+  <img class="screenshot" src="screenshot.png" width="1200" height="798"
+       alt="ShuttleSCP with two connections open, each outlined in its own colour">
+
+  <h2>Install</h2>
+  <ol>
+    <li>Download the AppImage above. It is one file holding ShuttleSCP and everything it needs.</li>
+    <li>Make it runnable, from your file manager (Properties › Permissions › "Allow executing file
+      as program") or a terminal:
+      <pre><code>chmod +x ShuttleSCP-*-x86_64.AppImage</code></pre></li>
+    <li>Run it. ShuttleSCP adds itself to your desktop's app launcher the first time, and from then
+      on checks for new versions and can update itself (Help › Check for Updates).</li>
+  </ol>
+  <p>It needs a 64-bit Linux from 2024 or later (Ubuntu 24.04, Fedora 40, Debian 13 and the
+    like). To check a download by hand, compare it with the release's checksums:
+    <code>sha256sum --check SHA256SUMS</code>.</p>
+
+  <h2>Features</h2>
+  <div class="features">
+    <div class="feature"><h3>SFTP, SCP and FTP</h3><p>SSH, plain FTP and FTPS (explicit or implicit TLS), passive or active.</p></div>
+    <div class="feature"><h3>Two panes</h3><p>This computer on the left, the server on the right; drag and drop between them.</p></div>
+    <div class="feature"><h3>Several connections</h3><p>Each in its own tab and colour, with its own transfer lists.</p></div>
+    <div class="feature"><h3>Safe transfers</h3><p>Asks before replacing files; interrupted transfers continue where they stopped.</p></div>
+    <div class="feature"><h3>Passwords in the keyring</h3><p>Saved in GNOME Keyring or KWallet, never in a plain file.</p></div>
+    <div class="feature"><h3>Signed updates</h3><p>Updates are only installed when signed with the ShuttleSCP release key.</p></div>
+  </div>
+
+  <h2>Build from source</h2>
+  <p>You need Rust 1.88 or newer and the GTK 4 development files
+    (<code>libgtk-4-dev</code> on Debian and Ubuntu, <code>gtk4-devel</code> on Fedora):</p>
+  <pre><code>git clone https://github.com/dsalvado/shuttlescp.git
+cd shuttlescp
+cargo run --release</code></pre>
+
+  <footer>
+    ShuttleSCP is free software under the
+    <a href="https://github.com/dsalvado/shuttlescp/blob/master/LICENSE">GNU GPL, version 3 or later</a>.
+    Source code, issues and releases on <a href="https://github.com/dsalvado/shuttlescp">GitHub</a>.
+  </footer>
+</main>
+
+<script>
+  // Show the latest release: its version, date, AppImage and notes. GitHub's public API
+  // needs no account; it allows 60 requests an hour from each visitor's address, plenty
+  // for a page opened by hand. If it cannot be reached, the links above still lead to
+  // the releases page.
+  (async () => {
+    const repo = "dsalvado/shuttlescp";
+    const version = document.getElementById("release-version");
+    const meta = document.getElementById("release-meta");
+    const button = document.getElementById("download-button");
+    const checksums = document.getElementById("checksums");
+    const notes = document.getElementById("release-notes");
+    try {
+      const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+        // Asks for the release notes already turned into (GitHub-sanitised) HTML.
+        headers: { Accept: "application/vnd.github.html+json" },
+      });
+      if (response.status === 404) {
+        version.textContent = "No release yet";
+        meta.textContent = "The first release is on its way; until then, build it from source (below).";
+        button.hidden = true;
+        return;
+      }
+      if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
+      const release = await response.json();
+      const appimage = release.assets.find((asset) => asset.name.endsWith(".AppImage"));
+      const sums = release.assets.find((asset) => asset.name === "SHA256SUMS");
+      const date = new Date(release.published_at).toLocaleDateString(undefined, {
+        year: "numeric", month: "long", day: "numeric",
+      });
+      version.textContent = `ShuttleSCP ${release.tag_name.replace(/^v/, "")}`;
+      if (appimage) {
+        const megabytes = (appimage.size / (1024 * 1024)).toFixed(0);
+        meta.textContent = `Released ${date} · Linux AppImage, 64-bit, ${megabytes} MB`;
+        button.href = appimage.browser_download_url;
+        button.textContent = "Download AppImage";
+      } else {
+        meta.textContent = `Released ${date}`;
+        button.href = release.html_url;
+      }
+      if (sums) {
+        checksums.href = sums.browser_download_url;
+        checksums.hidden = false;
+      }
+      if (release.body_html) {
+        notes.innerHTML = release.body_html;
+        notes.hidden = false;
+      }
+    } catch (error) {
+      version.textContent = "Latest release";
+      meta.textContent = "Could not look it up just now; the button leads to the releases page.";
+    }
+  })();
+</script>
+</body>
+</html>

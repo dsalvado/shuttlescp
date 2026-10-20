@@ -1,0 +1,11 @@
+{
+  "version": "0.9.0",
+  "published": "2026-10-20T16:32:18Z",
+  "notes_url": "https://github.com/dsalvado/shuttlescp/releases/tag/v0.9.0",
+  "appimage": {
+    "name": "ShuttleSCP-0.9.0-x86_64.AppImage",
+    "url": "https://github.com/dsalvado/shuttlescp/releases/download/v0.9.0/ShuttleSCP-0.9.0-x86_64.AppImage",
+    "size": 41839096,
+    "sha256": "64e78e650e2c8376479bdd3fd5df65a1d261f1533ceb972604d874931da1071a"
+  }
+}

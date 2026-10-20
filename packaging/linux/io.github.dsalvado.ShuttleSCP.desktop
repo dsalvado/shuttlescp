@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ShuttleSCP
+Comment=Graphical SFTP and FTP client, in the spirit of WinSCP
+Exec=shuttlescp
+Icon=io.github.dsalvado.ShuttleSCP
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=sftp;scp;ftp;ftps;ssh;transfer;upload;download;
+StartupNotify=true
+StartupWMClass=io.github.dsalvado.ShuttleSCP

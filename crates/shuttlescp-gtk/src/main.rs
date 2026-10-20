@@ -19,6 +19,7 @@ mod theme_list;
 mod transfer_panel;
 #[cfg(debug_assertions)]
 mod ui_gallery;
+mod update_dialog;
 
 use relm4::RelmApp;
 

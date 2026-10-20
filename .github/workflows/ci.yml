@@ -1,0 +1,59 @@
+# Continuous integration: check every change on a fresh machine.
+#
+# GitHub runs this on each push to master and on each pull request. If formatting,
+# lint or a test fails, the commit (or pull request) gets a red cross, so problems are
+# caught before they reach a release.
+name: CI
+
+# When it runs ("triggers").
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # Adds a "Run workflow" button on the Actions tab, to run it by hand.
+  workflow_dispatch:
+
+# The workflow only needs to read the code. Granting the least access needed limits the
+# damage a compromised step could do.
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels a run still going for an older one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Format, lint and test
+    # The machine ("runner"): a fresh Ubuntu 24.04 virtual machine for every run.
+    runs-on: ubuntu-24.04
+    steps:
+      # Each step is either a ready-made action ("uses") or shell commands ("run").
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Install GTK 4
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Keeps compiled dependencies between runs, so later runs take minutes, not ten.
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # --locked: use exactly the dependency versions in Cargo.lock.
+      # -D warnings: any lint warning fails the run.
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked

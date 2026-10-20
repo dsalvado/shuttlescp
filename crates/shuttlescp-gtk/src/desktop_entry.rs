@@ -20,8 +20,12 @@ const LEGACY_ENTRIES: [&str; 2] = [
     "io.github.shuttlescp.ShuttleSCP.desktop",
 ];
 
-/// Theme icon used for the app (also on the About dialog).
-pub const APP_ICON: &str = "folder-remote";
+/// The app's icon name (also on the About dialog): its own icon, saved under the
+/// user's icons by [`install`] (and inside the AppImage).
+pub const APP_ICON: &str = "io.github.dsalvado.ShuttleSCP";
+/// The icon itself, built into the program.
+const APP_ICON_SVG: &[u8] =
+    include_bytes!("../../../packaging/linux/io.github.dsalvado.ShuttleSCP.svg");
 
 /// Set the app's icon and make sure its desktop entry is installed and up to date.
 /// Failures are logged, never fatal: they only cost the icon.
@@ -30,16 +34,20 @@ pub const APP_ICON: &str = "folder-remote";
 ///
 /// * `app_id` - The application id (reverse-DNS), which names the desktop entry
 pub fn install(app_id: &str) {
+    install_icon();
     // Used for windows on X11, and by desktops that read the window's icon.
     gtk::Window::set_default_icon_name(APP_ICON);
 
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(error) => {
-            tracing::warn!("cannot find the program's path for its desktop entry: {error}");
-            return;
-        }
-    };
+    // From an AppImage, the program itself lives in a temporary mount that is gone once
+    // it exits: the launcher must start the AppImage file instead.
+    let exe =
+        match shuttlescp_core::update::running_appimage().map_or_else(std::env::current_exe, Ok) {
+            Ok(exe) => exe,
+            Err(error) => {
+                tracing::warn!("cannot find the program's path for its desktop entry: {error}");
+                return;
+            }
+        };
     let applications = glib::user_data_dir().join("applications");
     for legacy in LEGACY_ENTRIES.map(|name| applications.join(name)) {
         if legacy.exists() {
@@ -60,6 +68,25 @@ pub fn install(app_id: &str) {
         .and_then(|()| std::fs::write(&path, &entry));
     match written {
         Ok(()) => tracing::info!("installed desktop entry {}", path.display()),
+        Err(error) => tracing::warn!("cannot write {}: {error}", path.display()),
+    }
+}
+
+/// Save the app's icon where desktops and GTK look for icons
+/// (`~/.local/share/icons/hicolor/scalable/apps`), unless it is already there.
+fn install_icon() {
+    let path = glib::user_data_dir()
+        .join("icons/hicolor/scalable/apps")
+        .join(format!("{APP_ICON}.svg"));
+    if std::fs::read(&path).is_ok_and(|current| current == APP_ICON_SVG) {
+        return;
+    }
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, APP_ICON_SVG));
+    match written {
+        Ok(()) => tracing::info!("installed the app icon {}", path.display()),
         Err(error) => tracing::warn!("cannot write {}: {error}", path.display()),
     }
 }
@@ -120,7 +147,7 @@ mod tests {
     fn entry_names_the_icon_and_window_class() {
         let text = entry_text("io.example.App", Path::new("/usr/bin/shuttlescp"));
         assert!(text.starts_with("[Desktop Entry]\n"));
-        assert!(text.contains("\nIcon=folder-remote\n"));
+        assert!(text.contains("\nIcon=io.github.dsalvado.ShuttleSCP\n"));
         assert!(text.contains("\nStartupWMClass=io.example.App\n"));
         assert!(text.contains("\nExec=\"/usr/bin/shuttlescp\"\n"));
     }

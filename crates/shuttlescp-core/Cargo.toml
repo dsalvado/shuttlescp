@@ -6,6 +6,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 # No GUI toolkit (GTK, GLib, relm4, ...) may be added here: front ends depend on this
 # crate, never the other way round.
@@ -33,6 +34,8 @@ tokio = { version = "1", features = ["fs", "io-util", "net", "rt", "sync", "time
 tracing.workspace = true
 tracing-subscriber = "0.3"
 zeroize = "1"
+ring = "0.17"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # The password keyring backend is the Linux Secret Service (GNOME Keyring, KWallet...).
 # Other systems get a stub that reports the keyring as unavailable until a native

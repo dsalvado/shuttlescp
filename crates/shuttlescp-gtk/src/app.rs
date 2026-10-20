@@ -19,6 +19,7 @@ use shuttlescp_core::pending::PendingTransfers;
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteBook};
 use shuttlescp_core::transfer::{Job, JobKind, Side};
+use shuttlescp_core::update::{self, Manifest};
 
 use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
@@ -29,6 +30,7 @@ use crate::session::{self, Session, SessionId, SessionInit};
 use crate::theme;
 use crate::theme_list::ThemeList;
 use crate::transfer_panel::{PendingStore, TransferPanelMsg};
+use crate::update_dialog;
 
 /// Window size the first time the app opens; after that, the size it was closed at.
 const FIRST_WINDOW_SIZE: WindowSize = WindowSize {
@@ -50,6 +52,13 @@ const WINDOW_CLOSED: &str = "window closed";
 const QUIT_COMMAND: &str = "File > Quit";
 /// Exit reason when the last session tab is closed with its X button.
 const SESSION_TAB_CLOSED: &str = "session tab closed";
+/// Exit reason when the app restarts into a newly installed version.
+const RESTARTING_FOR_UPDATE: &str = "restarting into the new version";
+/// Look for a newer release at startup at most this often.
+const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// Wait this long after startup before looking for a newer release, so it never slows
+/// the start down.
+const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 /// Icon of the "New Connection" tab, which opens the Login dialog for another connection.
 const NEW_TAB_ICON: &str = "tab-new-symbolic";
 /// Initial height of the session area above the bottom panel, in pixels.
@@ -67,6 +76,9 @@ relm4::new_stateless_action!(LoginAction, WindowActions, "login");
 relm4::new_stateless_action!(DisconnectAction, WindowActions, "disconnect");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
 relm4::new_stateless_action!(AboutAction, WindowActions, "about");
+relm4::new_stateless_action!(CheckUpdatesAction, WindowActions, "check-updates");
+// A check item: its state says whether updates are looked for at startup.
+relm4::new_stateful_action!(AutoUpdateAction, WindowActions, "auto-update", (), bool);
 // Target and state are both a `ThemeChoice::key()` string. A stateful action
 // whose state matches the item's target is what makes GTK draw radio items in a menu.
 relm4::new_stateful_action!(ThemeAction, WindowActions, "theme", String, String);
@@ -186,6 +198,20 @@ pub enum AppMsg {
         /// Jobs in the Failed list.
         failed: usize,
     },
+    /// Look for a newer release: asked for (Help > Check for Updates) or automatic.
+    CheckForUpdates { asked: bool },
+    /// The look for a newer release ended: the newer release, none, or an error.
+    UpdateChecked {
+        asked: bool,
+        result: Result<Option<Manifest>, String>,
+    },
+    /// The user turned the automatic update check on or off.
+    AutoUpdateChecks(bool),
+    /// A new version replaced this AppImage: restart into it (asking first while
+    /// transfers run).
+    RestartIntoUpdate(PathBuf),
+    /// Restart into the new version without asking.
+    RestartNow(PathBuf),
     /// The main window was resized, maximized or restored.
     WindowChanged {
         /// The window's normal size; `None` while maximized (its size then is the
@@ -227,6 +253,10 @@ pub struct App {
     running_transfers: Rc<Cell<usize>>,
     /// Set once quitting is decided, so closing the window no longer asks.
     quitting: Rc<Cell<bool>>,
+    /// Start this program (the updated AppImage) once the app has closed.
+    restart_with: Option<PathBuf>,
+    /// A look for a newer release is under way.
+    checking_for_updates: bool,
 }
 
 #[relm4::component(pub)]
@@ -412,6 +442,8 @@ impl SimpleComponent for App {
             window: root.clone(),
             running_transfers,
             quitting,
+            restart_with: None,
+            checking_for_updates: false,
         };
         // The "New Connection" tab, always last: clicking it opens the Login dialog.
         let new_tab = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -467,6 +499,12 @@ impl SimpleComponent for App {
                 move || focus_sender.input(AppMsg::GalleryFocusFirst),
             );
         }
+        if model.update_check_due() {
+            let sender = sender.clone();
+            glib::timeout_add_local_once(UPDATE_CHECK_DELAY, move || {
+                sender.input(AppMsg::CheckForUpdates { asked: false });
+            });
+        }
         if show_login {
             open_login_after_first_frame(&root, sender);
         }
@@ -475,6 +513,30 @@ impl SimpleComponent for App {
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
         match message {
+            AppMsg::CheckForUpdates { asked } => self.check_for_updates(asked, &sender),
+            AppMsg::UpdateChecked { asked, result } => {
+                self.checking_for_updates = false;
+                self.update_checked(asked, result, &sender);
+            }
+            AppMsg::AutoUpdateChecks(check) => {
+                tracing::info!("check for updates at startup: {check}");
+                self.config.set_check_for_updates(check);
+                self.save_config();
+            }
+            AppMsg::RestartIntoUpdate(path) if self.running_transfers.get() > 0 => {
+                self.confirm_stopping_transfers(
+                    self.running_transfers.get(),
+                    "Restart",
+                    "Restart into the new version?",
+                    "Restart",
+                    &sender,
+                    move || AppMsg::RestartNow(path.clone()),
+                );
+            }
+            AppMsg::RestartIntoUpdate(path) | AppMsg::RestartNow(path) => {
+                self.restart_with = Some(path);
+                self.quit(RESTARTING_FOR_UPDATE);
+            }
             AppMsg::ThemeSelected(choice) => {
                 if &choice == self.config.theme() {
                     return;
@@ -666,6 +728,9 @@ impl SimpleComponent for App {
         }
         self.save_config();
         self.logger.end_session(self.exit_reason);
+        if let Some(path) = &self.restart_with {
+            restart_after_exit(path);
+        }
     }
 }
 
@@ -883,6 +948,71 @@ impl App {
             .map_or_else(|| String::from(NOT_CONNECTED), Session::status)
     }
 
+    /// Whether the automatic update check should run now: it is on, and the last one
+    /// was long enough ago.
+    fn update_check_due(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if std::env::var_os(crate::ui_gallery::ENV_VAR).is_some() {
+            return false;
+        }
+        let now = unix_now();
+        self.config.check_for_updates()
+            && self
+                .config
+                .last_update_check()
+                .is_none_or(|last| now.saturating_sub(last) >= UPDATE_CHECK_INTERVAL.as_secs())
+    }
+
+    /// Look for a newer release on a worker thread (it waits on the network).
+    fn check_for_updates(&mut self, asked: bool, sender: &ComponentSender<Self>) {
+        if self.checking_for_updates {
+            return;
+        }
+        self.checking_for_updates = true;
+        tracing::info!("checking for updates");
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            let result = update::check(env!("CARGO_PKG_VERSION"));
+            sender.input(AppMsg::UpdateChecked { asked, result });
+        });
+    }
+
+    /// Show the result of a look for a newer release. An automatic check only speaks up
+    /// when there is something new; problems are just logged.
+    fn update_checked(
+        &mut self,
+        asked: bool,
+        result: Result<Option<Manifest>, String>,
+        sender: &ComponentSender<Self>,
+    ) {
+        if !asked {
+            self.config.set_last_update_check(unix_now());
+            self.save_config();
+        }
+        let window = self.window.upcast_ref::<gtk::Window>();
+        match result {
+            Ok(Some(manifest)) => {
+                tracing::info!("version {} is available", manifest.version);
+                let sender = sender.clone();
+                update_dialog::offer(window, manifest, move |path| {
+                    sender.input(AppMsg::RestartIntoUpdate(path));
+                });
+            }
+            Ok(None) => {
+                tracing::info!("ShuttleSCP is up to date");
+                if asked {
+                    update_dialog::report_up_to_date(window);
+                }
+            }
+            Err(error) => {
+                tracing::warn!("cannot check for updates: {error}");
+                if asked {
+                    update_dialog::report_error(window, &error);
+                }
+            }
+        }
+    }
+
     /// Close the app.
     fn quit(&mut self, reason: &'static str) {
         tracing::info!("closing: {reason}");
@@ -1076,6 +1206,17 @@ fn register_actions(
         }
     });
 
+    let check_sender = sender.clone();
+    let check_updates = RelmAction::<CheckUpdatesAction>::new_stateless(move |_| {
+        check_sender.input(AppMsg::CheckForUpdates { asked: true });
+    });
+    let auto_sender = sender.clone();
+    let auto_update =
+        RelmAction::<AutoUpdateAction>::new_stateful(&config.check_for_updates(), move |_, on| {
+            *on = !*on;
+            auto_sender.input(AppMsg::AutoUpdateChecks(*on));
+        });
+
     // Closures that outlive this function need their own copy of the sender.
     let theme_sender = sender.clone();
     let theme_action = RelmAction::<ThemeAction>::new_stateful_with_target_value(
@@ -1103,6 +1244,8 @@ fn register_actions(
     group.add_action(quit);
     group.add_action(open_log);
     group.add_action(about);
+    group.add_action(check_updates);
+    group.add_action(auto_update);
     group.add_action(theme_action);
     group.add_action(level_action);
     group.register_for_widget(window);
@@ -1173,6 +1316,44 @@ fn track_window_size(window: &gtk::ApplicationWindow, sender: &ComponentSender<A
     let on_height = report.clone();
     window.connect_default_height_notify(move |window| on_height(window));
     window.connect_maximized_notify(move |window| report(window));
+}
+
+/// Seconds since 1970.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// Start `program` (the updated AppImage) once this process has exited: a second copy
+/// started while this one runs would only hand over to it (GTK keeps one instance per
+/// app) and close. A small shell waits for this process to end, then starts it.
+///
+/// The environment the AppImage set up for this copy (paths into its mount, which goes
+/// away with it) is left out; the new AppImage sets up its own.
+fn restart_after_exit(program: &Path) {
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg("while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec \"$2\"")
+        .arg("shuttlescp-restart")
+        .arg(std::process::id().to_string())
+        .arg(program);
+    if let Some(mount) = std::env::var_os("APPDIR") {
+        let mount = mount.to_string_lossy().into_owned();
+        for (name, value) in std::env::vars_os() {
+            let from_mount = value.to_string_lossy().contains(&mount);
+            if from_mount
+                || ["APPDIR", "APPIMAGE", "ARGV0", "OWD"].contains(&name.to_string_lossy().as_ref())
+            {
+                command.env_remove(&name);
+            }
+        }
+    }
+    match command.spawn() {
+        Ok(_) => tracing::info!("will start {} once closed", program.display()),
+        Err(error) => tracing::error!("cannot restart into {}: {error}", program.display()),
+    }
 }
 
 /// This computer's name, for the titles of sessions that are not connected. The UI
@@ -1269,7 +1450,15 @@ fn build_menu() -> gio::Menu {
     tools_menu.append_section(Some("Log Level"), &level_section);
     tools_menu.append_section(None, &log_file_section);
 
+    let update_section = gio::Menu::new();
+    update_section.append_item(&RelmAction::<CheckUpdatesAction>::to_menu_item(
+        "Check for _Updates…",
+    ));
+    update_section.append_item(&RelmAction::<AutoUpdateAction>::to_menu_item(
+        "Check for Updates at _Startup",
+    ));
     let help_menu = gio::Menu::new();
+    help_menu.append_section(None, &update_section);
     help_menu.append_item(&RelmAction::<AboutAction>::to_menu_item(
         "_About ShuttleSCP",
     ));

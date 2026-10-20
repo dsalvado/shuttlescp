@@ -1,0 +1,91 @@
+# Continuous delivery: build, sign and publish a release.
+#
+# Runs when a version tag such as "v0.9.0" is pushed (see docs/RELEASING.md). It checks
+# that the tag matches the version in Cargo.toml, runs the tests, builds the AppImage,
+# writes and signs the update manifest, and publishes everything as a GitHub release.
+# Installed copies of ShuttleSCP then find the new version through the manifest.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+# Creating a release needs write access to the repository's contents.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    # Ubuntu 24.04: the AppImage then runs on systems with glibc 2.39 or newer and
+    # needs nothing installed. Building on the oldest supported system is the rule.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Check the tag matches the version in Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Install GTK 4
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      # A release is never made from code whose tests fail.
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # SOURCE_DATE_EPOCH: the build date shown in the app becomes the commit's date,
+      # so rebuilding the same commit gives the same result (see BUILDING.md).
+      - name: Build the AppImage
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          packaging/linux/build-appimage.sh
+
+      # The private signing key is a repository secret: GitHub hands it to this step
+      # only, and hides it in the logs. It is written to a temporary file just for the
+      # signing and removed straight after.
+      - name: Sign the update manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::error::The UPDATE_SIGNING_KEY secret is not set (see docs/RELEASING.md)"
+            exit 1
+          fi
+          public_key=$(sed -n 's/^pub const RELEASE_PUBLIC_KEY: &str = "\(.*\)";/\1/p' crates/shuttlescp-core/src/update.rs)
+          if [ -z "$public_key" ]; then
+            echo "::error::RELEASE_PUBLIC_KEY is empty in crates/shuttlescp-core/src/update.rs"
+            exit 1
+          fi
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          PUBLIC_KEY="$public_key" packaging/make-release-manifest.sh dist/ShuttleSCP-*-x86_64.AppImage "$key"
+
+      # gh is GitHub's command-line tool, already on the runner. The token is a
+      # short-lived one GitHub makes for this run, limited by "permissions" above.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "ShuttleSCP ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            dist/ShuttleSCP-*-x86_64.AppImage \
+            dist/latest.json \
+            dist/latest.json.sig \
+            dist/SHA256SUMS
