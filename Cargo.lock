@@ -1359,48 +1359,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "guiscp"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "glib-unix",
- "guiscp-core",
- "relm4",
- "secrecy",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "guiscp-core"
-version = "0.1.0"
-dependencies = [
- "argon2 0.5.3",
- "base64",
- "chacha20poly1305",
- "chrono",
- "dirs",
- "getrandom 0.3.4",
- "oo7",
- "russh",
- "russh-sftp",
- "rustls",
- "rustls-native-certs",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "suppaftp",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "zeroize",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2858,6 +2816,48 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "shuttlescp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "glib-unix",
+ "relm4",
+ "secrecy",
+ "shuttlescp-core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "shuttlescp-core"
+version = "0.1.0"
+dependencies = [
+ "argon2 0.5.3",
+ "base64",
+ "chacha20poly1305",
+ "chrono",
+ "dirs",
+ "getrandom 0.3.4",
+ "oo7",
+ "russh",
+ "russh-sftp",
+ "rustls",
+ "rustls-native-certs",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "suppaftp",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
 
 [[package]]
 name = "signal-hook-registry"

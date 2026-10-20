@@ -1,16 +1,16 @@
 # Workspace: the business logic and the user interface live in separate crates, so the
 # compiler keeps them apart.
 #
-# * `guiscp-core` - everything that is not GUI: sites, settings, encrypted export, the
+# * `shuttlescp-core` - everything that is not GUI: sites, settings, encrypted export, the
 #   password keyring, SSH/SFTP, local file listing, logging and the login / import /
 #   export workflows. It must never depend on GTK, GLib or relm4, so other front ends
 #   (for example native Windows or macOS GUIs) can reuse it unchanged.
-# * `guiscp-gtk` - the Linux front end built with relm4 / GTK 4 (binary `guiscp`).
+# * `shuttlescp-gtk` - the Linux front end built with relm4 / GTK 4 (binary `shuttlescp`).
 [workspace]
 resolver = "3"
-members = ["crates/guiscp-core", "crates/guiscp-gtk"]
+members = ["crates/shuttlescp-core", "crates/shuttlescp-gtk"]
 # `cargo run` / `cargo build` at the top level build the GTK app by default.
-default-members = ["crates/guiscp-gtk"]
+default-members = ["crates/shuttlescp-gtk"]
 
 [workspace.package]
 version = "0.1.0"

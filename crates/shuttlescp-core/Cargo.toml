@@ -1,0 +1,43 @@
+[package]
+name = "shuttlescp-core"
+description = "ShuttleSCP business logic, independent of any GUI toolkit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# No GUI toolkit (GTK, GLib, relm4, ...) may be added here: front ends depend on this
+# crate, never the other way round.
+[dependencies]
+argon2 = "0.5"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "7"
+getrandom = { version = "0.3", features = ["std"] }
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3"
+# FTP and FTPS (explicit and implicit TLS), async on tokio, TLS by rustls with ring.
+# ("deprecated" enables implicit FTPS, which suppaftp marks as old-fashioned.)
+suppaftp = { version = "12", features = ["deprecated", "tokio-rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+sha2 = "0.10"
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
+secrecy.workspace = true
+serde.workspace = true
+serde_json = "1"
+thiserror.workspace = true
+tokio = { version = "1", features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber = "0.3"
+zeroize = "1"
+
+# The password keyring backend is the Linux Secret Service (GNOME Keyring, KWallet...).
+# Other systems get a stub that reports the keyring as unavailable until a native
+# backend (Windows Credential Manager, macOS Keychain) is added.
+[target.'cfg(target_os = "linux")'.dependencies]
+oo7 = "0.6"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

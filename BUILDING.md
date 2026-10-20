@@ -1,4 +1,4 @@
-# Building GuiSCP
+# Building ShuttleSCP
 
 ## Development build
 
@@ -8,7 +8,7 @@ cargo run
 
 ## Build information
 
-The build script (`crates/guiscp-gtk/build.rs`) records the following:
+The build script (`crates/shuttlescp-gtk/build.rs`) records the following:
 
 - the git commit, with `-dirty` added when tracked files have uncommitted changes;
 - the build time;

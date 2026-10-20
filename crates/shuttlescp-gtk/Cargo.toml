@@ -1,0 +1,22 @@
+[package]
+# Keeps the binary name `shuttlescp`; the directory name says which front end it is.
+name = "shuttlescp"
+description = "ShuttleSCP for Linux: relm4 / GTK 4 front end"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+shuttlescp-core = { path = "../shuttlescp-core" }
+glib-unix = "0.22"
+relm4 = "0.11"
+secrecy.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# The build script records the git commit and build time shown in the status bar and the
+# About dialog.
+[build-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

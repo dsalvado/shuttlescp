@@ -1,0 +1,517 @@
+//! User preferences persisted as JSON in the XDG config directory.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::logging::LogLevel;
+
+/// Error raised while loading or saving the configuration file.
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    /// The file or its directory could not be read or written.
+    #[error("cannot access {}: {source}", path.display())]
+    Io {
+        /// File or directory involved.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: io::Error,
+    },
+    /// The file exists but does not contain valid settings.
+    #[error("invalid settings in {}: {source}", path.display())]
+    Json {
+        /// File involved.
+        path: PathBuf,
+        /// Underlying parse error.
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// Appearance the user picked. Which themes exist, and how one is applied, is up to the
+/// front end; this only records the choice.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    /// Follow the desktop's theme.
+    #[default]
+    System,
+    /// Use a specific theme by name.
+    Named(String),
+}
+
+impl ThemeChoice {
+    /// Parse a key made by [`ThemeChoice::key`]; the empty string means
+    /// [`ThemeChoice::System`] (no theme can have an empty name).
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key
+    ///
+    /// # Returns
+    ///
+    /// The choice the key represents
+    pub fn from_key(key: &str) -> Self {
+        if key.is_empty() {
+            Self::System
+        } else {
+            Self::Named(key.to_owned())
+        }
+    }
+
+    /// A single string identifying the choice, e.g. for a menu item's value.
+    ///
+    /// # Returns
+    ///
+    /// The empty string for [`ThemeChoice::System`], otherwise the theme name
+    pub fn key(&self) -> &str {
+        match self {
+            Self::System => "",
+            Self::Named(name) => name,
+        }
+    }
+}
+
+/// Size of the main window, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowSize {
+    /// Width in pixels.
+    pub width: i32,
+    /// Height in pixels.
+    pub height: i32,
+}
+
+impl WindowSize {
+    /// Smallest size a saved window is restored at, so a damaged or odd settings file
+    /// can never bring the window back too small to use.
+    pub const MIN: Self = Self {
+        width: 480,
+        height: 320,
+    };
+
+    /// This size, raised to at least [`WindowSize::MIN`] in each direction.
+    ///
+    /// # Returns
+    ///
+    /// A size safe to open the window at
+    pub fn at_least_min(self) -> Self {
+        Self {
+            width: self.width.max(Self::MIN.width),
+            height: self.height.max(Self::MIN.height),
+        }
+    }
+}
+
+/// Persisted user preferences.
+// `#[serde(default)]` fills fields missing from older files from `Config::default()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    theme: ThemeChoice,
+    /// Directory the local pane showed when the app was last closed.
+    last_local_dir: Option<PathBuf>,
+    /// Last directory shown on each disk, keyed by mount point. A `BTreeMap` keeps the
+    /// keys sorted, so the saved file lists disks in a stable order.
+    last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
+    log_level: LogLevel,
+    /// Open the Login dialog when the app starts.
+    show_login_at_startup: bool,
+    /// Main window size when the app was last closed (its normal size, even if it was
+    /// maximized then); `None` until the app has been closed once.
+    window_size: Option<WindowSize>,
+    /// Whether the main window was maximized when the app was last closed.
+    window_maximized: bool,
+}
+
+// Written out by hand (not derived) because the Login dialog should show at startup
+// unless the user turns it off, and a derived default would make that `false`.
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            theme: ThemeChoice::default(),
+            last_local_dir: None,
+            last_dir_on_disk: BTreeMap::new(),
+            log_level: LogLevel::default(),
+            show_login_at_startup: true,
+            window_size: None,
+            window_maximized: false,
+        }
+    }
+}
+
+/// The app's folder for user files: `$XDG_CONFIG_HOME/shuttlescp` on Linux (usually
+/// `~/.config/shuttlescp`), and the platform's equivalent elsewhere (e.g. `%APPDATA%\shuttlescp`
+/// on Windows, `~/Library/Application Support/shuttlescp` on macOS).
+pub fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .unwrap_or_default()
+        .join("shuttlescp")
+}
+
+/// The app's folder for state it keeps between runs (logs, unfinished transfers):
+/// `$XDG_STATE_HOME/shuttlescp` on Linux (usually `~/.local/state/shuttlescp`), and the
+/// platform's local data folder elsewhere.
+pub fn state_dir() -> PathBuf {
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+        .unwrap_or_default()
+        .join("shuttlescp")
+}
+
+/// Folder name the app's folders had while it was called GuiSCP.
+const LEGACY_DIR_NAME: &str = "guiscp";
+
+/// Carry the app's files over from its earlier name: the first time ShuttleSCP runs,
+/// copy the GuiSCP config and state folders (sites, settings, trusted certificates,
+/// logs, unfinished transfers) to the new ones. The old folders are left as they are,
+/// so an older version still finds its files. Does nothing once the new folders exist.
+///
+/// Call before reading any settings. Logging is not running yet, so the outcome is
+/// returned to be logged later.
+///
+/// # Returns
+///
+/// One line per folder copied (or that could not be)
+pub fn migrate_from_legacy_name() -> Vec<String> {
+    [config_dir(), state_dir()]
+        .into_iter()
+        .filter_map(|new| {
+            let old = new.parent()?.join(LEGACY_DIR_NAME);
+            let copied = migrate_dir(&old, &new)?;
+            Some(match copied {
+                Ok(files) => format!(
+                    "copied {files} files from {} to {}",
+                    old.display(),
+                    new.display()
+                ),
+                Err(error) => format!(
+                    "cannot copy {} to {}: {error}",
+                    old.display(),
+                    new.display()
+                ),
+            })
+        })
+        .collect()
+}
+
+/// Copy `old` to `new` if `new` does not exist yet and `old` does.
+///
+/// # Returns
+///
+/// `None` when there is nothing to do, otherwise how many files were copied
+fn migrate_dir(old: &Path, new: &Path) -> Option<io::Result<usize>> {
+    (!new.exists() && old.is_dir()).then(|| copy_dir(old, new))
+}
+
+/// Copy a folder and everything in it (symbolic links are skipped).
+///
+/// # Returns
+///
+/// How many files were copied
+fn copy_dir(from: &Path, to: &Path) -> io::Result<usize> {
+    fs::create_dir_all(to)?;
+    let mut files = 0;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            files += copy_dir(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), &target)?;
+            files += 1;
+        }
+    }
+    Ok(files)
+}
+
+/// Read a JSON file into `T`.
+///
+/// # Arguments
+///
+/// * `path` - JSON file to read
+///
+/// # Returns
+///
+/// The stored value, or `T::default()` if the file does not exist yet
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Io`] if the file exists but cannot be read, or
+/// [`ConfigError::Json`] if it is not valid JSON for `T`
+pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T, ConfigError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(source) => {
+            return Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    serde_json::from_str(&text).map_err(|source| ConfigError::Json {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Write `value` to `path` as pretty-printed JSON, creating parent directories as needed.
+///
+/// # Arguments
+///
+/// * `value` - Data to write
+/// * `path` - JSON file to write
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Io`] if the directory or file cannot be written
+pub fn save_json<T: Serialize>(value: &T, path: &Path) -> Result<(), ConfigError> {
+    let io_error = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| ConfigError::Io { path, source }
+    };
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(io_error(dir))?;
+    }
+    let json = serde_json::to_string_pretty(value).map_err(|source| ConfigError::Json {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    fs::write(path, json).map_err(io_error(path))
+}
+
+impl Config {
+    /// Default location: `settings.json` in [`config_dir`].
+    pub fn default_path() -> PathBuf {
+        config_dir().join("settings.json")
+    }
+
+    /// Read the configuration from `path` (see [`load_json`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - JSON file to read
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConfigError`] if the file exists but cannot be read or parsed
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        load_json(path)
+    }
+
+    /// Write the configuration to `path` (see [`save_json`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - JSON file to write
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Io`] if the directory or file cannot be written
+    pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
+        save_json(self, path)
+    }
+
+    /// Theme the user picked.
+    pub fn theme(&self) -> &ThemeChoice {
+        &self.theme
+    }
+
+    /// Change the theme preference (call [`Config::save`] to persist it).
+    ///
+    /// # Arguments
+    ///
+    /// * `theme` - New theme preference
+    pub fn set_theme(&mut self, theme: ThemeChoice) {
+        self.theme = theme;
+    }
+
+    /// Directory the local pane showed when the app was last closed, if any.
+    pub fn last_local_dir(&self) -> Option<&Path> {
+        self.last_local_dir.as_deref()
+    }
+
+    /// Remember the local pane's directory (call [`Config::save`] to persist it).
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory currently shown in the local pane
+    pub fn set_last_local_dir(&mut self, dir: PathBuf) {
+        self.last_local_dir = Some(dir);
+    }
+
+    /// Last directory shown on each disk, keyed by the disk's mount point.
+    pub fn last_dir_on_disk(&self) -> &BTreeMap<PathBuf, PathBuf> {
+        &self.last_dir_on_disk
+    }
+
+    /// Remember the directory last shown on a disk (call [`Config::save`] to persist it).
+    ///
+    /// # Arguments
+    ///
+    /// * `disk_root` - Mount point of the disk
+    /// * `dir` - Directory shown on that disk
+    pub fn set_last_dir_on_disk(&mut self, disk_root: PathBuf, dir: PathBuf) {
+        self.last_dir_on_disk.insert(disk_root, dir);
+    }
+
+    /// Whether the Login dialog opens when the app starts.
+    pub fn show_login_at_startup(&self) -> bool {
+        self.show_login_at_startup
+    }
+
+    /// Change whether the Login dialog opens at startup (call [`Config::save`] to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `show` - `true` to open it at startup
+    pub fn set_show_login_at_startup(&mut self, show: bool) {
+        self.show_login_at_startup = show;
+    }
+
+    /// Main window size when the app was last closed, if known.
+    pub fn window_size(&self) -> Option<WindowSize> {
+        self.window_size
+    }
+
+    /// Remember the main window's normal (not maximized) size (call [`Config::save`] to
+    /// persist it).
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - Current window size
+    pub fn set_window_size(&mut self, size: WindowSize) {
+        self.window_size = Some(size);
+    }
+
+    /// Whether the main window was maximized when the app was last closed.
+    pub fn window_maximized(&self) -> bool {
+        self.window_maximized
+    }
+
+    /// Remember whether the main window is maximized (call [`Config::save`] to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `maximized` - `true` if the window is maximized
+    pub fn set_window_maximized(&mut self, maximized: bool) {
+        self.window_maximized = maximized;
+    }
+
+    /// Log level the user picked.
+    pub fn log_level(&self) -> LogLevel {
+        self.log_level
+    }
+
+    /// Change the log level preference (call [`Config::save`] to persist it).
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - New log level
+    pub fn set_log_level(&mut self, level: LogLevel) {
+        self.log_level = level;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_choice_key_round_trips() {
+        for choice in [
+            ThemeChoice::System,
+            ThemeChoice::Named(String::from("Zorin")),
+        ] {
+            assert_eq!(ThemeChoice::from_key(choice.key()), choice);
+        }
+        assert_eq!(ThemeChoice::System.key(), "");
+    }
+
+    #[test]
+    fn window_size_at_least_min_raises_only_small_sides() {
+        let tiny = WindowSize {
+            width: 10,
+            height: 2000,
+        };
+        assert_eq!(
+            tiny.at_least_min(),
+            WindowSize {
+                width: WindowSize::MIN.width,
+                height: 2000
+            }
+        );
+    }
+
+    #[test]
+    fn migrate_dir_copies_once_and_keeps_the_old_folder() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let (old, new) = (temp.path().join("guiscp"), temp.path().join("shuttlescp"));
+        fs::create_dir_all(old.join("logs")).expect("create old");
+        fs::write(old.join("sites.json"), "{}").expect("write");
+        fs::write(old.join("logs/guiscp.log"), "x").expect("write");
+
+        assert_eq!(migrate_dir(&old, &new).expect("copied").expect("ok"), 2);
+        assert!(new.join("logs/guiscp.log").exists());
+        assert!(old.join("sites.json").exists(), "the old folder stays");
+        // Once the new folder exists, nothing is copied again.
+        assert!(migrate_dir(&old, &new).is_none());
+        // Nothing to copy from.
+        assert!(migrate_dir(&temp.path().join("absent"), &temp.path().join("other")).is_none());
+    }
+
+    #[test]
+    fn missing_file_loads_defaults() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let config = Config::load(&temp.path().join("absent.json")).expect("load defaults");
+        assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn save_then_load_round_trips_into_new_directory() {
+        // Arrange
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("nested/settings.json");
+        let mut config = Config::default();
+        config.set_theme(ThemeChoice::Named(String::from("Adwaita-dark")));
+        config.set_last_local_dir(PathBuf::from("/srv/data"));
+        config.set_log_level(LogLevel::Warn);
+        config.set_last_dir_on_disk(PathBuf::from("/media/usb"), PathBuf::from("/media/usb/a"));
+        config.set_window_size(WindowSize {
+            width: 1400,
+            height: 900,
+        });
+        config.set_window_maximized(true);
+
+        // Act
+        config.save(&path).expect("save config");
+        let loaded = Config::load(&path).expect("load config");
+
+        // Assert
+        assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn empty_object_uses_defaults_and_garbage_is_an_error() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("settings.json");
+
+        fs::write(&path, "{}").expect("write file");
+        let loaded = Config::load(&path).expect("load");
+        assert_eq!(loaded, Config::default());
+        // Settings files from before this option existed keep showing the dialog.
+        assert!(loaded.show_login_at_startup());
+
+        fs::write(&path, "not json").expect("write file");
+        assert!(matches!(Config::load(&path), Err(ConfigError::Json { .. })));
+    }
+}
