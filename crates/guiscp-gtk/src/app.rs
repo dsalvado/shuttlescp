@@ -65,6 +65,8 @@ const SESSION_AREA_HEIGHT: i32 = 470;
 pub const NOT_CONNECTED: &str = "Not connected";
 /// Position of the transfer Queue tab in the bottom panel (after the log).
 const TRANSFERS_PAGE: u32 = 1;
+/// Pause between the main window's first frame and opening the Login dialog.
+const LOGIN_AFTER_FIRST_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
 /// How long the Completed tab stays highlighted after a transfer lands in it.
 const TAB_HIGHLIGHT: std::time::Duration = std::time::Duration::from_millis(1500);
 
@@ -518,14 +520,7 @@ impl SimpleComponent for App {
                 }
             });
         if show_login {
-            // Wait until the main window is on screen, so the dialog opens on top of it.
-            // "map" can fire again if the window is re-shown, so only act the first time.
-            let opened = std::cell::Cell::new(false);
-            root.connect_map(move |_| {
-                if !opened.replace(true) {
-                    sender.input(AppMsg::ShowLogin);
-                }
-            });
+            open_login_after_first_frame(&root, sender);
         }
         ComponentParts { model, widgets }
     }
@@ -937,6 +932,43 @@ fn register_actions(
     app.set_accelerators_for_action::<LoginAction>(&["<primary>l"]);
     app.set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
     disconnect
+}
+
+/// Open the Login dialog once the main window is really on screen: after its first
+/// frame is painted, plus a moment for the desktop to show it. Opening on "map" alone
+/// could put the dialog up before the window it belongs to.
+///
+/// # Arguments
+///
+/// * `window` - The main window
+/// * `sender` - Receives [`AppMsg::ShowLogin`]
+fn open_login_after_first_frame(window: &gtk::ApplicationWindow, sender: ComponentSender<App>) {
+    let handled = Rc::new(Cell::new(false));
+    window.connect_map(move |window| {
+        // "map" can fire again if the window is re-shown; only act the first time.
+        if handled.replace(true) {
+            return;
+        }
+        let Some(clock) = window.frame_clock() else {
+            sender.input(AppMsg::ShowLogin);
+            return;
+        };
+        let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+        let sender = sender.clone();
+        let id = clock.connect_after_paint({
+            let handler = Rc::clone(&handler);
+            move |clock| {
+                if let Some(id) = handler.borrow_mut().take() {
+                    clock.disconnect(id);
+                }
+                let sender = sender.clone();
+                glib::timeout_add_local_once(LOGIN_AFTER_FIRST_FRAME, move || {
+                    sender.input(AppMsg::ShowLogin);
+                });
+            }
+        });
+        handler.replace(Some(id));
+    });
 }
 
 /// Report the window's size and maximized state to the app whenever they change, so

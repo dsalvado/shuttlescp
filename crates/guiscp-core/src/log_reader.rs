@@ -3,7 +3,10 @@
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+
+use crate::logging::LogLevel;
 
 /// How much of the end of an existing file is returned by the first read.
 const INITIAL_TAIL_BYTES: u64 = 64 * 1024;
@@ -65,6 +68,42 @@ impl LogReader {
     }
 }
 
+/// Find the level a log line was written at, e.g. `ERROR` in
+/// `[2026-10-19 17:08:13.017] [5a41] ERROR guiscp::app: ...`, so viewers can colour it.
+///
+/// # Arguments
+///
+/// * `line` - One line of the log file
+///
+/// # Returns
+///
+/// The level and the byte range of its word in `line`, or `None` for lines without one
+/// (such as the continuation of a multi-line message)
+pub fn line_level(line: &str) -> Option<(LogLevel, Range<usize>)> {
+    // Skip the bracketed time and session tag in front.
+    let mut start = 0;
+    loop {
+        let rest = &line[start..];
+        let trimmed = rest.trim_start();
+        start += rest.len() - trimmed.len();
+        if !trimmed.starts_with('[') {
+            break;
+        }
+        start += trimmed.find(']')? + 1;
+    }
+    let rest = &line[start..];
+    let word = &rest[..rest.find(char::is_whitespace).unwrap_or(rest.len())];
+    let level = match word {
+        "ERROR" => LogLevel::Error,
+        "WARN" => LogLevel::Warn,
+        "INFO" => LogLevel::Info,
+        "DEBUG" => LogLevel::Debug,
+        "TRACE" => LogLevel::Trace,
+        _ => return None,
+    };
+    Some((level, start..start + word.len()))
+}
+
 /// Split off the complete lines of `bytes`, keeping any unfinished last line in
 /// `partial` for next time.
 ///
@@ -95,6 +134,18 @@ mod tests {
 
         assert_eq!(lines.as_deref(), Some("one\ntwo\n"));
         assert_eq!(partial, b"thr");
+    }
+
+    #[test]
+    fn line_level_finds_the_level_word() {
+        let line = "[2026-10-19 17:08:13.017] [5a41] ERROR guiscp::app: it broke";
+        let (level, range) = line_level(line).expect("level");
+        assert_eq!(level, LogLevel::Error);
+        assert_eq!(&line[range], "ERROR");
+        let (level, range) = line_level("[t] [ab] WARN  x").expect("level");
+        assert_eq!((level, range), (LogLevel::Warn, 9..13));
+        assert_eq!(line_level("    continued message"), None);
+        assert_eq!(line_level("[unclosed"), None);
     }
 
     #[test]

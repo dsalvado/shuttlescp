@@ -1,4 +1,6 @@
-//! A live view of the end of the log file, like `tail -f`, for the bottom panel.
+//! A live view of the end of the log file, like `tail -f`, for the bottom panel. Each
+//! line's level is coloured (errors in bold red stand out most), error and warning
+//! lines are tinted, and lines alternate between two shades for easier reading.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -6,15 +8,18 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use relm4::gtk;
-use relm4::gtk::glib;
 use relm4::gtk::prelude::*;
+use relm4::gtk::{gdk, glib};
 
-use guiscp_core::log_reader::LogReader;
+use guiscp_core::log_reader::{LogReader, line_level};
+use guiscp_core::logging::LogLevel;
 
 /// How often the file is checked for new lines.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Lines kept in the view; older ones are dropped.
 const MAX_LINES: i32 = 2000;
+/// Name of the tag shading every other line.
+const STRIPE: &str = "stripe";
 
 /// Build the scrollable, read-only log view and start following `path`.
 ///
@@ -48,10 +53,14 @@ pub fn log_tail(path: Option<PathBuf>) -> gtk::ScrolledWindow {
         return scroller;
     };
 
+    add_tags(&view.buffer());
+    // Lines added so far, to alternate the shading; counted rather than read from the
+    // buffer, so trimming old lines does not swap the shades of the rest.
+    let lines = Rc::new(Cell::new(0_u64));
     let reader = Rc::new(RefCell::new(LogReader::new(path)));
     // Show what is already there right away instead of after the first interval.
     if let Some(text) = reader.borrow_mut().read_new_lines() {
-        append(&view, &text);
+        append(&view, &text, &lines);
     }
     let weak_view = view.downgrade();
     glib::timeout_add_local(POLL_INTERVAL, move || {
@@ -60,7 +69,7 @@ pub fn log_tail(path: Option<PathBuf>) -> gtk::ScrolledWindow {
             return glib::ControlFlow::Break;
         };
         if let Some(text) = reader.borrow_mut().read_new_lines() {
-            append(&view, &text);
+            append(&view, &text, &lines);
         }
         glib::ControlFlow::Continue
     });
@@ -131,15 +140,97 @@ fn at_end(adjustment: &gtk::Adjustment) -> bool {
     adjustment.value() + adjustment.page_size() >= adjustment.upper() - 2.0
 }
 
-/// Add `text` to the view and trim the oldest lines beyond [`MAX_LINES`].
+/// Create the text styles: the alternate-line shade, the error and warning line tints,
+/// and a colour for each level's word. Colours are translucent or mid-tone so they read
+/// on light and dark themes alike.
+fn add_tags(buffer: &gtk::TextBuffer) {
+    let rgba = |red, green, blue, alpha| gdk::RGBA::new(red, green, blue, alpha);
+    let table = buffer.tag_table();
+    // Added in increasing priority: a tinted line's colour wins over the shade.
+    let line_tags = [
+        (STRIPE, rgba(0.5, 0.5, 0.5, 0.07)),
+        (line_tag(LogLevel::Warn), rgba(0.9, 0.6, 0.0, 0.10)),
+        (line_tag(LogLevel::Error), rgba(0.88, 0.11, 0.14, 0.14)),
+    ];
+    for (name, background) in line_tags {
+        table.add(
+            &gtk::TextTag::builder()
+                .name(name)
+                .paragraph_background_rgba(&background)
+                .build(),
+        );
+    }
+    let level_tags = [
+        (LogLevel::Error, rgba(0.88, 0.11, 0.14, 1.0), true),
+        (LogLevel::Warn, rgba(0.85, 0.5, 0.0, 1.0), true),
+        (LogLevel::Info, rgba(0.15, 0.6, 0.35, 1.0), false),
+        (LogLevel::Debug, rgba(0.5, 0.5, 0.5, 1.0), false),
+        (LogLevel::Trace, rgba(0.5, 0.5, 0.5, 0.7), false),
+    ];
+    for (level, colour, bold) in level_tags {
+        let tag = gtk::TextTag::builder()
+            .name(level_tag(level))
+            .foreground_rgba(&colour)
+            .build();
+        if bold {
+            tag.set_weight(700);
+        }
+        table.add(&tag);
+    }
+}
+
+/// Name of the tag colouring a level's word.
+fn level_tag(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Error => "level-error",
+        LogLevel::Warn => "level-warn",
+        LogLevel::Info => "level-info",
+        LogLevel::Debug => "level-debug",
+        LogLevel::Trace => "level-trace",
+    }
+}
+
+/// Name of the tag tinting a whole line of this level (only errors and warnings have
+/// one; the others are never looked up).
+fn line_tag(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Error => "line-error",
+        _ => "line-warn",
+    }
+}
+
+/// Add `text` to the view, styled line by line, and trim the oldest lines beyond
+/// [`MAX_LINES`].
 ///
 /// # Arguments
 ///
 /// * `view` - The text view
 /// * `text` - New complete lines
-fn append(view: &gtk::TextView, text: &str) {
+/// * `lines` - Lines added so far (updated)
+fn append(view: &gtk::TextView, text: &str, lines: &Cell<u64>) {
     let buffer = view.buffer();
-    buffer.insert(&mut buffer.end_iter(), text);
+    for line in text.split_inclusive('\n') {
+        let start = buffer.end_iter().offset();
+        buffer.insert(&mut buffer.end_iter(), line);
+        let at = |offset: i32| buffer.iter_at_offset(offset);
+        let end = buffer.end_iter().offset();
+        if lines.get() % 2 == 1 {
+            buffer.apply_tag_by_name(STRIPE, &at(start), &at(end));
+        }
+        lines.set(lines.get() + 1);
+        if let Some((level, word)) = line_level(line) {
+            // Tags count in characters, the parser in bytes.
+            let chars = |bytes: usize| i32::try_from(line[..bytes].chars().count()).unwrap_or(0);
+            buffer.apply_tag_by_name(
+                level_tag(level),
+                &at(start + chars(word.start)),
+                &at(start + chars(word.end)),
+            );
+            if matches!(level, LogLevel::Error | LogLevel::Warn) {
+                buffer.apply_tag_by_name(line_tag(level), &at(start), &at(end));
+            }
+        }
+    }
 
     let excess = buffer.line_count() - MAX_LINES;
     if excess > 0

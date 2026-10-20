@@ -10,6 +10,7 @@ use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
@@ -47,6 +48,9 @@ struct Settings {
     passive: bool,
     /// TLS settings, for encrypted sites.
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// "TLS if available" found the server does not offer TLS: further connections
+    /// go straight to plain FTP.
+    plain_fallback: AtomicBool,
 }
 
 /// An FTP server: its settings and a pool of open connections.
@@ -113,7 +117,9 @@ pub(super) async fn connect(
     let encryption = site.ftp.encryption;
     let (tls, rejected) = match encryption {
         FtpEncryption::None => (None, RejectedSlot::default()),
-        FtpEncryption::ExplicitTls | FtpEncryption::ImplicitTls => {
+        FtpEncryption::ExplicitIfAvailable
+        | FtpEncryption::ExplicitTls
+        | FtpEncryption::ImplicitTls => {
             let (config, rejected) =
                 tls::client_config(&site.host, site.port).map_err(ConnectError::Ftp)?;
             (Some(config), rejected)
@@ -127,6 +133,7 @@ pub(super) async fn connect(
         encryption,
         passive: site.ftp.passive,
         tls,
+        plain_fallback: AtomicBool::new(false),
     });
     tracing::info!(
         "connecting to {}:{} (FTP, {}, {} mode)",
@@ -151,7 +158,7 @@ pub(super) async fn connect(
             None => error,
         }
     })?;
-    if encryption == FtpEncryption::None {
+    if encryption == FtpEncryption::None || settings.plain_fallback.load(Ordering::Relaxed) {
         tracing::warn!(
             "{}: plain FTP sends the password and files unencrypted",
             site.host
@@ -186,20 +193,37 @@ async fn open(settings: &Settings) -> Result<Connection, ConnectError> {
         )
         .await?
         .map_err(network)?,
-        (FtpEncryption::ExplicitTls, Some(connector)) => {
+        (
+            encryption @ (FtpEncryption::ExplicitTls | FtpEncryption::ExplicitIfAvailable),
+            Some(connector),
+        ) if !settings.plain_fallback.load(Ordering::Relaxed) => {
             let plain = timed(&settings.host, Connection::connect(address))
                 .await?
                 .map_err(network)?;
-            timed(&settings.host, plain.into_secure(connector, &settings.host))
-                .await?
-                .map_err(|error| match error {
-                    FtpError::UnexpectedResponse(response) => ConnectError::Ftp(format!(
-                        "the server does not offer TLS encryption ({}); \
-                         choose \"No encryption\" to connect without it",
-                        String::from_utf8_lossy(&response.body).trim()
-                    )),
-                    other => network(other),
-                })?
+            match timed(&settings.host, plain.into_secure(connector, &settings.host)).await? {
+                Ok(secure) => secure,
+                // The server refused AUTH TLS: it does not offer TLS.
+                Err(FtpError::UnexpectedResponse(response)) => {
+                    let reply = String::from_utf8_lossy(&response.body).trim().to_owned();
+                    if encryption == FtpEncryption::ExplicitTls {
+                        return Err(ConnectError::Ftp(format!(
+                            "the server does not offer TLS encryption ({reply}); choose \
+                             \"{}\" to connect without requiring it",
+                            FtpEncryption::ExplicitIfAvailable.label()
+                        )));
+                    }
+                    tracing::warn!(
+                        "{} does not offer TLS ({reply}); continuing with plain FTP",
+                        settings.host
+                    );
+                    settings.plain_fallback.store(true, Ordering::Relaxed);
+                    // Asking for TLS used up that connection; start a plain one.
+                    timed(&settings.host, Connection::connect(address))
+                        .await?
+                        .map_err(network)?
+                }
+                Err(other) => return Err(network(other)),
+            }
         }
         _ => timed(&settings.host, Connection::connect(address))
             .await?

@@ -118,27 +118,36 @@ pub fn new_site_id() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FtpEncryption {
-    /// Plain FTP: everything, the password included, travels unencrypted.
-    None,
-    /// FTPS with explicit TLS: connects in plain and switches to TLS (AUTH TLS) before
-    /// logging in. The standard way, on the usual port 21.
+    /// Switch to TLS (AUTH TLS) when the server offers it, otherwise carry on
+    /// unencrypted. Works with every server, encrypted whenever possible.
     #[default]
+    ExplicitIfAvailable,
+    /// FTPS with explicit TLS, required: connects in plain and switches to TLS before
+    /// logging in, refusing servers that cannot. The standard way, on port 21.
     ExplicitTls,
     /// FTPS with implicit TLS: TLS from the first byte, usually on port 990. Older, but
     /// still used.
     ImplicitTls,
+    /// Plain FTP: everything, the password included, travels unencrypted.
+    None,
 }
 
 impl FtpEncryption {
     /// All choices, in the order the Login dialog lists them.
-    pub const ALL: [Self; 3] = [Self::None, Self::ExplicitTls, Self::ImplicitTls];
+    pub const ALL: [Self; 4] = [
+        Self::ExplicitIfAvailable,
+        Self::ExplicitTls,
+        Self::ImplicitTls,
+        Self::None,
+    ];
 
-    /// Name shown to the user (WinSCP's wording).
+    /// Name shown to the user.
     pub fn label(self) -> &'static str {
         match self {
-            Self::None => "No encryption",
-            Self::ExplicitTls => "TLS/SSL explicit encryption",
-            Self::ImplicitTls => "TLS/SSL implicit encryption",
+            Self::ExplicitIfAvailable => "Use explicit FTP over TLS if available",
+            Self::ExplicitTls => "Require explicit FTP over TLS",
+            Self::ImplicitTls => "Require implicit FTP over TLS",
+            Self::None => "Only use plain FTP (insecure)",
         }
     }
 
@@ -146,16 +155,17 @@ impl FtpEncryption {
     pub fn default_port(self) -> u16 {
         match self {
             Self::ImplicitTls => 990,
-            Self::None | Self::ExplicitTls => 21,
+            Self::ExplicitIfAvailable | Self::ExplicitTls | Self::None => 21,
         }
     }
 
     /// Position in [`FtpEncryption::ALL`].
     pub fn index(self) -> u32 {
         match self {
-            Self::None => 0,
+            Self::ExplicitIfAvailable => 0,
             Self::ExplicitTls => 1,
             Self::ImplicitTls => 2,
+            Self::None => 3,
         }
     }
 
@@ -300,6 +310,26 @@ mod tests {
             user: user.to_owned(),
             password_saved: false,
             ftp: crate::sites::FtpOptions::default(),
+        }
+    }
+
+    #[test]
+    fn ftp_encryption_reads_saved_names_and_lists_the_safe_default_first() {
+        let read =
+            |name: &str| serde_json::from_str::<FtpEncryption>(&format!("\"{name}\"")).expect(name);
+        assert_eq!(
+            read("explicit_if_available"),
+            FtpEncryption::ExplicitIfAvailable
+        );
+        assert_eq!(read("explicit_tls"), FtpEncryption::ExplicitTls);
+        assert_eq!(read("implicit_tls"), FtpEncryption::ImplicitTls);
+        assert_eq!(read("none"), FtpEncryption::None);
+        assert_eq!(FtpEncryption::ALL[0], FtpEncryption::default());
+        for encryption in FtpEncryption::ALL {
+            assert_eq!(
+                FtpEncryption::from_index(encryption.index()),
+                Some(encryption)
+            );
         }
     }
 
