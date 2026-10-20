@@ -217,6 +217,14 @@ popover.menu modelbutton {
     border-radius: 3px;
 }
 
+/* The file panes' right-click menu: smaller text and rows than the menu bar's. */
+popover.menu.pane-menu {
+    font-size: 8pt;
+}
+popover.menu.pane-menu modelbutton {
+    min-height: 19px;
+}
+
 /* Mark the selected choice of a menu list with a check mark instead of a radio dot. */
 popover.menu radio {
     border: none;

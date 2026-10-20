@@ -6,8 +6,6 @@ use relm4::gtk::prelude::*;
 
 use guiscp_core::about::{self, BuildInfo};
 
-/// Icon shown at the top of the About dialog.
-const ABOUT_ICON: &str = "folder-remote";
 /// About dialog size (width, height) in pixels.
 const ABOUT_SIZE: (i32, i32) = (620, 470);
 
@@ -71,7 +69,7 @@ pub fn show_about(parent: &gtk::Window, log_path: Option<&std::path::Path>) {
         .version(format!("{} ({})", info.version, info.revision()))
         .comments(about::DESCRIPTION)
         .authors(authors)
-        .logo_icon_name(ABOUT_ICON)
+        .logo_icon_name(crate::desktop_entry::APP_ICON)
         .system_information(details(log_path))
         // Tall enough to show every System line without scrolling.
         .default_width(ABOUT_SIZE.0)

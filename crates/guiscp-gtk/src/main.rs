@@ -4,6 +4,7 @@ mod app;
 mod build_info;
 mod confirm_dialog;
 mod conflict_dialog;
+mod desktop_entry;
 mod disk_picker;
 mod file_pane;
 mod log_tail;
@@ -48,6 +49,7 @@ fn main() {
     let app = RelmApp::new(APP_ID);
     // `include_str!` embeds the file's contents into the binary at compile time.
     relm4::set_global_css(include_str!("style.css"));
+    desktop_entry::install(APP_ID);
     app.run::<App>(AppInit {
         config,
         config_path,

@@ -709,6 +709,7 @@ fn context_menu(
         rename: add("rename", || FilePaneMsg::Rename),
     };
     add("new-folder", || FilePaneMsg::NewFolder);
+    add("refresh", || FilePaneMsg::Refresh);
 
     // Triggered by the right-click handlers of the cells (see `attach_context_click`).
     let menu_action = gio::SimpleAction::new(
@@ -733,8 +734,8 @@ fn context_menu(
     root.insert_action_group(ACTION_GROUP, Some(&group));
 
     let (copy_label, move_label) = match side {
-        Side::Local => ("_Upload", "_Move to Server"),
-        Side::Remote => ("_Download", "_Move to This Computer"),
+        Side::Local => ("_Upload", "_Move"),
+        Side::Remote => ("_Download", "_Move"),
     };
     let transfer_section = gio::Menu::new();
     transfer_section.append(Some(copy_label), Some("pane.copy"));
@@ -747,9 +748,14 @@ fn context_menu(
     let menu = gio::Menu::new();
     menu.append_section(None, &transfer_section);
     menu.append_section(None, &edit_section);
+    let refresh_section = gio::Menu::new();
+    refresh_section.append(Some("Re_fresh"), Some("pane.refresh"));
+    menu.append_section(None, &refresh_section);
+    // The one destructive item comes last, away from the others.
     menu.append_section(None, &delete_section);
 
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.add_css_class("pane-menu");
     popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
     popover.set_parent(root);
