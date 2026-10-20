@@ -9,7 +9,7 @@ pub const APP_NAME: &str = "ShuttleSCP";
 
 /// One-line description of the app.
 pub const DESCRIPTION: &str = "Graphical SFTP and FTP client for copying files between this \
-                               computer and remote servers, in the spirit of WinSCP.";
+                               computer and remote servers, inspired by WinSCP.";
 
 /// The licence the app is published under, as shown to users.
 pub const LICENSE: &str = "GNU General Public License, version 3 or later";

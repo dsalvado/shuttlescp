@@ -3,7 +3,7 @@
 <component type="desktop-application">
   <id>io.github.dsalvado.ShuttleSCP</id>
   <name>ShuttleSCP</name>
-  <summary>Graphical SFTP and FTP client, in the spirit of WinSCP</summary>
+  <summary>Graphical SFTP and FTP client, inspired by WinSCP</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <developer id="io.github.dsalvado">
@@ -18,7 +18,7 @@
     </p>
   </description>
   <launchable type="desktop-id">io.github.dsalvado.ShuttleSCP.desktop</launchable>
-  <url type="homepage">https://dsalvado.github.io/shuttlescp/</url>
+  <url type="homepage">https://shuttlescp.dsalvado.ca/</url>
   <url type="vcs-browser">https://github.com/dsalvado/shuttlescp</url>
   <url type="bugtracker">https://github.com/dsalvado/shuttlescp/issues</url>
   <screenshots>

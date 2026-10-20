@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=ShuttleSCP
-Comment=Graphical SFTP and FTP client, in the spirit of WinSCP
+Comment=Graphical SFTP and FTP client, inspired by WinSCP
 Exec=shuttlescp
 Icon=io.github.dsalvado.ShuttleSCP
 Terminal=false

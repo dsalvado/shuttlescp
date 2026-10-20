@@ -1,5 +1,5 @@
 # Publish the project's web page (site/) on GitHub Pages:
-# https://dsalvado.github.io/shuttlescp/
+# https://shuttlescp.dsalvado.ca/ (a custom domain; see docs/RELEASING.md)
 #
 # The page reads the latest release from GitHub when someone opens it, so it does not
 # need publishing again for each release, only when site/ itself changes.

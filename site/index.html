@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ShuttleSCP</title>
-<meta name="description" content="ShuttleSCP: a graphical SFTP, SCP and FTP client for Linux, in the spirit of WinSCP.">
+<meta name="description" content="ShuttleSCP: a graphical SFTP, SCP and FTP client for Linux, inspired by WinSCP.">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M24 56c0-8.8 7.2-16 16-16h56l20 20h100c8.8 0 16 7.2 16 16v124c0 8.8-7.2 16-16 16H40c-8.8 0-16-7.2-16-16z' fill='%233a7bd5'/%3E%3Crect x='24' y='84' width='208' height='132' rx='16' fill='%2362a8f0'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='14' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M76 128h96M150 106l22 22-22 22M180 174H84M106 152l-22 22 22 22'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   /* Colours: the app's blue on a plain page; dark when the visitor's system is. */
@@ -61,6 +61,17 @@
   }
   .download .version { font-size: 1.15rem; font-weight: 600; }
   .download .meta { color: var(--muted); font-size: 0.92rem; }
+  .pill {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 600;
+    vertical-align: middle;
+  }
   .actions { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 14px; }
   .button {
     display: inline-block;
@@ -111,7 +122,7 @@
     </svg>
     <div>
       <h1>ShuttleSCP</h1>
-      <p>A graphical SFTP, SCP and FTP client for Linux, in the spirit of WinSCP.</p>
+      <p>A graphical SFTP, SCP and FTP client for Linux, inspired by WinSCP.</p>
     </div>
   </header>
 
@@ -160,7 +171,17 @@
 cd shuttlescp
 cargo run --release</code></pre>
 
+  <h2>How it was built</h2>
+  <p>ShuttleSCP was built with <a href="https://claude.com/claude-code">Claude Code</a>,
+    Anthropic's AI coding agent. After moving from Windows to Linux I missed WinSCP, so I
+    set out to build the tool I wanted, and to use the project to learn modern project
+    engineering with AI tools. Claude wrote the code; I decided what to build, reviewed and
+    tested every change, and made the calls on design, security and releases. The
+    <a href="https://github.com/dsalvado/shuttlescp#how-this-was-built">README</a> has the
+    details.</p>
+
   <footer>
+    Made by David Salvador · <a href="https://dsalvado.ca">dsalvado.ca</a><br>
     ShuttleSCP is free software under the
     <a href="https://github.com/dsalvado/shuttlescp/blob/master/LICENSE">GNU GPL, version 3 or later</a>.
     Source code, issues and releases on <a href="https://github.com/dsalvado/shuttlescp">GitHub</a>.
@@ -197,7 +218,15 @@ cargo run --release</code></pre>
       const date = new Date(release.published_at).toLocaleDateString(undefined, {
         year: "numeric", month: "long", day: "numeric",
       });
-      version.textContent = `ShuttleSCP ${release.tag_name.replace(/^v/, "")}`;
+      const number = release.tag_name.replace(/^v/, "");
+      version.textContent = `ShuttleSCP ${number}`;
+      // Versions 0.x are the public beta.
+      if (number.startsWith("0.")) {
+        const pill = document.createElement("span");
+        pill.className = "pill";
+        pill.textContent = "Public beta";
+        version.append(pill);
+      }
       if (appimage) {
         const megabytes = (appimage.size / (1024 * 1024)).toFixed(0);
         meta.textContent = `Released ${date} · Linux AppImage, 64-bit, ${megabytes} MB`;

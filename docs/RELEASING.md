@@ -36,7 +36,7 @@ The automation lives in `.github/workflows/`, as YAML files GitHub reads:
 |---|---|---|
 | `ci.yml` | a push to `master`, or a pull request | formatting check, lint (clippy), tests |
 | `release.yml` | a tag like `v1.0.0` is pushed | tests, AppImage, signed manifest, GitHub release |
-| `pages.yml` | `site/` changes on `master` | publishes the web page |
+| `pages.yml` | `site/` changes on `master` | publishes the web page at https://shuttlescp.dsalvado.ca/ |
 
 Each workflow has **jobs**; each job runs on a **runner**, a fresh virtual machine GitHub
 starts for that run and throws away afterwards, so nothing left over from an earlier run
@@ -101,32 +101,55 @@ Done once, in this order:
    gh api --method POST repos/dsalvado/shuttlescp/pages -f build_type=workflow
    ```
    (or Settings › Pages › Source: GitHub Actions).
+6. **Give the page its own address**, `shuttlescp.dsalvado.ca`:
+   1. At the company that hosts the DNS for `dsalvado.ca`, add a record:
+      type **CNAME**, name **shuttlescp**, value **dsalvado.github.io**. DNS is the
+      internet's address book; this entry says "shuttlescp.dsalvado.ca is served by
+      GitHub Pages".
+   2. Tell GitHub about it:
+      ```sh
+      gh api --method PUT repos/dsalvado/shuttlescp/pages -f cname=shuttlescp.dsalvado.ca
+      ```
+      (or Settings › Pages › Custom domain).
+   3. Once GitHub has checked the record and issued the HTTPS certificate (minutes to a
+      few hours), tick **Enforce HTTPS** under Settings › Pages.
+7. **Turn on private vulnerability reporting**, so people can report security problems
+   privately as `SECURITY.md` asks:
+   ```sh
+   gh api --method PUT repos/dsalvado/shuttlescp/private-vulnerability-reporting
+   ```
+   (or Settings › Code security › Private vulnerability reporting).
 
 ## Making a release
 
 1. **Pick the version.** ShuttleSCP uses [semantic versioning](https://semver.org):
    `major.minor.patch`. Raise *patch* for fixes only (0.9.0 → 0.9.1), *minor* for new
    features (0.9.1 → 0.10.0), *major* for changes that break existing use (→ 1.0.0).
-2. **Set it** in the top-level `Cargo.toml` (`[workspace.package] version`), and add a
-   `<release>` line to `packaging/linux/io.github.dsalvado.ShuttleSCP.metainfo.xml`.
+   Versions 0.x are the public beta; the release title says so.
+2. **Describe it in `CHANGELOG.md`.** Move the entries under `## [Unreleased]` into a new
+   `## [1.0.0] - YYYY-MM-DD` section (Added / Changed / Fixed / Security), and add its
+   link at the bottom. That section becomes the release notes; the release workflow
+   refuses to publish a version the changelog does not describe.
+3. **Set the version** in the top-level `Cargo.toml` (`[workspace.package] version`), and
+   add a `<release>` line to `packaging/linux/io.github.dsalvado.ShuttleSCP.metainfo.xml`.
    Run `cargo build` so `Cargo.lock` follows, then commit:
    ```sh
    git commit -am "Version 1.0.0"
    git push
    ```
    Wait for CI to pass (✓ on the commit).
-3. **Tag the commit and push the tag.** A tag is a name for one commit; pushing one that
+4. **Tag the commit and push the tag.** A tag is a name for one commit; pushing one that
    starts with `v` starts the release workflow:
    ```sh
    git tag -a v1.0.0 -m "ShuttleSCP 1.0.0"
    git push origin v1.0.0
    ```
-4. **Watch it** on the Actions tab (about 10 to 15 minutes). When it finishes, the
+5. **Watch it** on the Actions tab (about 10 to 15 minutes). When it finishes, the
    release appears under Releases, the web page offers it, and installed copies see it
    on their next check.
 
 The release workflow stops, without publishing anything, if the tag does not match the
-version in `Cargo.toml`, a test fails, the AppImage cannot be built, or the signing key
+version in `Cargo.toml`, `CHANGELOG.md` has no section for it, a test fails, the AppImage cannot be built, or the signing key
 is missing or does not match the app's public key.
 
 ### If a release goes wrong

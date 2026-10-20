@@ -1,6 +1,10 @@
 # ShuttleSCP
 
-A graphical SFTP and FTP client for Linux, in the spirit of WinSCP: your computer's
+[![CI](https://github.com/dsalvado/shuttlescp/actions/workflows/ci.yml/badge.svg)](https://github.com/dsalvado/shuttlescp/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/dsalvado/shuttlescp?label=release)](https://github.com/dsalvado/shuttlescp/releases/latest)
+[![Licence: GPL v3 or later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
+
+A graphical SFTP and FTP client for Linux, inspired by WinSCP: your computer's
 files on the left, the server's on the right, and copying between them is a drag, a
 right-click or a key press away.
 
@@ -8,9 +12,10 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
 ![ShuttleSCP with two connections open](docs/screenshot.png)
 
-> **Status:** version 0.9, close to a first release. It is used day to day on Linux;
-> Windows and macOS front ends are planned (the transfer engine is kept free of GTK
-> for that).
+> **Status: public beta (0.9).** It is used day to day on Linux, and feedback is very
+> welcome: please [open an issue](https://github.com/dsalvado/shuttlescp/issues). Windows
+> and macOS front ends are planned (the transfer engine is kept free of GTK for that).
+> See the [changelog](CHANGELOG.md) for what each release brought.
 
 ## Features
 
@@ -56,7 +61,7 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
 ## Installing
 
-Download the AppImage from the [ShuttleSCP web page](https://dsalvado.github.io/shuttlescp/)
+Download the AppImage from the [ShuttleSCP web page](https://shuttlescp.dsalvado.ca/)
 or the [latest release](https://github.com/dsalvado/shuttlescp/releases/latest). It is one
 file holding ShuttleSCP and everything it needs, for 64-bit Linux from 2024 or later
 (Ubuntu 24.04, Fedora 40, Debian 13 and the like):
@@ -117,6 +122,28 @@ for how releases are made, signed and published.
 - `crates/shuttlescp-gtk`: the Linux front end, built with relm4 and GTK 4.
 
 Run the tests with `cargo test --workspace`.
+
+## How this was built
+
+ShuttleSCP was built with [Claude Code](https://claude.com/claude-code), Anthropic's AI
+coding agent, and I want to be upfront about that. I moved my laptop from Windows 10 to
+Linux and missed WinSCP, which does not run well under Wine, so I set out to build the
+tool I wanted, in Rust, and to use the project to learn modern project engineering with
+AI tools.
+
+The split of work: Claude wrote the code, tests and documentation. I decided what to
+build and how it should look and behave, reviewed every change, tested it against my own
+servers, and made the calls on design, security and releases (for example signed
+updates, keeping the core free of GTK for other platforms, and publishing under the GPL).
+Commits made with Claude carry a `Co-Authored-By: Claude` line, so the history shows
+exactly which they are.
+
+I'm David Salvador; more about me at [dsalvado.ca](https://dsalvado.ca).
+
+## Security
+
+Please report security problems privately, as described in [SECURITY.md](SECURITY.md),
+rather than in a public issue.
 
 ## Licence
 
