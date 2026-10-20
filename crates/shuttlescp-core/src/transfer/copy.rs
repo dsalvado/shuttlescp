@@ -62,9 +62,20 @@ pub(super) async fn copy_items(
         outcomes[id] = Some(outcome);
     };
 
+    // 0. Moving within one side: what has nothing in its way is renamed into place,
+    //    with everything inside it, instead of being copied.
+    let children = children_of(items);
+    let mut renamed = vec![false; items.len()];
+    if delete_source && job.same_side {
+        for id in rename_into_place(items, &children, src, cancel).await {
+            renamed[id] = true;
+            finish(&mut outcomes, id, ItemOutcome::Done);
+        }
+    }
+
     // 1. Settle every file already at the destination, one question at a time, before
     //    anything is copied.
-    let actions = settle_conflicts(job, items, cancel, sink, &mut |id, outcome| {
+    let actions = settle_conflicts(job, items, &renamed, cancel, sink, &mut |id, outcome| {
         finish(&mut outcomes, id, outcome);
     })
     .await;
@@ -74,7 +85,10 @@ pub(super) async fn copy_items(
         item.parent
             .is_some_and(|parent| matches!(outcomes[parent], Some(ItemOutcome::Failed(_))))
     };
-    for item in items.iter().filter(|item| item.kind == ItemKind::Folder) {
+    for item in items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Folder && !renamed[item.id])
+    {
         if failed_parent(&outcomes, item) {
             outcomes[item.id] = Some(ItemOutcome::Failed(String::from(
                 "the folder it is in could not be created",
@@ -139,11 +153,10 @@ pub(super) async fn copy_items(
     }
 
     // 4. Folders last, deepest first: each is done once everything inside it is.
-    let children = children_of(items);
     for item in items
         .iter()
         .rev()
-        .filter(|item| item.kind == ItemKind::Folder)
+        .filter(|item| item.kind == ItemKind::Folder && !renamed[item.id])
     {
         let outcome = match &outcomes[item.id] {
             Some(failed) => failed.clone(),
@@ -157,10 +170,50 @@ pub(super) async fn copy_items(
         .collect()
 }
 
+/// Move the job's sources that have nothing in their way at the destination by
+/// renaming them, which is instant however big they are. A rename that fails (e.g.
+/// between two disks) leaves the item to be copied and deleted instead.
+///
+/// # Arguments
+///
+/// * `children` - The items directly inside each item, by id
+///
+/// # Returns
+///
+/// The ids of every item moved: the renamed sources and everything inside them
+async fn rename_into_place(
+    items: &[PlanItem],
+    children: &[Vec<usize>],
+    src: &Endpoint,
+    cancel: &CancelFlag,
+) -> Vec<usize> {
+    let mut moved = Vec::new();
+    for item in items.iter().filter(|item| item.parent.is_none()) {
+        if cancel.is_cancelled() {
+            break;
+        }
+        if item.existing.is_some() || item.existing_is_dir || item.partial > 0 {
+            continue;
+        }
+        if let Err(error) = src.rename(&item.source, &item.dest).await {
+            tracing::debug!("{error}; copying instead");
+            continue;
+        }
+        tracing::info!("moved {} -> {}", item.source.display(), item.dest.display());
+        let mut inside = vec![item.id];
+        while let Some(id) = inside.pop() {
+            moved.push(id);
+            inside.extend(&children[id]);
+        }
+    }
+    moved
+}
+
 /// Decide what to do with each file, asking about files already at the destination.
 ///
 /// # Arguments
 ///
+/// * `skip` - Items already dealt with, by id: they get no action
 /// * `settled` - Called for files that need nothing more (skipped, failed, cancelled)
 ///
 /// # Returns
@@ -170,13 +223,17 @@ pub(super) async fn copy_items(
 async fn settle_conflicts(
     job: &Job,
     items: &[PlanItem],
+    skip: &[bool],
     cancel: &CancelFlag,
     sink: &Sink,
     settled: &mut impl FnMut(usize, ItemOutcome),
 ) -> Vec<Option<FileAction>> {
     let mut actions = vec![None; items.len()];
     let mut for_all: Option<ConflictChoice> = None;
-    for item in items.iter().filter(|item| item.kind == ItemKind::File) {
+    for item in items
+        .iter()
+        .filter(|item| item.kind == ItemKind::File && !skip[item.id])
+    {
         if cancel.is_cancelled() {
             settled(item.id, ItemOutcome::Cancelled);
             continue;

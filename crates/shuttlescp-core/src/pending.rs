@@ -92,6 +92,7 @@ mod tests {
                 side: Side::Local,
                 sources: vec![PathBuf::from("/data/a")],
                 dest_dir: PathBuf::from("/srv"),
+                same_side: false,
                 resume: false,
             },
         }

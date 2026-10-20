@@ -1233,6 +1233,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
     let deleting = job.job.kind == JobKind::Delete;
     let icon = match (job.job.kind, job.job.side) {
         (JobKind::Delete, _) => "user-trash-symbolic",
+        _ if job.job.same_side => "go-next-symbolic",
         (_, Side::Local) => "go-up-symbolic",
         (_, Side::Remote) => "go-down-symbolic",
     };

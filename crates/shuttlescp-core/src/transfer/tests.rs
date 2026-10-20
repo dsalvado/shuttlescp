@@ -35,7 +35,17 @@ fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
         side: Side::Local,
         sources,
         dest_dir: dest_dir.to_path_buf(),
+        same_side: false,
         resume: false,
+    }
+}
+
+/// A job that copies or moves within one side (e.g. a drag onto a folder in the same
+/// pane).
+fn same_side_job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
+    Job {
+        same_side: true,
+        ..job(kind, sources, dest_dir)
     }
 }
 
@@ -397,10 +407,164 @@ fn job_titles_name_the_direction() {
         side: Side::Remote,
         sources: vec![PathBuf::from("/a"), PathBuf::from("/b")],
         dest_dir: PathBuf::new(),
+        same_side: false,
         resume: false,
     };
     assert_eq!(many.title(), "Delete 2 items from the server");
     assert!(many.uses_server());
+}
+
+#[test]
+fn same_side_jobs_stay_on_their_side() {
+    let local = same_side_job(
+        JobKind::Move,
+        vec![PathBuf::from("/home/me/report.pdf")],
+        Path::new("/home/me/old"),
+    );
+    assert_eq!(local.title(), "Move report.pdf to /home/me/old");
+    assert_eq!(local.dest_side(), Side::Local);
+    assert!(!local.uses_server());
+
+    let remote = Job {
+        side: Side::Remote,
+        kind: JobKind::Copy,
+        ..local
+    };
+    assert_eq!(
+        remote.title(),
+        "Copy report.pdf to /home/me/old on the server"
+    );
+    assert_eq!(remote.dest_side(), Side::Remote);
+    assert!(remote.uses_server());
+}
+
+#[test]
+fn jobs_saved_before_same_side_existed_still_load() {
+    let text = r#"{"kind":"copy","side":"local","sources":["/a"],"dest_dir":"/srv"}"#;
+
+    let job: Job = serde_json::from_str(text).expect("deserialize");
+
+    assert!(!job.same_side);
+    assert_eq!(job.dest_side(), Side::Remote);
+}
+
+#[test]
+fn check_same_side_refuses_pointless_and_impossible_drops() {
+    let sources = [PathBuf::from("/data/a")];
+
+    assert!(check_same_side(&sources, Path::new("/data/b")).is_ok());
+    assert!(check_same_side(&sources, Path::new("/")).is_ok());
+    assert_eq!(
+        check_same_side(&sources, Path::new("/data")),
+        Err(String::from("a is already in /data"))
+    );
+    assert_eq!(
+        check_same_side(&sources, Path::new("/data/a")),
+        Err(String::from("a cannot go inside itself"))
+    );
+    assert_eq!(
+        check_same_side(&sources, Path::new("/data/a/deeper")),
+        Err(String::from("a cannot go inside itself"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_side_copy_puts_a_copy_in_another_folder() {
+    let (_temp, src, _dst) = setup();
+    std::fs::create_dir(src.join("b")).expect("b");
+
+    let (summary, _) = run_local(same_side_job(
+        JobKind::Copy,
+        vec![src.join("a"), src.join("top.txt")],
+        &src.join("b"),
+    ))
+    .await;
+
+    assert_eq!(summary.done, 5);
+    assert_eq!(
+        std::fs::read_to_string(src.join("b/a/sub/two.txt")).expect("read"),
+        "two!"
+    );
+    assert_eq!(
+        std::fs::read(src.join("b/top.txt")).expect("read"),
+        big_content()
+    );
+    assert!(src.join("a/sub/two.txt").exists(), "original kept");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_side_move_renames_into_place() {
+    let (_temp, src, _dst) = setup();
+    std::fs::create_dir(src.join("b")).expect("b");
+
+    let (summary, events) = run_local(same_side_job(
+        JobKind::Move,
+        vec![src.join("a"), src.join("top.txt")],
+        &src.join("b"),
+    ))
+    .await;
+
+    // Every item is reported done exactly once, including those inside the folder.
+    assert_eq!(summary.done, 5);
+    assert!(summary.is_complete());
+    let finished = events
+        .iter()
+        .filter(|event| matches!(event, TransferEvent::ItemFinished { .. }))
+        .count();
+    assert_eq!(finished, 5);
+    assert!(!src.join("a").exists(), "moved folder is gone");
+    assert!(!src.join("top.txt").exists(), "moved file is gone");
+    assert_eq!(
+        std::fs::read_to_string(src.join("b/a/sub/two.txt")).expect("read"),
+        "two!"
+    );
+    assert!(
+        !src.join("b/top.txt.filepart").exists(),
+        "renamed, not copied"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_side_move_into_an_existing_folder_merges_and_asks() {
+    // Arrange: b/a already exists with its own one.txt.
+    let (_temp, src, _dst) = setup();
+    std::fs::create_dir_all(src.join("b/a")).expect("b/a");
+    std::fs::write(src.join("b/a/one.txt"), "old").expect("write");
+
+    // Act
+    let (summary, events) = run_local_answering(
+        same_side_job(JobKind::Move, vec![src.join("a")], &src.join("b")),
+        answer(ConflictChoice::Overwrite, true),
+    )
+    .await;
+
+    // Assert: the folders were merged file by file, asking about the one in the way.
+    assert_eq!(conflicts(&events), 1);
+    assert!(summary.is_complete());
+    assert_eq!(
+        std::fs::read_to_string(src.join("b/a/one.txt")).expect("read"),
+        "one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(src.join("b/a/sub/two.txt")).expect("read"),
+        "two!"
+    );
+    assert!(!src.join("a").exists(), "emptied source folder removed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_side_job_into_itself_does_not_start() {
+    let (_temp, src, _dst) = setup();
+
+    let (summary, _) = run_local(same_side_job(
+        JobKind::Move,
+        vec![src.join("a")],
+        &src.join("a/sub"),
+    ))
+    .await;
+
+    assert_eq!(summary.error.as_deref(), Some("a cannot go inside itself"));
+    assert!(src.join("a/sub/two.txt").exists(), "nothing touched");
 }
 
 #[test]

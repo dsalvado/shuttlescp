@@ -143,6 +143,20 @@ pub enum AppMsg {
         /// The selected items.
         paths: Vec<PathBuf>,
     },
+    /// Items were dropped on a file pane and the user chose to copy or move them.
+    PaneDrop {
+        /// The side of the pane they were dropped on.
+        side: Side,
+        /// Copy or move.
+        kind: JobKind,
+        /// The dropped items.
+        paths: Vec<PathBuf>,
+        /// They were dragged within that pane (so they stay on its side), not from the
+        /// other pane.
+        from_this_pane: bool,
+        /// The folder they go into, on `side`.
+        dest_dir: PathBuf,
+    },
     /// Run a job (a delete, once confirmed).
     StartJob(Job),
     /// A transfer finished: show the panes' new contents.
@@ -465,6 +479,18 @@ impl SimpleComponent for App {
                         kind,
                         paths,
                     },
+                    FilePaneOutput::Dropped {
+                        kind,
+                        paths,
+                        from_this_pane,
+                        dest_dir,
+                    } => AppMsg::PaneDrop {
+                        side: Side::Local,
+                        kind,
+                        paths,
+                        from_this_pane,
+                        dest_dir,
+                    },
                 }),
             local_dir: start_dir,
             host: glib::host_name().into(),
@@ -587,6 +613,24 @@ impl SimpleComponent for App {
             AppMsg::PaneRequest { side, kind, paths } => {
                 self.request_job(side, kind, paths, &sender);
             }
+            AppMsg::PaneDrop {
+                side,
+                kind,
+                paths,
+                from_this_pane,
+                dest_dir,
+            } => {
+                // Items dragged from the other pane come from the other side.
+                let source_side = if from_this_pane { side } else { side.other() };
+                self.start_job(Job {
+                    kind,
+                    side: source_side,
+                    sources: paths,
+                    dest_dir,
+                    same_side: from_this_pane,
+                    resume: false,
+                });
+            }
             AppMsg::StartJob(job) => self.start_job(job),
             AppMsg::TransferCounts {
                 running,
@@ -700,6 +744,18 @@ impl App {
                     kind,
                     paths,
                 },
+                FilePaneOutput::Dropped {
+                    kind,
+                    paths,
+                    from_this_pane,
+                    dest_dir,
+                } => AppMsg::PaneDrop {
+                    side: Side::Remote,
+                    kind,
+                    paths,
+                    from_this_pane,
+                    dest_dir,
+                },
             });
         if let Some(split) = &self.split {
             split.set_end_child(Some(pane.widget()));
@@ -801,6 +857,7 @@ impl App {
             side,
             sources: paths,
             dest_dir,
+            same_side: false,
             resume: false,
         };
         if kind != JobKind::Delete {

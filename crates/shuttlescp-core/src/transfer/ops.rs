@@ -1,4 +1,5 @@
-//! Single quick operations on one side: creating a folder and renaming.
+//! Single quick operations on one side: creating a folder and renaming; and the check
+//! that a copy within one side makes sense.
 
 use std::path::{Path, PathBuf};
 
@@ -89,4 +90,30 @@ pub async fn rename(
     endpoint.rename(path, &target).await?;
     tracing::info!("renamed {} to {}", path.display(), target.display());
     Ok(target)
+}
+
+/// Check that copying or moving `sources` into `dest_dir` on their own side makes
+/// sense: they are not already there, and no folder goes inside itself.
+///
+/// # Arguments
+///
+/// * `sources` - Files and folders to copy or move
+/// * `dest_dir` - Folder on the same side to put them in
+///
+/// # Errors
+///
+/// Returns a message saying why the copy cannot be done
+pub fn check_same_side(sources: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
+    for source in sources {
+        let name = source
+            .file_name()
+            .map_or_else(|| source.to_string_lossy(), |name| name.to_string_lossy());
+        if dest_dir.starts_with(source) {
+            return Err(format!("{name} cannot go inside itself"));
+        }
+        if source.parent() == Some(dest_dir) {
+            return Err(format!("{name} is already in {}", dest_dir.display()));
+        }
+    }
+    Ok(())
 }

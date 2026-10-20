@@ -29,8 +29,9 @@ type Existing = HashMap<OsString, Node>;
 ///
 /// # Errors
 ///
-/// Returns a message if a source or one of its folders cannot be read. When resuming,
-/// a missing source is passed over instead: a move already finished it.
+/// Returns a message if a source or one of its folders cannot be read, or if a copy
+/// within one side would put something where it already is or a folder inside itself.
+/// When resuming, a missing source is passed over instead: a move already finished it.
 pub(super) async fn plan(
     job: &Job,
     src: &Endpoint,
@@ -38,6 +39,9 @@ pub(super) async fn plan(
 ) -> Result<Vec<PlanItem>, String> {
     let follow = job.kind != JobKind::Delete;
     let dst = dst.filter(|_| job.kind != JobKind::Delete);
+    if job.same_side && job.kind != JobKind::Delete {
+        super::check_same_side(&job.sources, &job.dest_dir)?;
+    }
     let mut items: Vec<PlanItem> = Vec::new();
     let mut folders = Vec::new();
 

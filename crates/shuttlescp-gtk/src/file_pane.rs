@@ -1,6 +1,10 @@
 //! A file explorer pane: refresh button, disk drop-down, path label and a sortable column
 //! view whose first row, "..", goes up one folder. Right-clicking offers to copy, move,
-//! rename or delete the selected items, or to create a folder.
+//! rename or delete the selected items, or to create a folder. Items can be dragged onto
+//! a folder in the same pane or into the other pane (see [`drag`]); dropping them asks
+//! whether to copy or move.
+
+mod drag;
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -51,6 +55,10 @@ const CONTEXT_MENU_ACTION: &str = "context-menu";
 /// CSS class marking the cells of the file list, to tell a right-click on a row from
 /// one on the empty space below the rows.
 const CELL_CLASS: &str = "pane-cell";
+/// Name of the drop menu's actions: "pane.drop-copy" and so on.
+const DROP_COPY_ACTION: &str = "drop-copy";
+const DROP_MOVE_ACTION: &str = "drop-move";
+const DROP_CANCEL_ACTION: &str = "drop-cancel";
 /// Name suggested for a new folder.
 const NEW_FOLDER_NAME: &str = "New Folder";
 
@@ -101,6 +109,34 @@ pub enum FilePaneMsg {
         /// Its new name.
         name: String,
     },
+    /// Items were dragged and dropped on this pane: ask whether to copy or move them.
+    Dropped(Dropped),
+    /// The answer from the drop menu: copy or move the dropped items, or (`None`) leave
+    /// them.
+    DropChosen(Option<JobKind>),
+}
+
+/// Files and folders dropped on a pane.
+#[derive(Debug)]
+pub struct Dropped {
+    /// The dragged files and folders.
+    sources: Vec<PathBuf>,
+    /// They were dragged from this pane, not from the other one.
+    from_this_pane: bool,
+    /// The folder they were dropped on; `None` for the folder the pane shows.
+    dest_dir: Option<PathBuf>,
+    /// Drop position in the column view, where the menu opens.
+    x: f64,
+    /// Drop position in the column view.
+    y: f64,
+}
+
+/// A drop waiting for the drop menu's answer.
+#[derive(Debug)]
+struct PendingDrop {
+    sources: Vec<PathBuf>,
+    from_this_pane: bool,
+    dest_dir: PathBuf,
 }
 
 /// What a [`FilePane`] starts with.
@@ -132,6 +168,18 @@ pub enum FilePaneOutput {
         /// The selected files and folders.
         paths: Vec<PathBuf>,
     },
+    /// Items were dropped on this pane, and the user chose to copy or move them.
+    Dropped {
+        /// Copy or move.
+        kind: JobKind,
+        /// The dropped files and folders (full paths).
+        paths: Vec<PathBuf>,
+        /// They come from this pane, so they stay on its side; otherwise they come
+        /// from the other pane.
+        from_this_pane: bool,
+        /// The folder of this pane they go into.
+        dest_dir: PathBuf,
+    },
 }
 
 /// Results of background work, delivered back to the UI thread.
@@ -155,10 +203,15 @@ pub struct Listing {
 #[derive(Debug)]
 enum Row {
     /// The ".." line that goes up one folder; always shown first.
-    Parent,
+    Parent {
+        /// The folder it goes up to.
+        path: PathBuf,
+    },
     /// A file or folder inside the current directory.
     Entry {
         entry: FileEntry,
+        /// Its full path.
+        path: PathBuf,
         /// Theme icon for special folders such as Documents; `None` for everything else.
         special_icon: Option<&'static str>,
     },
@@ -180,6 +233,10 @@ pub struct FilePane {
     remote: Option<Remote>,
     /// Right-click menu of the selected items.
     context_menu: gtk::PopoverMenu,
+    /// Menu shown after a drop: copy or move?
+    drop_menu: gtk::PopoverMenu,
+    /// The drop the drop menu is about.
+    pending_drop: Option<PendingDrop>,
     /// The menu's actions, enabled to suit the selection before it opens.
     actions: PaneActions,
     /// Whether there is somewhere to copy to (for the local pane: a connected server).
@@ -261,8 +318,8 @@ impl FilePane {
             .filter(|&position| selection.is_selected(position))
             .filter_map(|position| self.entries.get_visible(position))
             .filter_map(|item| match &*item.borrow() {
-                Row::Parent => None,
-                Row::Entry { entry, .. } => Some(self.current_dir.join(entry.name())),
+                Row::Parent { .. } => None,
+                Row::Entry { path, .. } => Some(path.clone()),
             })
             .collect()
     }
@@ -281,8 +338,10 @@ impl FilePane {
             special_folder_icons(dir)
         };
         self.entries.clear();
-        if dir.parent().is_some() {
-            self.entries.append(Row::Parent);
+        if let Some(parent) = dir.parent() {
+            self.entries.append(Row::Parent {
+                path: parent.to_path_buf(),
+            });
         }
         self.entries
             .extend_from_iter(entries.into_iter().map(|entry| {
@@ -294,10 +353,27 @@ impl FilePane {
                     EntryKind::File => None,
                 };
                 Row::Entry {
+                    path: dir.join(entry.name()),
                     entry,
                     special_icon,
                 }
             }));
+    }
+
+    /// Open `menu` at (`x`, `y`) in the column view.
+    fn popup_at(&self, menu: &gtk::PopoverMenu, root: &gtk::Box, x: f64, y: f64) {
+        let point = self
+            .entries
+            .view
+            .compute_point(root, &graphene::Point::new(x as f32, y as f32))
+            .unwrap_or_else(|| graphene::Point::new(x as f32, y as f32));
+        menu.set_pointing_to(Some(&gdk::Rectangle::new(
+            point.x() as i32,
+            point.y() as i32,
+            1,
+            1,
+        )));
+        menu.popup();
     }
 }
 
@@ -408,7 +484,7 @@ impl Component for FilePane {
         } else {
             Side::Local
         };
-        let (context_menu, actions) = context_menu(&root, side, &sender);
+        let (context_menu, drop_menu, actions) = context_menu(&root, side, &sender);
         let keys = gtk::EventControllerKey::new();
         {
             let sender = sender.clone();
@@ -424,6 +500,12 @@ impl Component for FilePane {
         }
         entries.view.add_controller(keys);
         attach_empty_space_click(&entries.view, &sender);
+        {
+            let sender = sender.clone();
+            drag::attach_list_drop(&entries.view, move |dropped| {
+                sender.input(FilePaneMsg::Dropped(dropped));
+            });
+        }
 
         let mut model = Self {
             current_dir: start_dir.clone(),
@@ -434,6 +516,8 @@ impl Component for FilePane {
             last_dir_on_disk,
             remote,
             context_menu,
+            drop_menu,
+            pending_drop: None,
             actions,
             // The local pane has nowhere to copy to until a server is connected.
             peer_available: side == Side::Remote,
@@ -458,9 +542,9 @@ impl Component for FilePane {
                     self.entries
                         .get_visible(position)
                         .and_then(|item| match &*item.borrow() {
-                            Row::Parent => self.current_dir.parent().map(Path::to_path_buf),
-                            Row::Entry { entry, .. } => match entry.kind() {
-                                EntryKind::Directory => Some(self.current_dir.join(entry.name())),
+                            Row::Parent { path } => Some(path.clone()),
+                            Row::Entry { entry, path, .. } => match entry.kind() {
+                                EntryKind::Directory => Some(path.clone()),
                                 EntryKind::File => None,
                             },
                         });
@@ -514,18 +598,43 @@ impl Component for FilePane {
                     }
                 }
                 self.update_actions();
-                let point = self
-                    .entries
-                    .view
-                    .compute_point(root, &graphene::Point::new(x as f32, y as f32))
-                    .unwrap_or_else(|| graphene::Point::new(x as f32, y as f32));
-                self.context_menu.set_pointing_to(Some(&gdk::Rectangle::new(
-                    point.x() as i32,
-                    point.y() as i32,
-                    1,
-                    1,
-                )));
-                self.context_menu.popup();
+                self.popup_at(&self.context_menu, root, x, y);
+            }
+            FilePaneMsg::Dropped(dropped) => {
+                let dest_dir = dropped.dest_dir.unwrap_or_else(|| self.current_dir.clone());
+                if dropped.from_this_pane
+                    && let Err(error) = transfer::check_same_side(&dropped.sources, &dest_dir)
+                {
+                    tracing::debug!("drop refused: {error}");
+                    self.status = error;
+                    return;
+                }
+                tracing::debug!(
+                    "{} items dropped on {}",
+                    dropped.sources.len(),
+                    dest_dir.display()
+                );
+                self.pending_drop = Some(PendingDrop {
+                    sources: dropped.sources,
+                    from_this_pane: dropped.from_this_pane,
+                    dest_dir,
+                });
+                self.popup_at(&self.drop_menu, root, dropped.x, dropped.y);
+            }
+            FilePaneMsg::DropChosen(kind) => {
+                let Some(drop) = self.pending_drop.take() else {
+                    return;
+                };
+                let Some(kind) = kind else {
+                    tracing::debug!("drop cancelled");
+                    return;
+                };
+                let _ = sender.output(FilePaneOutput::Dropped {
+                    kind,
+                    paths: drop.sources,
+                    from_this_pane: drop.from_this_pane,
+                    dest_dir: drop.dest_dir,
+                });
             }
             FilePaneMsg::Request(kind) => {
                 let paths = self.selected_paths();
@@ -688,12 +797,13 @@ impl Component for FilePane {
 ///
 /// # Returns
 ///
-/// The menu, and its actions (to enable or disable)
+/// The right-click menu, the menu shown after a drop, and the right-click menu's
+/// actions (to enable or disable)
 fn context_menu(
     root: &gtk::Box,
     side: Side,
     sender: &ComponentSender<FilePane>,
-) -> (gtk::PopoverMenu, PaneActions) {
+) -> (gtk::PopoverMenu, gtk::PopoverMenu, PaneActions) {
     let group = gio::SimpleActionGroup::new();
     let add = |name: &str, message: fn() -> FilePaneMsg| {
         let action = gio::SimpleAction::new(name, None);
@@ -710,6 +820,13 @@ fn context_menu(
     };
     add("new-folder", || FilePaneMsg::NewFolder);
     add("refresh", || FilePaneMsg::Refresh);
+    add(DROP_COPY_ACTION, || {
+        FilePaneMsg::DropChosen(Some(JobKind::Copy))
+    });
+    add(DROP_MOVE_ACTION, || {
+        FilePaneMsg::DropChosen(Some(JobKind::Move))
+    });
+    add(DROP_CANCEL_ACTION, || FilePaneMsg::DropChosen(None));
 
     // Triggered by the right-click handlers of the cells (see `attach_context_click`).
     let menu_action = gio::SimpleAction::new(
@@ -731,6 +848,21 @@ fn context_menu(
         });
     }
     group.add_action(&menu_action);
+
+    // Triggered by the drop targets of folder rows (see `drag::attach_folder_drop`).
+    let drop_action = gio::SimpleAction::new(
+        drag::DROP_ACTION,
+        Some(&<drag::DropVariant>::static_variant_type()),
+    );
+    {
+        let sender = sender.clone();
+        drop_action.connect_activate(move |_, parameter| {
+            if let Some(dropped) = parameter.and_then(drag::dropped_from) {
+                sender.input(FilePaneMsg::Dropped(dropped));
+            }
+        });
+    }
+    group.add_action(&drop_action);
     root.insert_action_group(ACTION_GROUP, Some(&group));
 
     let (copy_label, move_label) = match side {
@@ -754,7 +886,39 @@ fn context_menu(
     // The one destructive item comes last, away from the others.
     menu.append_section(None, &delete_section);
 
-    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    let choice_section = gio::Menu::new();
+    choice_section.append(
+        Some("_Copy Here"),
+        Some(&format!("{ACTION_GROUP}.{DROP_COPY_ACTION}")),
+    );
+    choice_section.append(
+        Some("_Move Here"),
+        Some(&format!("{ACTION_GROUP}.{DROP_MOVE_ACTION}")),
+    );
+    let cancel_section = gio::Menu::new();
+    cancel_section.append(
+        Some("C_ancel"),
+        Some(&format!("{ACTION_GROUP}.{DROP_CANCEL_ACTION}")),
+    );
+    let drop_menu = gio::Menu::new();
+    drop_menu.append_section(None, &choice_section);
+    drop_menu.append_section(None, &cancel_section);
+
+    (
+        pane_popover(root, &menu),
+        pane_popover(root, &drop_menu),
+        actions,
+    )
+}
+
+/// A pop-up menu of the pane, showing `menu`.
+///
+/// # Arguments
+///
+/// * `root` - The pane's root widget, which owns the menu
+/// * `menu` - The menu's items
+fn pane_popover(root: &gtk::Box, menu: &gio::Menu) -> gtk::PopoverMenu {
+    let popover = gtk::PopoverMenu::from_model(Some(menu));
     popover.add_css_class("pane-menu");
     popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
@@ -764,7 +928,7 @@ fn context_menu(
         let popover = popover.clone();
         root.connect_destroy(move |_| popover.unparent());
     }
-    (popover, actions)
+    popover
 }
 
 /// Make right-clicking the empty space below the rows open the context menu (with
@@ -802,6 +966,19 @@ fn attach_empty_space_click(view: &gtk::ColumnView, sender: &ComponentSender<Fil
         });
     });
     view.add_controller(click);
+}
+
+/// Give a cell its mouse handling: right-click for the context menu, dragging, and
+/// (on folder rows) taking drops.
+///
+/// # Arguments
+///
+/// * `cell` - The cell's root widget
+/// * `item` - The list item the cell belongs to
+fn attach_cell_handlers(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
+    attach_context_click(cell, item);
+    drag::attach_drag_source(cell, item);
+    drag::attach_folder_drop(cell, item);
 }
 
 /// Make right-clicking a cell open the pane's context menu for its row.
@@ -892,7 +1069,7 @@ fn pin_parent_row(entries: &TypedColumnView<Row, gtk::MultiSelection>) {
 fn is_parent_row(item: &glib::Object) -> bool {
     item.downcast_ref::<glib::BoxedAnyObject>()
         .and_then(|boxed| boxed.try_borrow::<Row>().ok())
-        .is_some_and(|row| matches!(*row, Row::Parent))
+        .is_some_and(|row| matches!(*row, Row::Parent { .. }))
 }
 
 /// Find which entries of `dir` are special folders (Documents, Downloads, home, ...).
@@ -949,9 +1126,9 @@ fn text_cell(xalign: f32) -> gtk::Label {
 /// * `compare` - Ordering for two ordinary entries
 fn compare_rows(a: &Row, b: &Row, compare: fn(&FileEntry, &FileEntry) -> Ordering) -> Ordering {
     match (a, b) {
-        (Row::Parent, Row::Parent) => Ordering::Equal,
-        (Row::Parent, Row::Entry { .. }) => Ordering::Less,
-        (Row::Entry { .. }, Row::Parent) => Ordering::Greater,
+        (Row::Parent { .. }, Row::Parent { .. }) => Ordering::Equal,
+        (Row::Parent { .. }, Row::Entry { .. }) => Ordering::Less,
+        (Row::Entry { .. }, Row::Parent { .. }) => Ordering::Greater,
         (Row::Entry { entry: a, .. }, Row::Entry { entry: b, .. }) => compare(a, b),
     }
 }
@@ -989,21 +1166,22 @@ impl RelmColumn for NameColumn {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         root.append(&icon_stack);
         root.append(&label);
-        attach_context_click(&root, item);
+        attach_cell_handlers(&root, item);
         (root, (icon, arrow, label))
     }
 
     fn bind(item: &mut Self::Item, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
         let (icon, arrow, label) = widgets;
-        arrow.set_visible(matches!(item, Row::Parent));
+        arrow.set_visible(matches!(item, Row::Parent { .. }));
         match item {
-            Row::Parent => {
+            Row::Parent { .. } => {
                 icon.set_icon_name(Some(FOLDER_ICON));
                 label.set_label("..");
             }
             Row::Entry {
                 entry,
                 special_icon,
+                ..
             } => {
                 match entry.kind() {
                     EntryKind::Directory => {
@@ -1036,7 +1214,7 @@ impl RelmColumn for SizeColumn {
 
     fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         let cell = text_cell(1.0);
-        attach_context_click(&cell, item);
+        attach_cell_handlers(&cell, item);
         (cell, ())
     }
 
@@ -1045,7 +1223,7 @@ impl RelmColumn for SizeColumn {
             Row::Entry { entry, .. } if entry.kind() == EntryKind::File => {
                 label.set_label(&format_size(entry.size()));
             }
-            Row::Parent | Row::Entry { .. } => label.set_label(""),
+            Row::Parent { .. } | Row::Entry { .. } => label.set_label(""),
         }
     }
 
@@ -1067,13 +1245,13 @@ impl RelmColumn for ModifiedColumn {
 
     fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         let cell = text_cell(0.0);
-        attach_context_click(&cell, item);
+        attach_cell_handlers(&cell, item);
         (cell, ())
     }
 
     fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
         let text = match item {
-            Row::Parent => String::new(),
+            Row::Parent { .. } => String::new(),
             Row::Entry { entry, .. } => entry.modified().map(format_modified).unwrap_or_default(),
         };
         label.set_label(&text);
@@ -1099,21 +1277,25 @@ mod tests {
             .expect("list temp dir")
             .remove(0);
         let row = Row::Entry {
+            path: temp.path().join("a.txt"),
             entry,
             special_icon: None,
+        };
+        let parent = || Row::Parent {
+            path: PathBuf::from("/"),
         };
 
         // Act + Assert
         assert_eq!(
-            compare_rows(&Row::Parent, &row, FileEntry::size_order),
+            compare_rows(&parent(), &row, FileEntry::size_order),
             Ordering::Less
         );
         assert_eq!(
-            compare_rows(&row, &Row::Parent, FileEntry::size_order),
+            compare_rows(&row, &parent(), FileEntry::size_order),
             Ordering::Greater
         );
         assert_eq!(
-            compare_rows(&Row::Parent, &Row::Parent, FileEntry::size_order),
+            compare_rows(&parent(), &parent(), FileEntry::size_order),
             Ordering::Equal
         );
     }

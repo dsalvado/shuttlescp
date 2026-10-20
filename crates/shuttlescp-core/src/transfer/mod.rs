@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 pub use meter::{RateMeter, fraction, percent};
-pub use ops::{check_name, create_folder, rename};
+pub use ops::{check_name, check_same_side, create_folder, rename};
 
 use crate::format::format_size;
 use crate::remote::Remote;
@@ -71,9 +71,10 @@ impl Side {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
-    /// Copy to the other side, keeping the originals.
+    /// Copy to the other side (or, for a [`Job::same_side`] job, to another folder on
+    /// the same side), keeping the originals.
     Copy,
-    /// Copy to the other side, then delete the originals.
+    /// Copy like [`JobKind::Copy`], then delete the originals.
     Move,
     /// Delete the sources.
     Delete,
@@ -88,8 +89,13 @@ pub struct Job {
     pub side: Side,
     /// Files and folders to act on (absolute paths on `side`).
     pub sources: Vec<PathBuf>,
-    /// Folder on the other side that copies go into; unused when deleting.
+    /// Folder that copies go into, on the other side (or on the same side for a
+    /// [`Job::same_side`] job); unused when deleting.
     pub dest_dir: PathBuf,
+    /// Copies go to another folder on the same side (e.g. a file dragged onto a folder
+    /// in its own pane) instead of to the other side.
+    #[serde(default)]
+    pub same_side: bool,
     /// Continue an earlier, interrupted run of this job: files already copied (same
     /// size and date at the destination) are not copied again or asked about, and
     /// sources already moved away are passed over.
@@ -109,7 +115,13 @@ impl Job {
             many => format!("{} items", many.len()),
         };
         let dest = self.dest_dir.display();
+        let on_server = match self.side {
+            Side::Local => "",
+            Side::Remote => " on the server",
+        };
         match (self.kind, self.side) {
+            (JobKind::Copy, _) if self.same_side => format!("Copy {what} to {dest}{on_server}"),
+            (JobKind::Move, _) if self.same_side => format!("Move {what} to {dest}{on_server}"),
             (JobKind::Copy, Side::Local) => format!("Upload {what} to {dest}"),
             (JobKind::Copy, Side::Remote) => format!("Download {what} to {dest}"),
             (JobKind::Move, Side::Local) => format!("Move {what} to the server, {dest}"),
@@ -121,7 +133,17 @@ impl Job {
 
     /// Whether the job needs the server connection.
     pub fn uses_server(&self) -> bool {
-        !(self.kind == JobKind::Delete && self.side == Side::Local)
+        let stays_local = self.kind == JobKind::Delete || self.same_side;
+        !(stays_local && self.side == Side::Local)
+    }
+
+    /// Where copies go: the other side, or the same side for a [`Job::same_side`] job.
+    pub fn dest_side(&self) -> Side {
+        if self.same_side {
+            self.side
+        } else {
+            self.side.other()
+        }
     }
 }
 
@@ -371,7 +393,7 @@ pub async fn run(
     let summary = match endpoint(job.side) {
         None => failed_to_start("not connected to a server"),
         Some(source) => {
-            let dest = endpoint(job.side.other());
+            let dest = endpoint(job.dest_side());
             execute(&job, source, dest, &cancel, &sink).await
         }
     };

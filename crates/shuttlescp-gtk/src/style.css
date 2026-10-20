@@ -231,6 +231,15 @@ popover.menu.pane-menu modelbutton {
     min-height: 19px;
 }
 
+/* Dragging files: the folder row a drop would go into is highlighted as a whole, rather
+   than the theme's outline around the single cell under the pointer. */
+columnview.data-table row.drop-row {
+    background-color: alpha(@accent_bg_color, 0.3);
+}
+columnview.data-table .pane-cell:drop(active) {
+    box-shadow: none;
+}
+
 /* Mark the selected choice of a menu list with a check mark instead of a radio dot. */
 popover.menu radio {
     border: none;
