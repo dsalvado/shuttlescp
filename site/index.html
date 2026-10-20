@@ -60,7 +60,8 @@
     padding: 20px;
   }
   .download .version { font-size: 1.15rem; font-weight: 600; }
-  .download .meta { color: var(--muted); font-size: 0.92rem; }
+  .download .meta, .download p.meta { color: var(--muted); font-size: 0.92rem; }
+  .download p.meta { margin: 14px 0 0; }
   .pill {
     display: inline-block;
     margin-left: 8px;
@@ -136,6 +137,7 @@
       <a id="checksums" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>SHA-256 checksums</a>
     </div>
     <div class="notes" id="release-notes" hidden></div>
+    <p class="meta">Windows and macOS versions are coming soon.</p>
   </section>
 
   <img class="screenshot" src="screenshot.png" width="1200" height="798"
