@@ -208,14 +208,21 @@ label.about-details {
     padding: 4px 0 0 2px;
 }
 
-/* Bottom panel and session tabs: compact, square tabs. The selected tab takes the page's
-   colour and an outline that runs into the page, so it reads as attached to the pane
-   below it. */
+/* Bottom panel and session tabs: compact, square tabs. The strip's base line is a
+   shading (not a border), so the selected tab, which has the page's background, covers
+   it and runs straight into the page below. Themes draw a real border there, which no
+   tab could cover; it is removed. */
+notebook.bottom-panel,
+notebook.session-tabs {
+    border: none;
+}
+
 notebook.bottom-panel > header,
 notebook.session-tabs > header {
     padding: 3px 4px 0 4px;
+    border: none;
     background: none;
-    box-shadow: inset 0 -1px alpha(currentColor, 0.15);
+    box-shadow: inset 0 -2px alpha(currentColor, 0.15);
 }
 
 notebook.bottom-panel > header > tabs,
@@ -228,8 +235,8 @@ notebook.session-tabs > header > tabs > tab {
     min-height: 0;
     min-width: 0;
     margin: 0 2px 0 0;
-    padding: 1px 10px 2px 10px;
-    border: 1px solid transparent;
+    padding: 1px 10px 3px 10px;
+    border: 2px solid transparent;
     border-bottom-width: 0;
     border-radius: 3px 3px 0 0;
     background: none;
@@ -243,14 +250,9 @@ notebook.session-tabs > header > tabs > tab:hover:not(:checked) {
     background-color: alpha(currentColor, 0.06);
 }
 
+/* The log tab (not a session's) joins its page in the plain view colour. */
 notebook.bottom-panel > header > tabs > tab:checked {
     background-color: @view_bg_color;
-    border-color: alpha(currentColor, 0.15);
-}
-
-/* A session tab sits on the window colour of the file panes below it. */
-notebook.session-tabs > header > tabs > tab:checked {
-    background-color: @window_bg_color;
     border-color: alpha(currentColor, 0.15);
 }
 
@@ -417,118 +419,237 @@ notebook.bottom-panel > header tab box.tab-highlight {
     background-color: alpha(#2ec27e, 0.35);
 }
 
-/* Sessions. With two or more open, each session is drawn in its own colour (the
-   "group-N" classes, see session.rs): an outline around its tab and panes, and a
-   bracket over its Queue / Completed / Failed tabs, which sit side by side. While a
-   session's transfers run, its tab and Queue tab pulse ("busy"), whether or not several
-   sessions are open. */
-.session-page {
+/* Sessions. Each session is drawn in its own colour (the "group-N" classes, see
+   session.rs): an outline around its tab and panes, and around its Queue / Completed /
+   Failed tabs (side by side) and their lists. A light tint of the colour is laid over
+   the theme's own background, so it suits light and dark themes alike; the selected
+   tab has exactly its page's tint and covers the strip's base line, so the two read as
+   one piece. The strip's base line takes the colour of the session shown
+   ("shows-group-N" on the notebook). While a session's transfers run, its tab and Queue
+   tab pulse ("busy"). */
+.session-page,
+.session-transfers {
     border: 0 solid transparent;
+    border-width: 0 2px 2px 2px;
+    border-radius: 0 0 3px 3px;
 }
-.session-page.grouped {
-    border-width: 2px;
-    border-radius: 0 3px 3px 3px;
+.session-page {
+    background-color: @window_bg_color;
 }
-notebook.session-tabs > header > tabs > tab.grouped {
-    border-width: 2px 2px 0 2px;
+.session-transfers {
+    background-color: @view_bg_color;
 }
-notebook.bottom-panel > header > tabs > tab.grouped {
-    margin-right: 0;
-    border-width: 2px 0 0 0;
-    border-radius: 0;
-}
-notebook.bottom-panel > header > tabs > tab.grouped.group-start {
-    margin-left: 6px;
-    border-left-width: 2px;
-    border-top-left-radius: 3px;
-}
-notebook.bottom-panel > header > tabs > tab.grouped.group-end {
-    border-right-width: 2px;
-    border-top-right-radius: 3px;
+notebook.session-tabs > header > tabs > tab:checked {
+    background-color: @window_bg_color;
 }
 
 /* Session colour 0: blue. */
-.session-page.grouped.group-0,
-notebook > header > tabs > tab.grouped.group-0,
-notebook > header > tabs > tab.grouped.group-0:checked {
+.session-page.group-0,
+.session-transfers.group-0,
+notebook > header > tabs > tab.group-0,
+notebook > header > tabs > tab.group-0:checked {
     border-color: #3584e4;
+}
+notebook.shows-group-0 > header {
+    box-shadow: inset 0 -2px #3584e4;
+}
+.session-page.group-0,
+.session-transfers.group-0,
+notebook > header > tabs > tab.group-0:checked {
+    background-image: linear-gradient(alpha(#3584e4, 0.07), alpha(#3584e4, 0.07));
+}
+notebook > header > tabs > tab.group-0:not(:checked) {
+    background-image: linear-gradient(alpha(#3584e4, 0.04), alpha(#3584e4, 0.04));
+}
+/* One bracket over the session's three transfer tabs (closed by the first and last). */
+notebook.bottom-panel > header > tabs > tab.group-0 {
+    margin-right: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-radius: 0;
 }
 notebook > header > tabs > tab.busy.group-0 {
     animation: session-busy-0 1.2s ease-in-out infinite alternate;
 }
 @keyframes session-busy-0 {
-    from { background-color: alpha(#3584e4, 0.06); }
-    to { background-color: alpha(#3584e4, 0.32); }
+    from { box-shadow: inset 0 0 0 1000px alpha(#3584e4, 0.0); }
+    to { box-shadow: inset 0 0 0 1000px alpha(#3584e4, 0.25); }
 }
 
 /* Session colour 1: green. */
-.session-page.grouped.group-1,
-notebook > header > tabs > tab.grouped.group-1,
-notebook > header > tabs > tab.grouped.group-1:checked {
+.session-page.group-1,
+.session-transfers.group-1,
+notebook > header > tabs > tab.group-1,
+notebook > header > tabs > tab.group-1:checked {
     border-color: #2ec27e;
+}
+notebook.shows-group-1 > header {
+    box-shadow: inset 0 -2px #2ec27e;
+}
+.session-page.group-1,
+.session-transfers.group-1,
+notebook > header > tabs > tab.group-1:checked {
+    background-image: linear-gradient(alpha(#2ec27e, 0.07), alpha(#2ec27e, 0.07));
+}
+notebook > header > tabs > tab.group-1:not(:checked) {
+    background-image: linear-gradient(alpha(#2ec27e, 0.04), alpha(#2ec27e, 0.04));
+}
+/* One bracket over the session's three transfer tabs (closed by the first and last). */
+notebook.bottom-panel > header > tabs > tab.group-1 {
+    margin-right: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-radius: 0;
 }
 notebook > header > tabs > tab.busy.group-1 {
     animation: session-busy-1 1.2s ease-in-out infinite alternate;
 }
 @keyframes session-busy-1 {
-    from { background-color: alpha(#2ec27e, 0.06); }
-    to { background-color: alpha(#2ec27e, 0.32); }
+    from { box-shadow: inset 0 0 0 1000px alpha(#2ec27e, 0.0); }
+    to { box-shadow: inset 0 0 0 1000px alpha(#2ec27e, 0.25); }
 }
 
 /* Session colour 2: orange. */
-.session-page.grouped.group-2,
-notebook > header > tabs > tab.grouped.group-2,
-notebook > header > tabs > tab.grouped.group-2:checked {
+.session-page.group-2,
+.session-transfers.group-2,
+notebook > header > tabs > tab.group-2,
+notebook > header > tabs > tab.group-2:checked {
     border-color: #ff7800;
+}
+notebook.shows-group-2 > header {
+    box-shadow: inset 0 -2px #ff7800;
+}
+.session-page.group-2,
+.session-transfers.group-2,
+notebook > header > tabs > tab.group-2:checked {
+    background-image: linear-gradient(alpha(#ff7800, 0.07), alpha(#ff7800, 0.07));
+}
+notebook > header > tabs > tab.group-2:not(:checked) {
+    background-image: linear-gradient(alpha(#ff7800, 0.04), alpha(#ff7800, 0.04));
+}
+/* One bracket over the session's three transfer tabs (closed by the first and last). */
+notebook.bottom-panel > header > tabs > tab.group-2 {
+    margin-right: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-radius: 0;
 }
 notebook > header > tabs > tab.busy.group-2 {
     animation: session-busy-2 1.2s ease-in-out infinite alternate;
 }
 @keyframes session-busy-2 {
-    from { background-color: alpha(#ff7800, 0.06); }
-    to { background-color: alpha(#ff7800, 0.32); }
+    from { box-shadow: inset 0 0 0 1000px alpha(#ff7800, 0.0); }
+    to { box-shadow: inset 0 0 0 1000px alpha(#ff7800, 0.25); }
 }
 
 /* Session colour 3: purple. */
-.session-page.grouped.group-3,
-notebook > header > tabs > tab.grouped.group-3,
-notebook > header > tabs > tab.grouped.group-3:checked {
+.session-page.group-3,
+.session-transfers.group-3,
+notebook > header > tabs > tab.group-3,
+notebook > header > tabs > tab.group-3:checked {
     border-color: #9141ac;
+}
+notebook.shows-group-3 > header {
+    box-shadow: inset 0 -2px #9141ac;
+}
+.session-page.group-3,
+.session-transfers.group-3,
+notebook > header > tabs > tab.group-3:checked {
+    background-image: linear-gradient(alpha(#9141ac, 0.07), alpha(#9141ac, 0.07));
+}
+notebook > header > tabs > tab.group-3:not(:checked) {
+    background-image: linear-gradient(alpha(#9141ac, 0.04), alpha(#9141ac, 0.04));
+}
+/* One bracket over the session's three transfer tabs (closed by the first and last). */
+notebook.bottom-panel > header > tabs > tab.group-3 {
+    margin-right: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-radius: 0;
 }
 notebook > header > tabs > tab.busy.group-3 {
     animation: session-busy-3 1.2s ease-in-out infinite alternate;
 }
 @keyframes session-busy-3 {
-    from { background-color: alpha(#9141ac, 0.06); }
-    to { background-color: alpha(#9141ac, 0.32); }
+    from { box-shadow: inset 0 0 0 1000px alpha(#9141ac, 0.0); }
+    to { box-shadow: inset 0 0 0 1000px alpha(#9141ac, 0.25); }
 }
 
 /* Session colour 4: teal. */
-.session-page.grouped.group-4,
-notebook > header > tabs > tab.grouped.group-4,
-notebook > header > tabs > tab.grouped.group-4:checked {
+.session-page.group-4,
+.session-transfers.group-4,
+notebook > header > tabs > tab.group-4,
+notebook > header > tabs > tab.group-4:checked {
     border-color: #2190a4;
+}
+notebook.shows-group-4 > header {
+    box-shadow: inset 0 -2px #2190a4;
+}
+.session-page.group-4,
+.session-transfers.group-4,
+notebook > header > tabs > tab.group-4:checked {
+    background-image: linear-gradient(alpha(#2190a4, 0.07), alpha(#2190a4, 0.07));
+}
+notebook > header > tabs > tab.group-4:not(:checked) {
+    background-image: linear-gradient(alpha(#2190a4, 0.04), alpha(#2190a4, 0.04));
+}
+/* One bracket over the session's three transfer tabs (closed by the first and last). */
+notebook.bottom-panel > header > tabs > tab.group-4 {
+    margin-right: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-radius: 0;
 }
 notebook > header > tabs > tab.busy.group-4 {
     animation: session-busy-4 1.2s ease-in-out infinite alternate;
 }
 @keyframes session-busy-4 {
-    from { background-color: alpha(#2190a4, 0.06); }
-    to { background-color: alpha(#2190a4, 0.32); }
+    from { box-shadow: inset 0 0 0 1000px alpha(#2190a4, 0.0); }
+    to { box-shadow: inset 0 0 0 1000px alpha(#2190a4, 0.25); }
 }
 
 /* Session colour 5: yellow. */
-.session-page.grouped.group-5,
-notebook > header > tabs > tab.grouped.group-5,
-notebook > header > tabs > tab.grouped.group-5:checked {
+.session-page.group-5,
+.session-transfers.group-5,
+notebook > header > tabs > tab.group-5,
+notebook > header > tabs > tab.group-5:checked {
     border-color: #e5a50a;
+}
+notebook.shows-group-5 > header {
+    box-shadow: inset 0 -2px #e5a50a;
+}
+.session-page.group-5,
+.session-transfers.group-5,
+notebook > header > tabs > tab.group-5:checked {
+    background-image: linear-gradient(alpha(#e5a50a, 0.07), alpha(#e5a50a, 0.07));
+}
+notebook > header > tabs > tab.group-5:not(:checked) {
+    background-image: linear-gradient(alpha(#e5a50a, 0.04), alpha(#e5a50a, 0.04));
+}
+/* One bracket over the session's three transfer tabs (closed by the first and last). */
+notebook.bottom-panel > header > tabs > tab.group-5 {
+    margin-right: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-radius: 0;
 }
 notebook > header > tabs > tab.busy.group-5 {
     animation: session-busy-5 1.2s ease-in-out infinite alternate;
 }
 @keyframes session-busy-5 {
-    from { background-color: alpha(#e5a50a, 0.06); }
-    to { background-color: alpha(#e5a50a, 0.32); }
+    from { box-shadow: inset 0 0 0 1000px alpha(#e5a50a, 0.0); }
+    to { box-shadow: inset 0 0 0 1000px alpha(#e5a50a, 0.25); }
+}
+
+notebook.bottom-panel > header > tabs > tab.group-start {
+    margin-left: 6px;
+    border-left-width: 2px;
+    border-top-left-radius: 3px;
+}
+notebook.bottom-panel > header > tabs > tab.group-end {
+    margin-right: 2px;
+    border-right-width: 2px;
+    border-top-right-radius: 3px;
 }
 
 /* Scroll arrows of the tab strips (shown when the tabs do not fit). Themes give them

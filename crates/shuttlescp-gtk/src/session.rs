@@ -2,10 +2,11 @@
 //! remote pane of its connection (if any) on the right, plus its own transfer lists
 //! (Queue, Completed, Failed) in the bottom panel.
 //!
-//! Once there are two or more sessions, each is drawn in its own colour: an outline
-//! around its tab and panes, and a line under its transfer tabs, which sit side by side,
-//! so it is clear which lists belong to which connection. While a session's transfers
-//! run, its tab shows turning arrows and its tabs pulse gently.
+//! Each session is drawn in its own colour: an outline around its tab and panes, and
+//! around its transfer tabs (which sit side by side) and their lists, with a light tint
+//! of the colour over the theme's background, so it is clear which lists belong to
+//! which connection. While a session's transfers run, its tab shows turning arrows and
+//! its tabs pulse gently.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -42,8 +43,8 @@ const SESSION_TAB_ICON: &str = "computer-symbolic";
 const ACTIVITY_ICON: &str = "emblem-synchronizing-symbolic";
 /// How long the Completed tab stays highlighted after a transfer lands in it.
 const TAB_HIGHLIGHT: std::time::Duration = std::time::Duration::from_millis(1500);
-/// CSS class marking the widgets of a session while several sessions are open.
-const GROUPED_CLASS: &str = "grouped";
+/// CSS class of a session's transfer list pages in the bottom panel.
+const TRANSFERS_PAGE_CLASS: &str = "session-transfers";
 /// CSS class marking the tabs of a session while its transfers run (they pulse).
 const BUSY_CLASS: &str = "busy";
 
@@ -165,11 +166,15 @@ impl Session {
             },
         );
         let (completed_page, failed_page) = transfers.model().history_pages();
-        let transfer_pages = [
+        let transfer_pages: [gtk::Widget; 3] = [
             transfers.widget().clone().upcast(),
             completed_page,
             failed_page,
         ];
+        for page in &transfer_pages {
+            page.add_css_class(TRANSFERS_PAGE_CLASS);
+            page.add_css_class(&colour_class(colour));
+        }
         let transfer_tabs = TransferTabs::new();
         Self {
             id,
@@ -281,14 +286,24 @@ impl Session {
         self.transfer_tabs.show_counts(running, completed, failed);
     }
 
+    /// Which of its transfer lists `page` is (0 Queue, 1 Completed, 2 Failed), if it is
+    /// one of this session's.
+    pub fn transfer_list_of(&self, page: &gtk::Widget) -> Option<usize> {
+        self.transfer_pages.iter().position(|own| own == page)
+    }
+
+    /// The CSS class giving this session its colour, e.g. for the notebook showing it.
+    pub fn colour_class(&self) -> String {
+        colour_class(self.colour)
+    }
+
     /// Bring the tabs up to date: title, close button, colour outline and activity.
     ///
     /// # Arguments
     ///
     /// * `host` - This computer's name, for the title while not connected
-    /// * `grouped` - Several sessions are open, so each shows its colour
     /// * `closable` - The close button is shown
-    pub fn refresh(&self, host: &str, grouped: bool, closable: bool) {
+    pub fn refresh(&self, host: &str, closable: bool) {
         let title = self.title(host);
         self.tab
             .label
@@ -299,7 +314,6 @@ impl Session {
         self.tab.activity.set_visible(busy);
 
         let colour = colour_class(self.colour);
-        set_class(&self.page, GROUPED_CLASS, grouped);
         // The notebooks draw the tabs around our labels: style those.
         let tabs = self.transfer_tab_widgets();
         let notebook_tabs: Vec<(gtk::Widget, bool)> = std::iter::once((&self.tab.root, true))
@@ -312,7 +326,6 @@ impl Session {
             .collect();
         for (tab, pulses) in &notebook_tabs {
             tab.add_css_class(&colour);
-            set_class(tab, GROUPED_CLASS, grouped);
             set_class(tab, BUSY_CLASS, busy && *pulses);
         }
         // The first and last of the three transfer tabs close the group's outline.
@@ -480,7 +493,7 @@ pub fn panel_tab(icon: &str) -> (gtk::Box, gtk::Label) {
 }
 
 /// The CSS class giving a session its colour.
-fn colour_class(colour: usize) -> String {
+pub fn colour_class(colour: usize) -> String {
     format!("group-{}", colour % COLOURS)
 }
 

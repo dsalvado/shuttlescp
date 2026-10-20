@@ -119,8 +119,10 @@ pub enum AppMsg {
     },
     /// A session's remote pane moved to another folder.
     RemoteDirChanged { session: SessionId, dir: PathBuf },
-    /// Another session tab was brought forward.
+    /// Another session tab was brought forward: its transfer lists follow.
     SessionSwitched,
+    /// Another bottom panel tab was brought forward: its session follows.
+    BottomTabSwitched,
     /// Close the current session's connection (File > Disconnect).
     Disconnect,
     /// A session tab's X was clicked: disconnect and close that session (the app exits
@@ -161,6 +163,10 @@ pub enum AppMsg {
     /// as busy, to picture the session colours.
     #[cfg(debug_assertions)]
     GalleryDemo,
+    /// Development aid for the UI gallery: bring the first session tab forward, to
+    /// picture the transfer lists following it.
+    #[cfg(debug_assertions)]
+    GalleryFocusFirst,
     /// The number of a session's transfers running, completed or failed changed.
     TransferCounts {
         session: SessionId,
@@ -432,16 +438,23 @@ impl SimpleComponent for App {
                 }
             });
         }
+        {
+            let sender = sender.clone();
+            bottom_panel.connect_switch_page(move |_, _, _| {
+                sender.input(AppMsg::BottomTabSwitched);
+            });
+        }
         // Development aid: save pictures of every window (see `ui_gallery`).
         #[cfg(debug_assertions)]
         if let Some(dir) = std::env::var_os(crate::ui_gallery::ENV_VAR) {
             let sender = sender.clone();
-            let demo_sender = sender.clone();
+            let (demo_sender, focus_sender) = (sender.clone(), sender.clone());
             crate::ui_gallery::run(
                 &root,
                 dir.into(),
                 move || sender.input(AppMsg::ShowLogin),
                 move || demo_sender.input(AppMsg::GalleryDemo),
+                move || focus_sender.input(AppMsg::GalleryFocusFirst),
             );
         }
         if show_login {
@@ -473,7 +486,10 @@ impl SimpleComponent for App {
                     connection.dir = dir;
                 }
             }
-            AppMsg::SessionSwitched => {}
+            AppMsg::SessionSwitched => self.transfers_follow_session(),
+            AppMsg::BottomTabSwitched => self.session_follows_transfers(),
+            #[cfg(debug_assertions)]
+            AppMsg::GalleryFocusFirst => self.session_notebook.set_current_page(Some(0)),
             #[cfg(debug_assertions)]
             AppMsg::GalleryDemo => {
                 if let Some(first) = self.sessions.first_mut() {
@@ -680,7 +696,7 @@ impl App {
             self.bottom_panel.append_page(page, Some(tab));
         }
         // Fill in the tab's title before GTK first measures it.
-        session.refresh(&self.host, !self.sessions.is_empty(), true);
+        session.refresh(&self.host, true);
         let index = self.sessions.len();
         // `index` counts sessions, so it fits; "New Tab" stays after them.
         let position = u32::try_from(index).unwrap_or(u32::MAX);
@@ -757,17 +773,63 @@ impl App {
 
     /// Bring every session's tabs up to date, and File > Disconnect to the current one.
     fn refresh_sessions(&self) {
-        let grouped = self.sessions.len() > 1;
+        let several = self.sessions.len() > 1;
         for session in &self.sessions {
             // Every tab can be closed while several are open; the only one, once it is
             // connected (closing it exits the app).
-            let closable = grouped || session.connection.is_some();
-            session.refresh(&self.host, grouped, closable);
+            let closable = several || session.connection.is_some();
+            session.refresh(&self.host, closable);
         }
+        // Each tab strip's base line takes the colour of the session it shows, so the
+        // selected tab runs into its page (see style.css).
+        set_colour(&self.session_notebook, self.current());
+        set_colour(
+            &self.bottom_panel,
+            self.bottom_session()
+                .map(|(index, _)| &self.sessions[index]),
+        );
         self.disconnect_action.set_enabled(
             self.current()
                 .is_some_and(|session| session.connection.is_some()),
         );
+    }
+
+    /// The session whose transfer list the bottom panel shows, and which list (0 Queue,
+    /// 1 Completed, 2 Failed); `None` while it shows the log.
+    fn bottom_session(&self) -> Option<(usize, usize)> {
+        let page = self
+            .bottom_panel
+            .nth_page(self.bottom_panel.current_page())?;
+        self.sessions
+            .iter()
+            .enumerate()
+            .find_map(|(index, session)| session.transfer_list_of(&page).map(|list| (index, list)))
+    }
+
+    /// The current session changed: show the same transfer list (Queue, Completed or
+    /// Failed) of the new session. The log stays if it is showing.
+    fn transfers_follow_session(&self) {
+        let (Some(current), Some((shown, list))) = (self.current_index(), self.bottom_session())
+        else {
+            return;
+        };
+        if shown != current
+            && let Some(page) = self
+                .bottom_panel
+                .page_num(&self.sessions[current].transfer_pages[list])
+        {
+            self.bottom_panel.set_current_page(Some(page));
+        }
+    }
+
+    /// Another session's transfer list was chosen: bring that session forward.
+    fn session_follows_transfers(&self) {
+        if let Some((shown, _)) = self.bottom_session()
+            && self.current_index() != Some(shown)
+        {
+            self.session_notebook
+                .set_current_page(u32::try_from(shown).ok());
+        }
     }
 
     /// Bring a session's Queue tab forward in the bottom panel.
@@ -1077,6 +1139,16 @@ fn track_window_size(window: &gtk::ApplicationWindow, sender: &ComponentSender<A
     let on_height = report.clone();
     window.connect_default_height_notify(move |window| on_height(window));
     window.connect_maximized_notify(move |window| report(window));
+}
+
+/// Mark a notebook with the colour of the session it shows (none: no colour).
+fn set_colour(notebook: &gtk::Notebook, session: Option<&Session>) {
+    for colour in 0..session::COLOURS {
+        notebook.remove_css_class(&format!("shows-{}", session::colour_class(colour)));
+    }
+    if let Some(session) = session {
+        notebook.add_css_class(&format!("shows-{}", session.colour_class()));
+    }
 }
 
 /// The tabbed panel along the bottom of the window: the log first; each session adds
