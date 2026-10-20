@@ -13,6 +13,7 @@ mod login_dialog;
 mod name_dialog;
 mod passphrase_dialog;
 mod resize_grips;
+mod session;
 mod theme;
 mod theme_list;
 mod transfer_panel;

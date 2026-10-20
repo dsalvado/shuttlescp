@@ -38,7 +38,13 @@ type Step = (&'static str, Box<dyn Fn(&gtk::Window)>);
 /// * `main` - The main window
 /// * `dir` - Folder the pictures go into
 /// * `open_login` - Opens the Login dialog
-pub fn run(main: &gtk::ApplicationWindow, dir: PathBuf, open_login: impl Fn() + 'static) {
+/// * `open_sessions` - Opens a second session tab, with the first one busy
+pub fn run(
+    main: &gtk::ApplicationWindow,
+    dir: PathBuf,
+    open_login: impl Fn() + 'static,
+    open_sessions: impl Fn() + 'static,
+) {
     if let Err(error) = std::fs::create_dir_all(&dir) {
         tracing::error!("UI gallery: cannot create {}: {error}", dir.display());
         return;
@@ -46,6 +52,7 @@ pub fn run(main: &gtk::ApplicationWindow, dir: PathBuf, open_login: impl Fn() + 
     let ago = |hours: u64| SystemTime::now() - Duration::from_secs(hours * 3600);
     let steps: Vec<Step> = vec![
         ("main-window", Box::new(|_| {})),
+        ("sessions", Box::new(move |_| open_sessions())),
         ("login", Box::new(move |_| open_login())),
         (
             "about",
@@ -130,8 +137,8 @@ pub fn run(main: &gtk::ApplicationWindow, dir: PathBuf, open_login: impl Fn() + 
         // next one.
         if index > 0 {
             let (name, _) = &steps[index - 1];
-            let window = if index == 1 {
-                // The first step pictures the main window itself.
+            let window = if name.starts_with("main") || *name == "sessions" {
+                // These steps picture the main window itself.
                 main.clone()
             } else {
                 newest_dialog(&main).unwrap_or_else(|| main.clone())

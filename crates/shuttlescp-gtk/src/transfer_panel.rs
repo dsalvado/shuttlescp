@@ -11,7 +11,7 @@
 //! Progress updates go straight to the widgets of visible rows.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -76,6 +76,68 @@ impl ListKind {
             Self::Queue => 0,
             Self::Completed => 1,
             Self::Failed => 2,
+        }
+    }
+}
+
+/// The unfinished-transfers file, shared by the transfer panels of every session so
+/// they never overwrite each other's records.
+///
+/// A record is *claimed* while a job using it is in some panel's lists, so another
+/// session connected to the same site does not offer to resume it as well.
+pub struct PendingStore {
+    path: PathBuf,
+    transfers: RefCell<PendingTransfers>,
+    claimed: RefCell<HashSet<String>>,
+}
+
+impl PendingStore {
+    /// Read the file at `path` (see [`PendingTransfers::load`]).
+    pub fn load(path: PathBuf) -> Rc<Self> {
+        Rc::new(Self {
+            transfers: RefCell::new(PendingTransfers::load(&path)),
+            path,
+            claimed: RefCell::default(),
+        })
+    }
+
+    /// Record a job, claimed by the panel showing it.
+    fn add(&self, pending: PendingJob) {
+        self.claimed.borrow_mut().insert(pending.key.clone());
+        self.transfers.borrow_mut().add(pending);
+    }
+
+    /// Forget a job's record.
+    fn remove(&self, key: &str) {
+        self.claimed.borrow_mut().remove(key);
+        self.transfers.borrow_mut().remove(key);
+    }
+
+    /// Let other sessions offer a record again (its panel is gone).
+    fn release(&self, key: &str) {
+        self.claimed.borrow_mut().remove(key);
+    }
+
+    /// Whether some panel shows a job using this record.
+    fn is_claimed(&self, key: &str) -> bool {
+        self.claimed.borrow().contains(key)
+    }
+
+    /// A site's records that no panel shows: its interrupted jobs.
+    fn unclaimed_for_site(&self, site_id: &str) -> Vec<PendingJob> {
+        let claimed = self.claimed.borrow();
+        self.transfers
+            .borrow()
+            .for_site(site_id)
+            .filter(|pending| !claimed.contains(&pending.key))
+            .cloned()
+            .collect()
+    }
+
+    /// Write the file, logging (not failing) on error.
+    fn save(&self) {
+        if let Err(error) = self.transfers.borrow().save(&self.path) {
+            tracing::warn!("cannot record unfinished transfers: {error}");
         }
     }
 }
@@ -235,8 +297,7 @@ pub struct TransferPanel {
     rows: [gio::ListStore; 3],
     next_id: u64,
     connection: Option<PanelConnection>,
-    pending: PendingTransfers,
-    pending_path: PathBuf,
+    pending: Rc<PendingStore>,
     /// Jobs of this site interrupted in an earlier session, offered for resuming.
     interrupted: Vec<PendingJob>,
     /// "Queue empty" and the like, shown over each list while it is empty.
@@ -256,8 +317,8 @@ pub struct TransferPanel {
 
 #[relm4::component(pub)]
 impl Component for TransferPanel {
-    /// Where unfinished transfers are recorded.
-    type Init = PathBuf;
+    /// Where unfinished transfers are recorded (shared by all sessions).
+    type Init = Rc<PendingStore>;
     type Input = TransferPanelMsg;
     type Output = TransferPanelOutput;
     type CommandOutput = (u64, TransferEvent);
@@ -304,7 +365,7 @@ impl Component for TransferPanel {
     }
 
     fn init(
-        pending_path: PathBuf,
+        pending: Rc<PendingStore>,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
@@ -354,8 +415,7 @@ impl Component for TransferPanel {
             rows,
             next_id: 0,
             connection: None,
-            pending: PendingTransfers::load(&pending_path),
-            pending_path,
+            pending,
             interrupted: Vec::new(),
             placeholders,
             completed_page,
@@ -412,6 +472,10 @@ impl Component for TransferPanel {
             TransferPanelMsg::Connection(connection) => self.set_connection(connection),
             TransferPanelMsg::ResumeInterrupted => {
                 for pending in std::mem::take(&mut self.interrupted) {
+                    // Another session may have resumed it meanwhile.
+                    if self.pending.is_claimed(&pending.key) {
+                        continue;
+                    }
                     tracing::info!("resuming interrupted transfer: {}", pending.job.title());
                     let mut job = pending.job;
                     job.resume = true;
@@ -465,6 +529,18 @@ impl Component for TransferPanel {
                 self.job_finished(id, summary, &sender);
                 self.update_chrome(&sender);
                 let _ = sender.output(TransferPanelOutput::JobFinished);
+            }
+        }
+    }
+}
+
+impl Drop for TransferPanel {
+    /// The session closed: its unfinished jobs can be offered again by others (or the
+    /// next time the site is connected).
+    fn drop(&mut self) {
+        for job in self.shared.borrow().jobs.values() {
+            if let Some(key) = &job.pending_key {
+                self.pending.release(key);
             }
         }
     }
@@ -650,19 +726,7 @@ impl TransferPanel {
         }
         self.interrupted.clear();
         if let Some(connection) = &connection {
-            let in_list: Vec<String> = self
-                .shared
-                .borrow()
-                .jobs
-                .values()
-                .filter_map(|job| job.pending_key.clone())
-                .collect();
-            self.interrupted = self
-                .pending
-                .for_site(&connection.site_id)
-                .filter(|pending| !in_list.contains(&pending.key))
-                .cloned()
-                .collect();
+            self.interrupted = self.pending.unclaimed_for_site(&connection.site_id);
         }
         let count = self.interrupted.len();
         if count > 0 {
@@ -934,9 +998,7 @@ impl TransferPanel {
 
     /// Write the unfinished-transfers file, logging (not failing) on error.
     fn save_pending(&self) {
-        if let Err(error) = self.pending.save(&self.pending_path) {
-            tracing::warn!("cannot record unfinished transfers: {error}");
-        }
+        self.pending.save();
     }
 }
 
@@ -1570,4 +1632,55 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
     add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
     add("retry", |job, _| TransferPanelMsg::Retry(job));
     page.insert_action_group(ACTION_GROUP, Some(&group));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(key: &str) -> PendingJob {
+        PendingJob {
+            key: key.to_owned(),
+            site_id: String::from("site"),
+            job: Job {
+                kind: JobKind::Copy,
+                side: Side::Local,
+                sources: vec![PathBuf::from("/data/a")],
+                dest_dir: PathBuf::from("/srv"),
+                same_side: false,
+                resume: false,
+            },
+        }
+    }
+
+    #[test]
+    fn claimed_records_are_not_offered_to_other_sessions() {
+        // Arrange: one record from an earlier run, one started by a session now.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("pending.json");
+        let mut earlier = PendingTransfers::default();
+        earlier.add(pending("old"));
+        earlier.save(&path).expect("save");
+        let store = PendingStore::load(path.clone());
+        store.add(pending("running"));
+
+        // Act + Assert: only the earlier one is offered for resuming.
+        let offered: Vec<String> = store
+            .unclaimed_for_site("site")
+            .into_iter()
+            .map(|pending| pending.key)
+            .collect();
+        assert_eq!(offered, ["old"]);
+
+        // Its session closes: the running one can be offered again.
+        store.release("running");
+        assert_eq!(store.unclaimed_for_site("site").len(), 2);
+
+        // Both records reach the file, which every session shares.
+        store.save();
+        assert_eq!(PendingTransfers::load(&path).for_site("site").count(), 2);
+        store.remove("old");
+        store.save();
+        assert_eq!(PendingTransfers::load(&path).for_site("site").count(), 1);
+    }
 }

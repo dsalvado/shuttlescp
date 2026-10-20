@@ -1,5 +1,7 @@
-//! Main window: menu bar on top, then one tab per session, each holding a local explorer
-//! on the left and a remote explorer on the right.
+//! Main window: menu bar on top, then one tab per session (see [`crate::session`]),
+//! each holding a local explorer on the left and a remote explorer on the right, and
+//! the bottom panel with the log and each session's transfer lists. The last tab,
+//! "New Tab", opens the Login dialog for another connection.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -11,7 +13,6 @@ use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
 use shuttlescp_core::config::{Config, ThemeChoice, WindowSize};
-use shuttlescp_core::format::shorten_middle;
 use shuttlescp_core::local_fs;
 use shuttlescp_core::logging::{LogLevel, Logger};
 use shuttlescp_core::pending::PendingTransfers;
@@ -21,15 +22,14 @@ use shuttlescp_core::transfer::{Job, JobKind, Side};
 
 use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
-use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput};
+use crate::file_pane::FilePaneMsg;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
 use crate::resize_grips;
+use crate::session::{self, Session, SessionId, SessionInit};
 use crate::theme;
 use crate::theme_list::ThemeList;
-use crate::transfer_panel::{
-    PanelConnection, TransferPanel, TransferPanelMsg, TransferPanelOutput,
-};
+use crate::transfer_panel::{PendingStore, TransferPanelMsg};
 
 /// Window size the first time the app opens; after that, the size it was closed at.
 const FIRST_WINDOW_SIZE: WindowSize = WindowSize {
@@ -51,24 +51,14 @@ const WINDOW_CLOSED: &str = "window closed";
 const QUIT_COMMAND: &str = "File > Quit";
 /// Exit reason when the last session tab is closed with its X button.
 const SESSION_TAB_CLOSED: &str = "session tab closed";
-/// Longest session tab title, in characters; longer titles are cut in the middle.
-const TAB_TITLE_MAX_CHARS: usize = 32;
-/// Icon of a session tab.
-const SESSION_TAB_ICON: &str = "computer-symbolic";
-/// Icon of the "New Tab" tab, which will open a new connection.
+/// Icon of the "New Tab" tab, which opens the Login dialog for another connection.
 const NEW_TAB_ICON: &str = "tab-new-symbolic";
-/// Position of the "New Tab" tab, after the single session tab.
-const NEW_TAB_PAGE: u32 = 1;
 /// Initial height of the session area above the bottom panel, in pixels.
 const SESSION_AREA_HEIGHT: i32 = 470;
 /// Text shown in the remote half of the split (and the transfers tab) while not connected.
 pub const NOT_CONNECTED: &str = "Not connected";
-/// Position of the transfer Queue tab in the bottom panel (after the log).
-const TRANSFERS_PAGE: u32 = 1;
 /// Pause between the main window's first frame and opening the Login dialog.
 const LOGIN_AFTER_FIRST_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
-/// How long the Completed tab stays highlighted after a transfer lands in it.
-const TAB_HIGHLIGHT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 // These macros declare marker types that name GIO actions in a type-safe way.
 // "win" is the action group GTK attaches to the window, so actions are "win.quit" etc.
@@ -101,8 +91,10 @@ pub enum AppMsg {
     ThemeSelected(ThemeChoice),
     /// The user picked a log level from the Tools menu.
     LogLevelSelected(LogLevel),
-    /// The local pane moved to `dir`, on the disk mounted at `disk_root` (if known).
+    /// A session's local pane moved to `dir`, on the disk mounted at `disk_root` (if
+    /// known).
     LocalDirChanged {
+        session: SessionId,
         /// Directory now shown.
         dir: PathBuf,
         /// Mount point of the disk holding `dir`.
@@ -117,25 +109,28 @@ pub enum AppMsg {
     ShowLogin,
     /// The user changed whether the Login dialog opens at startup.
     ShowLoginAtStartup(bool),
-    /// The Login dialog connected to a server.
+    /// The Login dialog connected to a server: shown in the current session if it is
+    /// not connected yet, otherwise in a new session tab.
     Connected {
         /// The site connected to.
         site: Site,
         /// The open SFTP session.
         remote: Remote,
     },
-    /// The remote pane moved to another folder.
-    RemoteDirChanged(PathBuf),
-    /// Close the connection (File > Disconnect).
+    /// A session's remote pane moved to another folder.
+    RemoteDirChanged { session: SessionId, dir: PathBuf },
+    /// Another session tab was brought forward.
+    SessionSwitched,
+    /// Close the current session's connection (File > Disconnect).
     Disconnect,
-    /// The session tab's X was clicked: disconnect and close the session. It is the
-    /// last (only) session tab, so the app exits. Asks first while transfers are
-    /// running.
-    CloseSession,
-    /// Close the session without asking.
-    CloseSessionNow,
+    /// A session tab's X was clicked: disconnect and close that session (the app exits
+    /// with the last one). Asks first while its transfers are running.
+    CloseSession(SessionId),
+    /// Close a session without asking.
+    CloseSessionNow(SessionId),
     /// A file pane asked to copy, move or delete its selected items.
     PaneRequest {
+        session: SessionId,
         /// The pane's side.
         side: Side,
         /// What to do.
@@ -145,6 +140,7 @@ pub enum AppMsg {
     },
     /// Items were dropped on a file pane and the user chose to copy or move them.
     PaneDrop {
+        session: SessionId,
         /// The side of the pane they were dropped on.
         side: Side,
         /// Copy or move.
@@ -157,12 +153,17 @@ pub enum AppMsg {
         /// The folder they go into, on `side`.
         dest_dir: PathBuf,
     },
-    /// Run a job (a delete, once confirmed).
-    StartJob(Job),
-    /// A transfer finished: show the panes' new contents.
-    TransferFinished,
-    /// The number of transfers running, completed or failed changed.
+    /// Run a job in a session (a delete, once confirmed).
+    StartJob { session: SessionId, job: Job },
+    /// A session's transfer finished: show its panes' new contents.
+    TransferFinished(SessionId),
+    /// Development aid for the UI gallery: open a second session and show the first
+    /// as busy, to picture the session colours.
+    #[cfg(debug_assertions)]
+    GalleryDemo,
+    /// The number of a session's transfers running, completed or failed changed.
     TransferCounts {
+        session: SessionId,
         /// Jobs running.
         running: usize,
         /// Jobs in the Completed list.
@@ -180,26 +181,17 @@ pub enum AppMsg {
     },
 }
 
-/// The open connection shown in the right half of the session.
-struct Connection {
-    /// "user@host" of the site, for the status bar.
-    name: String,
-    /// Server host name, for the tab title.
-    host: String,
-    /// Folder shown in the remote pane.
-    dir: PathBuf,
-    /// The remote file pane; dropping it (and stopping the transfers, which hold the
-    /// session too) closes the session.
-    pane: Controller<FilePane>,
-}
-
 /// Root component of the application.
 pub struct App {
-    /// `Controller` owns a running child component and gives access to its root widget.
-    local_pane: Controller<FilePane>,
-    /// Directory shown in the local pane, for the tab title.
-    local_dir: PathBuf,
-    /// Name of the machine the session tab shows (this computer until remote sessions exist).
+    /// The session tabs, in tab order (the "New Tab" tab comes after them).
+    sessions: Vec<Session>,
+    /// Id the next session gets.
+    next_session: SessionId,
+    /// The session tabs.
+    session_notebook: gtk::Notebook,
+    /// Unfinished transfers, shared by every session's transfer lists.
+    pending: Rc<PendingStore>,
+    /// Name of this computer, for the titles of sessions that are not connected.
     host: String,
     config: Config,
     config_path: PathBuf,
@@ -208,25 +200,15 @@ pub struct App {
     theme_list: ThemeList,
     /// Why the app is closing, written to the log's session-end banner.
     exit_reason: &'static str,
-    /// The Login dialog (hidden until opened from File > Login).
+    /// The Login dialog (hidden until opened from File > Login or "New Tab").
     login: Controller<LoginDialog>,
-    /// The current server connection, if any.
-    connection: Option<Connection>,
-    /// Left/right split of the session tab; the right half shows the remote pane.
-    split: Option<gtk::Paned>,
-    /// Shown in the right half while not connected.
-    placeholder: gtk::Label,
-    /// File > Disconnect, enabled only while connected.
+    /// File > Disconnect, enabled while the current session is connected.
     disconnect_action: RelmAction<DisconnectAction>,
-    /// The connection's transfers tab in the bottom panel.
-    transfer_tab: TransferTabs,
-    /// The transfers list shown in that tab.
-    transfers: Controller<TransferPanel>,
-    /// The bottom panel, to bring the transfers tab forward when a job starts.
+    /// The bottom panel: the log, then each session's transfer lists.
     bottom_panel: gtk::Notebook,
     /// The main window, for dialogs.
     window: gtk::ApplicationWindow,
-    /// Transfers still running; shared with the window's close handler.
+    /// Transfers running in all sessions; shared with the window's close handler.
     running_transfers: Rc<Cell<usize>>,
     /// Set once quitting is decided, so closing the window no longer asks.
     quitting: Rc<Cell<bool>>,
@@ -281,33 +263,12 @@ impl SimpleComponent for App {
                         set_end_child: Some(&bottom_panel),
 
                     #[wrap(Some)]
-                    #[name = "sessions"]
-                    set_start_child = &gtk::Notebook {
+                    #[local_ref]
+                    set_start_child = session_notebook -> gtk::Notebook {
                         set_vexpand: true,
                         set_scrollable: true,
                         // Square tabs, like the bottom panel's (see style.css).
                         add_css_class: "session-tabs",
-
-                        // `append_page[label] = page` calls `append_page(page, label)`.
-                        append_page[Some(&session_tab)] = &gtk::Paned {
-                            set_orientation: gtk::Orientation::Horizontal,
-                            set_position: window_size.width / 2,
-                            set_wide_handle: true,
-                            set_shrink_start_child: false,
-                            set_shrink_end_child: false,
-                            // Gives the divider a visible, hoverable handle (see style.css).
-                            add_css_class: "pane-split",
-
-                            // `#[wrap(Some)]` passes the widget as `Some(widget)`, since the
-                            // setter takes an `Option` (GTK allows clearing a child with `None`).
-                            #[wrap(Some)]
-                            set_start_child = model.local_pane.widget(),
-
-                            set_end_child: Some(&placeholder),
-                        },
-
-                        // Placeholder page; its tab is disabled until new connections exist.
-                        append_page[Some(&new_tab)] = &gtk::Box {},
                     },
                     },
 
@@ -344,43 +305,6 @@ impl SimpleComponent for App {
             },
         },
 
-        // Tab label of the session: "<host> - <folder>", shortened, full text on hover.
-        session_tab = gtk::Box {
-            set_spacing: 6,
-            #[watch]
-            set_tooltip_text: Some(&model.tab_title()),
-
-            gtk::Image {
-                set_icon_name: Some(SESSION_TAB_ICON),
-            },
-            gtk::Label {
-                #[watch]
-                set_label: &shorten_middle(&model.tab_title(), TAB_TITLE_MAX_CHARS),
-            },
-            // Close button, shown while connected: disconnects and closes the session.
-            gtk::Button {
-                set_icon_name: "window-close-symbolic",
-                set_has_frame: false,
-                add_css_class: "tab-close",
-                set_tooltip_text: Some("Disconnect and close this session"),
-                #[watch]
-                set_visible: model.connection.is_some(),
-                connect_clicked => AppMsg::CloseSession,
-            },
-        },
-
-        // Tab label of the "New Tab" placeholder, greyed out while disabled.
-        new_tab = gtk::Box {
-            set_spacing: 6,
-            set_sensitive: false,
-
-            gtk::Image {
-                set_icon_name: Some(NEW_TAB_ICON),
-            },
-            gtk::Label {
-                set_label: "New Tab",
-            },
-        },
     }
 
     fn init(
@@ -408,22 +332,6 @@ impl SimpleComponent for App {
         theme::ensure_cursor_theme();
 
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
-        let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
-        placeholder.add_css_class("dim-label");
-        let transfers = TransferPanel::builder()
-            .launch(PendingTransfers::default_path())
-            .forward(sender.input_sender(), |output| match output {
-                TransferPanelOutput::JobFinished => AppMsg::TransferFinished,
-                TransferPanelOutput::Counts {
-                    running,
-                    completed,
-                    failed,
-                } => AppMsg::TransferCounts {
-                    running,
-                    completed,
-                    failed,
-                },
-            });
         let running_transfers = Rc::new(Cell::new(0));
         let quitting = Rc::new(Cell::new(false));
         {
@@ -442,15 +350,7 @@ impl SimpleComponent for App {
                 }
             });
         }
-        let (completed_page, failed_page) = transfers.model().history_pages();
-        let (bottom_panel, transfer_tab) = bottom_panel(
-            logger.file_path().map(Path::to_path_buf),
-            [
-                transfers.widget().upcast_ref(),
-                &completed_page,
-                &failed_page,
-            ],
-        );
+        let bottom_panel = bottom_panel(logger.file_path().map(Path::to_path_buf));
         let menu_model = build_menu();
         let theme_list = ThemeList::new(themes, config.theme());
         quit_on_signals(&sender);
@@ -468,37 +368,12 @@ impl SimpleComponent for App {
             .unwrap_or(FIRST_WINDOW_SIZE)
             .at_least_min();
         let window_maximized = config.window_maximized();
+        let session_notebook = gtk::Notebook::new();
         let mut model = Self {
-            // `.forward()` converts each pane output into a message for this component.
-            local_pane: FilePane::builder()
-                .launch(FilePaneInit {
-                    start_dir: start_dir.clone(),
-                    last_dir_on_disk: config.last_dir_on_disk().clone(),
-                    remote: None,
-                })
-                .forward(sender.input_sender(), |output| match output {
-                    FilePaneOutput::DirectoryChanged { dir, disk_root } => {
-                        AppMsg::LocalDirChanged { dir, disk_root }
-                    }
-                    FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
-                        side: Side::Local,
-                        kind,
-                        paths,
-                    },
-                    FilePaneOutput::Dropped {
-                        kind,
-                        paths,
-                        from_this_pane,
-                        dest_dir,
-                    } => AppMsg::PaneDrop {
-                        side: Side::Local,
-                        kind,
-                        paths,
-                        from_this_pane,
-                        dest_dir,
-                    },
-                }),
-            local_dir: start_dir,
+            sessions: Vec::new(),
+            next_session: 0,
+            session_notebook: session_notebook.clone(),
+            pending: PendingStore::load(PendingTransfers::default_path()),
             host: glib::host_name().into(),
             config,
             config_path,
@@ -516,20 +391,22 @@ impl SimpleComponent for App {
                     LoginOutput::ShowAtStartupChanged(show) => AppMsg::ShowLoginAtStartup(show),
                     LoginOutput::Connected { site, remote } => AppMsg::Connected { site, remote },
                 }),
-            connection: None,
-            split: None,
-            placeholder: placeholder.clone(),
             disconnect_action,
-            transfer_tab,
-            transfers,
             bottom_panel: bottom_panel.clone(),
             window: root.clone(),
             running_transfers,
             quitting,
         };
+        // The "New Tab" tab, always last: clicking it opens the Login dialog.
+        let new_tab = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        new_tab.append(&gtk::Image::from_icon_name(NEW_TAB_ICON));
+        new_tab.append(&gtk::Label::new(Some("New Tab")));
+        new_tab.set_tooltip_text(Some("Connect to another server in a new tab"));
+        session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
+        model.add_session(start_dir, window_size.width / 2, &sender);
+        // `#[local_ref]` in the view takes a reference.
+        let session_notebook = &session_notebook;
         let widgets = view_output!();
-        // The session's left/right split is the notebook's first page.
-        model.split = widgets.sessions.nth_page(Some(0)).and_downcast();
         widgets
             .menu_bar
             .add_child(model.theme_list.widget(), THEME_LIST_ID);
@@ -541,21 +418,31 @@ impl SimpleComponent for App {
             let _ = WidgetExt::activate_action(&about_window, "win.about", None);
         });
         widgets.build_label.add_controller(about_click);
-        // Keep the "New Tab" tab from being opened (by click or keyboard) for now. Our
-        // handler runs before GTK's default one, which performs the switch, so stopping
-        // the emission here cancels it.
-        widgets
-            .sessions
-            .connect_switch_page(|notebook, _page, page_num| {
-                if page_num == NEW_TAB_PAGE {
+        // Choosing the "New Tab" tab (by click or keyboard) opens the Login dialog
+        // instead of showing its empty page. Our handler runs before GTK's default one,
+        // which performs the switch, so stopping the emission here cancels it.
+        {
+            let sender = sender.clone();
+            session_notebook.connect_switch_page(move |notebook, _page, page_num| {
+                if page_num + 1 == notebook.n_pages() {
                     notebook.stop_signal_emission_by_name("switch-page");
+                    sender.input(AppMsg::ShowLogin);
+                } else {
+                    sender.input(AppMsg::SessionSwitched);
                 }
             });
+        }
         // Development aid: save pictures of every window (see `ui_gallery`).
         #[cfg(debug_assertions)]
         if let Some(dir) = std::env::var_os(crate::ui_gallery::ENV_VAR) {
             let sender = sender.clone();
-            crate::ui_gallery::run(&root, dir.into(), move || sender.input(AppMsg::ShowLogin));
+            let demo_sender = sender.clone();
+            crate::ui_gallery::run(
+                &root,
+                dir.into(),
+                move || sender.input(AppMsg::ShowLogin),
+                move || demo_sender.input(AppMsg::GalleryDemo),
+            );
         }
         if show_login {
             open_login_after_first_frame(&root, sender);
@@ -576,29 +463,46 @@ impl SimpleComponent for App {
                 self.save_config();
             }
             AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
-            AppMsg::Connected { site, remote } => self.show_remote(site, remote, &sender),
-            AppMsg::RemoteDirChanged(dir) => {
-                if let Some(connection) = &mut self.connection {
+            AppMsg::Connected { site, remote } => self.connect(&site, remote, &sender),
+            AppMsg::RemoteDirChanged { session, dir } => {
+                if let Some(connection) = self
+                    .session_mut(session)
+                    .and_then(|session| session.connection.as_mut())
+                {
                     tracing::debug!("remote pane now shows {}", dir.display());
                     connection.dir = dir;
                 }
             }
-            AppMsg::Disconnect => self.disconnect(),
-            AppMsg::CloseSession if self.running_transfers.get() > 0 => {
-                self.confirm_stopping_transfers(
-                    "Close Session",
-                    "Close the session?",
-                    "Close Session",
-                    &sender,
-                    || AppMsg::CloseSessionNow,
-                );
+            AppMsg::SessionSwitched => {}
+            #[cfg(debug_assertions)]
+            AppMsg::GalleryDemo => {
+                if let Some(first) = self.sessions.first_mut() {
+                    first.show_counts(2, 1, 0);
+                }
+                let start = self.sessions[0].local_dir.clone();
+                self.add_session(start, self.session_notebook.width() / 2, &sender);
             }
-            AppMsg::CloseSession | AppMsg::CloseSessionNow => {
-                self.disconnect();
-                // There is only one session tab today, so closing it leaves none: exit,
-                // as WinSCP does when its last session closes.
-                self.quit(SESSION_TAB_CLOSED);
+            AppMsg::Disconnect => {
+                if let Some(index) = self.current_index() {
+                    self.sessions[index].disconnect();
+                }
             }
+            AppMsg::CloseSession(id) => {
+                let running = self.session(id).map_or(0, |session| session.running);
+                if running > 0 {
+                    self.confirm_stopping_transfers(
+                        running,
+                        "Close Session",
+                        "Close the session?",
+                        "Close Session",
+                        &sender,
+                        move || AppMsg::CloseSessionNow(id),
+                    );
+                } else {
+                    self.close_session(id);
+                }
+            }
+            AppMsg::CloseSessionNow(id) => self.close_session(id),
             AppMsg::ShowLoginAtStartup(show) => {
                 tracing::info!("show Login dialog at startup: {show}");
                 self.config.set_show_login_at_startup(show);
@@ -609,6 +513,7 @@ impl SimpleComponent for App {
                     && !QUIT_SIGNALS.iter().any(|&(_, signal)| signal == reason) =>
             {
                 self.confirm_stopping_transfers(
+                    self.running_transfers.get(),
                     "Quit",
                     "Quit ShuttleSCP?",
                     "Quit",
@@ -622,10 +527,16 @@ impl SimpleComponent for App {
                 self.config.set_log_level(self.logger.level());
                 self.save_config();
             }
-            AppMsg::PaneRequest { side, kind, paths } => {
-                self.request_job(side, kind, paths, &sender);
+            AppMsg::PaneRequest {
+                session,
+                side,
+                kind,
+                paths,
+            } => {
+                self.request_job(session, side, kind, paths, &sender);
             }
             AppMsg::PaneDrop {
+                session,
                 side,
                 kind,
                 paths,
@@ -634,28 +545,37 @@ impl SimpleComponent for App {
             } => {
                 // Items dragged from the other pane come from the other side.
                 let source_side = if from_this_pane { side } else { side.other() };
-                self.start_job(Job {
-                    kind,
-                    side: source_side,
-                    sources: paths,
-                    dest_dir,
-                    same_side: from_this_pane,
-                    resume: false,
-                });
+                self.start_job(
+                    session,
+                    Job {
+                        kind,
+                        side: source_side,
+                        sources: paths,
+                        dest_dir,
+                        same_side: from_this_pane,
+                        resume: false,
+                    },
+                );
             }
-            AppMsg::StartJob(job) => self.start_job(job),
+            AppMsg::StartJob { session, job } => self.start_job(session, job),
             AppMsg::TransferCounts {
+                session,
                 running,
                 completed,
                 failed,
             } => {
-                self.running_transfers.set(running);
-                self.transfer_tab.show_counts(running, completed, failed);
+                if let Some(session) = self.session_mut(session) {
+                    session.show_counts(running, completed, failed);
+                }
+                let total = self.sessions.iter().map(|session| session.running).sum();
+                self.running_transfers.set(total);
             }
-            AppMsg::TransferFinished => {
-                self.local_pane.emit(FilePaneMsg::Refresh);
-                if let Some(connection) = &self.connection {
-                    connection.pane.emit(FilePaneMsg::Refresh);
+            AppMsg::TransferFinished(session) => {
+                if let Some(session) = self.session(session) {
+                    session.local_pane.emit(FilePaneMsg::Refresh);
+                    if let Some(connection) = &session.connection {
+                        connection.pane.emit(FilePaneMsg::Refresh);
+                    }
                 }
             }
             AppMsg::WindowChanged { size, maximized } => {
@@ -665,16 +585,23 @@ impl SimpleComponent for App {
                 }
                 self.config.set_window_maximized(maximized);
             }
-            AppMsg::LocalDirChanged { dir, disk_root } => {
+            AppMsg::LocalDirChanged {
+                session,
+                dir,
+                disk_root,
+            } => {
                 tracing::debug!("local pane now shows {}", dir.display());
                 // Only kept in memory here; written to disk once, in `shutdown`.
                 if let Some(root) = disk_root {
                     self.config.set_last_dir_on_disk(root, dir.clone());
                 }
                 self.config.set_last_local_dir(dir.clone());
-                self.local_dir = dir;
+                if let Some(session) = self.session_mut(session) {
+                    session.local_dir = dir;
+                }
             }
         }
+        self.refresh_sessions();
     }
 
     /// Runs when the application quits (window closed, File > Quit or a quit signal).
@@ -693,100 +620,171 @@ impl SimpleComponent for App {
 }
 
 impl App {
-    /// Full session tab title: `<server> - <folder>`, for the remote server while
-    /// connected, otherwise for this computer and the local pane's folder.
-    fn tab_title(&self) -> String {
-        let (host, dir) = match &self.connection {
-            Some(connection) => (connection.host.as_str(), connection.dir.as_path()),
-            None => (self.host.as_str(), self.local_dir.as_path()),
-        };
-        // The root directory has no file name, so it is shown as its full path ("/").
-        let folder = dir
-            .file_name()
-            .map_or_else(|| dir.to_string_lossy(), |name| name.to_string_lossy());
-        format!("{host} - {folder}")
+    /// Position of the current session tab in `sessions`.
+    fn current_index(&self) -> Option<usize> {
+        let page = usize::try_from(self.session_notebook.current_page()?).ok()?;
+        (page < self.sessions.len()).then_some(page)
     }
 
-    /// Close the current connection, if any, and show "Not connected" again.
-    fn disconnect(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            tracing::info!("disconnected from {}", connection.name);
-            if let Some(split) = &self.split {
-                split.set_end_child(Some(&self.placeholder));
-            }
-            self.disconnect_action.set_enabled(false);
-            self.transfer_tab.show_connection(None);
-            // Transfers hold their own handle on the session; the panel stops them so
-            // the connection really closes. They can be resumed on the next connection.
-            self.transfers.emit(TransferPanelMsg::Connection(None));
-            self.local_pane.emit(FilePaneMsg::PeerAvailable(false));
-            // Dropping the pane drops its session, which closes the connection.
-            drop(connection);
-        }
+    /// The current session.
+    fn current(&self) -> Option<&Session> {
+        self.current_index().map(|index| &self.sessions[index])
     }
 
-    /// Connection text for the status bar.
-    fn connection_status(&self) -> String {
-        self.connection.as_ref().map_or_else(
-            || String::from(NOT_CONNECTED),
-            |c| format!("Connected to {}", c.name),
-        )
+    fn session(&self, id: SessionId) -> Option<&Session> {
+        self.sessions.iter().find(|session| session.id == id)
     }
 
-    /// Show a newly connected server in the right half of the session, replacing any
-    /// previous connection.
+    fn session_mut(&mut self, id: SessionId) -> Option<&mut Session> {
+        self.sessions.iter_mut().find(|session| session.id == id)
+    }
+
+    /// Open a new, unconnected session tab (before "New Tab") and bring it forward.
     ///
     /// # Arguments
     ///
-    /// * `site` - The site connected to
-    /// * `remote` - Its open SFTP session
-    /// * `sender` - Receives the remote pane's folder changes
-    fn show_remote(&mut self, site: Site, remote: Remote, sender: &ComponentSender<Self>) {
-        let start_dir = remote.home().to_path_buf();
-        let pane = FilePane::builder()
-            .launch(FilePaneInit {
-                start_dir: start_dir.clone(),
-                last_dir_on_disk: std::collections::BTreeMap::new(),
-                remote: Some(remote.clone()),
+    /// * `start_dir` - Folder its local pane starts in
+    /// * `split_position` - Initial position of its left/right divider, in pixels
+    /// * `sender` - Receives the session's messages
+    fn add_session(
+        &mut self,
+        start_dir: PathBuf,
+        split_position: i32,
+        sender: &ComponentSender<Self>,
+    ) -> usize {
+        let id = self.next_session;
+        self.next_session += 1;
+        // The first colour no open session uses.
+        let colour = (0..session::COLOURS)
+            .find(|colour| {
+                self.sessions
+                    .iter()
+                    .all(|session| session.colour != *colour)
             })
-            .forward(sender.input_sender(), |output| match output {
-                FilePaneOutput::DirectoryChanged { dir, .. } => AppMsg::RemoteDirChanged(dir),
-                FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
-                    side: Side::Remote,
-                    kind,
-                    paths,
-                },
-                FilePaneOutput::Dropped {
-                    kind,
-                    paths,
-                    from_this_pane,
-                    dest_dir,
-                } => AppMsg::PaneDrop {
-                    side: Side::Remote,
-                    kind,
-                    paths,
-                    from_this_pane,
-                    dest_dir,
-                },
-            });
-        if let Some(split) = &self.split {
-            split.set_end_child(Some(pane.widget()));
-        }
-        self.disconnect_action.set_enabled(true);
-        self.transfer_tab
-            .show_connection(Some(&site.display_name()));
-        self.transfers
-            .emit(TransferPanelMsg::Connection(Some(PanelConnection {
-                site_id: site.id.clone(),
-                remote: remote.clone(),
-            })));
-        self.local_pane.emit(FilePaneMsg::PeerAvailable(true));
-        self.connection = Some(Connection {
-            name: site.display_name(),
-            host: remote.host().to_owned(),
-            dir: start_dir,
-            pane,
+            .unwrap_or(0);
+        let session = Session::new(SessionInit {
+            id,
+            colour,
+            start_dir,
+            last_dir_on_disk: self.config.last_dir_on_disk().clone(),
+            pending: Rc::clone(&self.pending),
+            split_position,
+            sender,
         });
+        // A session's transfer lists follow the log and the earlier sessions' lists.
+        for (page, tab) in session
+            .transfer_pages
+            .iter()
+            .zip(session.transfer_tab_widgets())
+        {
+            self.bottom_panel.append_page(page, Some(tab));
+        }
+        // Fill in the tab's title before GTK first measures it.
+        session.refresh(&self.host, !self.sessions.is_empty(), true);
+        let index = self.sessions.len();
+        // `index` counts sessions, so it fits; "New Tab" stays after them.
+        let position = u32::try_from(index).unwrap_or(u32::MAX);
+        self.session_notebook.insert_page(
+            &session.page,
+            Some(session.tab_widget()),
+            Some(position),
+        );
+        tracing::info!("opened session {id}");
+        self.sessions.push(session);
+        self.session_notebook.set_current_page(Some(position));
+        self.show_transfers(index);
+        self.refresh_sessions();
+        index
+    }
+
+    /// Show a newly connected server: in the current session if it is not connected,
+    /// otherwise in a new session tab.
+    fn connect(&mut self, site: &Site, remote: Remote, sender: &ComponentSender<Self>) {
+        let index = match self.current_index() {
+            Some(index) if self.sessions[index].connection.is_none() => index,
+            current => {
+                // The new tab starts where the current one's local pane is.
+                let (start_dir, split) = current.map_or_else(
+                    || (PathBuf::from("/"), 600),
+                    |index| {
+                        let session = &self.sessions[index];
+                        (session.local_dir.clone(), self.session_notebook.width() / 2)
+                    },
+                );
+                self.add_session(start_dir, split, sender)
+            }
+        };
+        self.sessions[index].connect(site, remote, sender);
+        self.session_notebook
+            .set_current_page(u32::try_from(index).ok());
+    }
+
+    /// Close a session: disconnect it and remove its tabs. Closing the last one exits
+    /// the app, as WinSCP does.
+    fn close_session(&mut self, id: SessionId) {
+        let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
+            return;
+        };
+        if self.sessions.len() == 1 {
+            self.sessions[index].disconnect();
+            self.quit(SESSION_TAB_CLOSED);
+            return;
+        }
+        // Bring a neighbour forward first, so removing the page never lands on "New Tab".
+        let neighbour = if index + 1 < self.sessions.len() {
+            index + 1
+        } else {
+            index - 1
+        };
+        if self.current_index() == Some(index) {
+            self.session_notebook
+                .set_current_page(u32::try_from(neighbour).ok());
+        }
+        let mut session = self.sessions.remove(index);
+        session.disconnect();
+        if let Some(page) = self.session_notebook.page_num(&session.page) {
+            self.session_notebook.remove_page(Some(page));
+        }
+        for page in &session.transfer_pages {
+            if let Some(position) = self.bottom_panel.page_num(page) {
+                self.bottom_panel.remove_page(Some(position));
+            }
+        }
+        tracing::info!("closed session {id}");
+        let total = self.sessions.iter().map(|session| session.running).sum();
+        self.running_transfers.set(total);
+    }
+
+    /// Bring every session's tabs up to date, and File > Disconnect to the current one.
+    fn refresh_sessions(&self) {
+        let grouped = self.sessions.len() > 1;
+        for session in &self.sessions {
+            // Every tab can be closed while several are open; the only one, once it is
+            // connected (closing it exits the app).
+            let closable = grouped || session.connection.is_some();
+            session.refresh(&self.host, grouped, closable);
+        }
+        self.disconnect_action.set_enabled(
+            self.current()
+                .is_some_and(|session| session.connection.is_some()),
+        );
+    }
+
+    /// Bring a session's Queue tab forward in the bottom panel.
+    fn show_transfers(&self, index: usize) {
+        if let Some(page) = self
+            .sessions
+            .get(index)
+            .and_then(|session| self.bottom_panel.page_num(&session.transfer_pages[0]))
+        {
+            self.bottom_panel.set_current_page(Some(page));
+        }
+    }
+
+    /// Title of the current session, for the window's status bar.
+    fn connection_status(&self) -> String {
+        self.current()
+            .map_or_else(|| String::from(NOT_CONNECTED), Session::status)
     }
 
     /// Close the app.
@@ -801,6 +799,7 @@ impl App {
     ///
     /// # Arguments
     ///
+    /// * `running` - How many transfers would stop
     /// * `title` - Window title
     /// * `question` - What is about to happen, e.g. "Quit ShuttleSCP?"
     /// * `confirm_label` - Label of the button that goes ahead
@@ -808,13 +807,14 @@ impl App {
     /// * `on_yes` - Makes the message to send when the user goes ahead
     fn confirm_stopping_transfers(
         &self,
+        running: usize,
         title: &str,
         question: &str,
         confirm_label: &str,
         sender: &ComponentSender<Self>,
         on_yes: impl Fn() -> AppMsg + 'static,
     ) {
-        let detail = match self.running_transfers.get() {
+        let detail = match running {
             1 => String::from(
                 "A transfer is still running. It will stop, and can be resumed the next \
                  time you connect to this server.",
@@ -841,25 +841,30 @@ impl App {
         );
     }
 
-    /// Turn a pane's request into a job: copies go to the folder the other pane shows;
-    /// deletes are confirmed first.
+    /// Turn a pane's request into a job: copies go to the folder the session's other
+    /// pane shows; deletes are confirmed first.
     ///
     /// # Arguments
     ///
+    /// * `session` - The session of the pane
     /// * `side` - The pane the items are in
     /// * `kind` - Copy, move or delete
     /// * `paths` - The selected items
     /// * `sender` - Receives the confirmed delete
     fn request_job(
         &self,
+        session: SessionId,
         side: Side,
         kind: JobKind,
         paths: Vec<PathBuf>,
         sender: &ComponentSender<Self>,
     ) {
+        let Some(current) = self.session(session) else {
+            return;
+        };
         let dest_dir = match side.other() {
-            Side::Local => self.local_dir.clone(),
-            Side::Remote => match &self.connection {
+            Side::Local => current.local_dir.clone(),
+            Side::Remote => match &current.connection {
                 Some(connection) => connection.dir.clone(),
                 None => return,
             },
@@ -873,7 +878,7 @@ impl App {
             resume: false,
         };
         if kind != JobKind::Delete {
-            self.start_job(job);
+            self.start_job(session, job);
             return;
         }
         let question = format!("{}?", job.title());
@@ -888,17 +893,25 @@ impl App {
             },
             move |confirmed| {
                 if confirmed {
-                    sender.input(AppMsg::StartJob(job.clone()));
+                    sender.input(AppMsg::StartJob {
+                        session,
+                        job: job.clone(),
+                    });
                 }
             },
         );
     }
 
-    /// Run a job and bring the transfers tab forward to show it.
-    fn start_job(&self, job: Job) {
-        tracing::info!("starting: {}", job.title());
-        self.bottom_panel.set_current_page(Some(TRANSFERS_PAGE));
-        self.transfers.emit(TransferPanelMsg::Start(job));
+    /// Run a job in a session and bring its Queue forward to show it.
+    fn start_job(&self, session: SessionId, job: Job) {
+        let Some(index) = self.sessions.iter().position(|s| s.id == session) else {
+            return;
+        };
+        tracing::info!("session {session}: starting: {}", job.title());
+        self.show_transfers(index);
+        self.sessions[index]
+            .transfers
+            .emit(TransferPanelMsg::Start(job));
     }
 
     /// Write the settings file, logging instead of failing: losing a preference should
@@ -1066,131 +1079,20 @@ fn track_window_size(window: &gtk::ApplicationWindow, sender: &ComponentSender<A
     window.connect_maximized_notify(move |window| report(window));
 }
 
-/// The tabbed panel along the bottom of the window: the log, then the transfer Queue,
-/// Completed and Failed lists (one set per connection once several connections are
-/// supported, each added after the log).
+/// The tabbed panel along the bottom of the window: the log first; each session adds
+/// its transfer Queue, Completed and Failed lists after it.
 ///
 /// # Arguments
 ///
 /// * `log_path` - The log file, if logging to a file works
-/// * `pages` - The Queue, Completed and Failed pages
-fn bottom_panel(
-    log_path: Option<PathBuf>,
-    pages: [&gtk::Widget; 3],
-) -> (gtk::Notebook, TransferTabs) {
+fn bottom_panel(log_path: Option<PathBuf>) -> gtk::Notebook {
     let panel = gtk::Notebook::new();
     panel.add_css_class("bottom-panel");
-
-    let (log_tab, _) = panel_tab("text-x-generic-symbolic", "Log");
+    panel.set_scrollable(true);
+    let (log_tab, log_label) = session::panel_tab("text-x-generic-symbolic");
+    log_label.set_label("Log");
     panel.append_page(&log_tail(log_path), Some(&log_tab));
-
-    let [queue_page, completed_page, failed_page] = pages;
-    let (queue_tab, queue) = panel_tab("network-transmit-receive-symbolic", "");
-    let queue_position = panel.append_page(queue_page, Some(&queue_tab));
-    let (completed_tab, completed) = panel_tab("object-select-symbolic", "");
-    panel.append_page(completed_page, Some(&completed_tab));
-    let (failed_tab, failed) = panel_tab("dialog-error-symbolic", "");
-    panel.append_page(failed_page, Some(&failed_tab));
-    let tabs = TransferTabs {
-        queue,
-        completed,
-        completed_tab,
-        failed,
-        connection: RefCell::new(None),
-        counts: Cell::new((0, 0, 0)),
-    };
-    tabs.show_connection(None);
-    tabs.show_counts(0, 0, 0);
-
-    // Selected by default: the transfer queue.
-    panel.set_current_page(Some(queue_position));
-    (panel, tabs)
-}
-
-/// A bottom panel tab label: a small icon and a name.
-///
-/// # Arguments
-///
-/// * `icon` - Theme icon name
-/// * `name` - Tab name
-///
-/// # Returns
-///
-/// The label widget for the tab, and its text label (to rename the tab later)
-fn panel_tab(icon: &str, name: &str) -> (gtk::Box, gtk::Label) {
-    let label = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    let text = gtk::Label::new(Some(name));
-    label.append(&gtk::Image::from_icon_name(icon));
-    label.append(&text);
-    (label, text)
-}
-
-/// The titles of the transfer tabs (Queue, Completed, Failed); the tabs themselves
-/// show a [`TransferPanel`]'s lists. With several connections, each will get a set.
-struct TransferTabs {
-    queue: gtk::Label,
-    completed: gtk::Label,
-    /// The Completed tab's label box, highlighted when a transfer lands in it.
-    completed_tab: gtk::Box,
-    failed: gtk::Label,
-    /// Name of the connection the Queue belongs to.
-    connection: RefCell<Option<String>>,
-    /// Running, completed and failed jobs.
-    counts: Cell<(usize, usize, usize)>,
-}
-
-impl TransferTabs {
-    /// Name the Queue after its connection, or none.
-    ///
-    /// # Arguments
-    ///
-    /// * `connection` - Name of the connection (e.g. "me@host"), or `None`
-    fn show_connection(&self, connection: Option<&str>) {
-        self.queue.set_tooltip_text(Some(&match connection {
-            Some(name) => format!("Transfers for {name}"),
-            None => String::from("Transfers (not connected)"),
-        }));
-        self.connection.replace(connection.map(str::to_owned));
-        self.update_queue_title();
-    }
-
-    /// Show how many jobs each list holds; highlight the Completed tab briefly when a
-    /// transfer lands in it.
-    fn show_counts(&self, running: usize, completed: usize, failed: usize) {
-        let (_, completed_before, _) = self.counts.replace((running, completed, failed));
-        self.update_queue_title();
-        self.completed.set_label(&titled("Completed", completed));
-        self.failed.set_label(&titled("Failed", failed));
-        if completed > completed_before {
-            self.completed_tab.add_css_class("tab-highlight");
-            let tab = self.completed_tab.clone();
-            glib::timeout_add_local_once(TAB_HIGHLIGHT, move || {
-                tab.remove_css_class("tab-highlight");
-            });
-        }
-    }
-
-    /// "Queue (2) · me@host": the running count and the connection, shortened to fit.
-    fn update_queue_title(&self) {
-        let mut title = titled("Queue", self.counts.get().0);
-        if let Some(name) = self.connection.borrow().as_deref() {
-            title.push_str(" · ");
-            title.push_str(name);
-        }
-        // Connection names can be long: keep the tab small by shortening the middle
-        // (a GTK ellipsized label would shrink to just "..." in a tab).
-        self.queue
-            .set_label(&shorten_middle(&title, TAB_TITLE_MAX_CHARS));
-    }
-}
-
-/// "Name" or "Name (n)" when there are any.
-fn titled(name: &str, count: usize) -> String {
-    if count == 0 {
-        name.to_owned()
-    } else {
-        format!("{name} ({count})")
-    }
+    panel
 }
 
 /// Close the app gracefully on SIGHUP, SIGINT (Ctrl+C) and SIGTERM, so settings are saved
