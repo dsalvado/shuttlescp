@@ -155,6 +155,9 @@ impl Session {
             sender.input_sender(),
             move |output| match output {
                 TransferPanelOutput::JobFinished => AppMsg::TransferFinished(id),
+                TransferPanelOutput::TargetChanged(side) => {
+                    AppMsg::TargetChanged { session: id, side }
+                }
                 TransferPanelOutput::InUse { local, remote } => AppMsg::PathsInUse {
                     session: id,
                     local,
@@ -296,6 +299,15 @@ impl Session {
             connection.pane.emit(FilePaneMsg::InUse(remote.clone()));
         }
         self.remote_in_use = remote;
+    }
+
+    /// Re-read the folder one pane shows.
+    pub fn refresh_side(&self, side: Side) {
+        match (side, &self.connection) {
+            (Side::Local, _) => self.local_pane.emit(FilePaneMsg::Refresh),
+            (Side::Remote, Some(connection)) => connection.pane.emit(FilePaneMsg::Refresh),
+            (Side::Remote, None) => {}
+        }
     }
 
     /// Re-read the folders both panes show.

@@ -137,21 +137,23 @@ impl Job {
         !(stays_local && self.side == Side::Local)
     }
 
-    /// The files and folders the job reads or writes, by side: its sources, and
-    /// (unless deleting) what they become at the destination. Everything inside a
-    /// folder listed here is in use too.
+    /// The files and folders the job is changing, by side: what copies and moves
+    /// write at the destination, or what a delete removes. Everything inside a folder
+    /// listed here is in use too, and so is a file's partial copy (its name plus
+    /// [`PARTIAL_SUFFIX`]).
     pub fn paths_in_use(&self) -> Vec<(Side, PathBuf)> {
-        let sources = self
-            .sources
+        if self.kind == JobKind::Delete {
+            return self
+                .sources
+                .iter()
+                .map(|source| (self.side, source.clone()))
+                .collect();
+        }
+        self.sources
             .iter()
-            .map(|source| (self.side, source.clone()));
-        let copies = self
-            .sources
-            .iter()
-            .filter(|_| self.kind != JobKind::Delete)
             .filter_map(|source| source.file_name())
-            .map(|name| (self.dest_side(), self.dest_dir.join(name)));
-        sources.chain(copies).collect()
+            .map(|name| (self.dest_side(), self.dest_dir.join(name)))
+            .collect()
     }
 
     /// Where copies go: the other side, or the same side for a [`Job::same_side`] job.

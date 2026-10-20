@@ -601,7 +601,7 @@ fn file_info_same_as_compares_size_and_whole_seconds() {
 }
 
 #[test]
-fn paths_in_use_are_the_sources_and_their_copies() {
+fn paths_in_use_are_the_targets() {
     let upload = job(
         JobKind::Copy,
         vec![PathBuf::from("/home/me/a"), PathBuf::from("/home/me/b.txt")],
@@ -610,13 +610,12 @@ fn paths_in_use_are_the_sources_and_their_copies() {
     assert_eq!(
         upload.paths_in_use(),
         [
-            (Side::Local, PathBuf::from("/home/me/a")),
-            (Side::Local, PathBuf::from("/home/me/b.txt")),
             (Side::Remote, PathBuf::from("/srv/a")),
             (Side::Remote, PathBuf::from("/srv/b.txt")),
         ]
     );
 
+    // A delete has no destination: what it removes is in use.
     let delete = Job {
         kind: JobKind::Delete,
         ..upload

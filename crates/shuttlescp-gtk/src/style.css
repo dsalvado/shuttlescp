@@ -721,7 +721,8 @@ image.session-activity {
     to { -gtk-icon-transform: rotate(1turn); }
 }
 
-/* A file or folder a running transfer uses: red until the transfer ends. */
+/* A file or folder a running transfer is writing (or deleting): light red until the
+   transfer ends. */
 label.in-transfer {
-    color: #e01b24;
+    color: #f66151;
 }

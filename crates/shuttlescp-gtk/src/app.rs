@@ -164,6 +164,8 @@ pub enum AppMsg {
         /// On the server.
         remote: Vec<PathBuf>,
     },
+    /// A session's transfer wrote something new on one side: refresh that pane.
+    TargetChanged { session: SessionId, side: Side },
     /// A session's transfer finished: show its panes' new contents.
     TransferFinished(SessionId),
     /// Development aid for the UI gallery: open a second session and show the first
@@ -614,6 +616,11 @@ impl SimpleComponent for App {
             } => {
                 if let Some(session) = self.session_mut(session) {
                     session.show_in_use(local, remote);
+                }
+            }
+            AppMsg::TargetChanged { session, side } => {
+                if let Some(session) = self.session(session) {
+                    session.refresh_side(side);
                 }
             }
             AppMsg::TransferFinished(session) => {

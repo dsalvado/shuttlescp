@@ -2,7 +2,7 @@
 //! view whose first row, "..", goes up one folder. Right-clicking offers to copy, move,
 //! rename or delete the selected items, or to create a folder. Items can be dragged onto
 //! a folder in the same pane or into the other pane (see [`drag`]); dropping them asks
-//! whether to copy or move.
+//! whether to copy or move. Dragging with the right button selects a range of rows.
 
 mod drag;
 
@@ -25,7 +25,7 @@ use shuttlescp_core::entry::{EntryKind, FileEntry};
 use shuttlescp_core::format::{format_modified, format_size};
 use shuttlescp_core::local_fs;
 use shuttlescp_core::remote::Remote;
-use shuttlescp_core::transfer::{self, JobKind, Side};
+use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
 use crate::disk_picker::DiskPicker;
 use crate::name_dialog::{self, NamePrompt};
@@ -66,7 +66,15 @@ const IN_USE_CLASS: &str = "in-transfer";
 /// Name suggested for a new folder.
 const NEW_FOLDER_NAME: &str = "New Folder";
 
+/// How far (in pixels) the pointer must move with the right button held before it
+/// selects rows instead of opening the menu.
+const RANGE_SELECT_THRESHOLD: f64 = 4.0;
+
 thread_local! {
+    // The list item of each cell, by the cell's address, so a point in the list can be
+    // traced to its row (GTK does not say which row a widget shows).
+    static CELL_ITEMS: RefCell<HashMap<usize, glib::WeakRef<gtk::ListItem>>> =
+        RefCell::default();
     // Decoded once and shared by every ".." row. `thread_local!` because GTK objects live
     // on the UI thread only.
     static UP_ARROW: Option<gdk::Texture> =
@@ -217,8 +225,14 @@ struct InUseMarks {
 }
 
 impl InUseMarks {
-    /// Whether a transfer uses `path`.
+    /// Whether a transfer uses `path` (or `path` is the partial copy of one in use).
     fn is_in_use(&self, path: &Path) -> bool {
+        let copy = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(PARTIAL_SUFFIX))
+            .map(|name| path.with_file_name(name));
+        let path = copy.as_deref().unwrap_or(path);
         self.paths
             .borrow()
             .iter()
@@ -441,6 +455,26 @@ impl FilePane {
             }));
     }
 
+    /// Select the rows showing these paths again (after the list was rebuilt).
+    fn reselect(&self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let selection = &self.entries.selection_model;
+        for position in 0..selection.n_items() {
+            let selected =
+                self.entries
+                    .get_visible(position)
+                    .is_some_and(|item| match &*item.borrow() {
+                        Row::Entry { path, .. } => paths.contains(path),
+                        Row::Parent { .. } => false,
+                    });
+            if selected {
+                selection.select_item(position, false);
+            }
+        }
+    }
+
     /// Open `menu` at (`x`, `y`) in the column view.
     fn popup_at(&self, menu: &gtk::PopoverMenu, root: &gtk::Box, x: f64, y: f64) {
         let point = self
@@ -581,6 +615,7 @@ impl Component for FilePane {
         }
         entries.view.add_controller(keys);
         attach_empty_space_click(&entries.view, &sender);
+        attach_range_select(&entries.view);
         {
             let sender = sender.clone();
             drag::attach_list_drop(&entries.view, move |dropped| {
@@ -839,7 +874,22 @@ impl Component for FilePane {
                     Some(notice) => format!("{notice} · {count}"),
                     None => count,
                 };
+                // A refresh of the same folder keeps the selection and scroll position.
+                let kept = (listing.dir == self.current_dir).then(|| {
+                    (
+                        self.selected_paths(),
+                        self.entries.view.vadjustment().map(|scroll| scroll.value()),
+                    )
+                });
                 self.show_entries(&listing.dir, entries);
+                if let Some((selected, scrolled)) = kept {
+                    self.reselect(&selected);
+                    if let (Some(value), Some(scroll)) = (scrolled, self.entries.view.vadjustment())
+                    {
+                        // After the next layout, once the list has its new height.
+                        glib::idle_add_local_once(move || scroll.set_value(value));
+                    }
+                }
                 let disk_root = if self.remote.is_some() {
                     None
                 } else {
@@ -1016,6 +1066,8 @@ fn pane_popover(root: &gtk::Box, menu: &gio::Menu) -> gtk::PopoverMenu {
 
 /// Make right-clicking the empty space below the rows open the context menu (with
 /// nothing selected, so it offers New Folder). Clicks on rows are left to their cells.
+/// The menu opens on release, so dragging with the right button can select rows
+/// instead (see [`attach_range_select`]).
 ///
 /// # Arguments
 ///
@@ -1026,7 +1078,7 @@ fn attach_empty_space_click(view: &gtk::ColumnView, sender: &ComponentSender<Fil
         .button(gdk::BUTTON_SECONDARY)
         .build();
     let sender = sender.clone();
-    click.connect_pressed(move |gesture, _, x, y| {
+    click.connect_released(move |gesture, _, x, y| {
         let Some(view) = gesture.widget() else {
             return;
         };
@@ -1059,6 +1111,11 @@ fn attach_empty_space_click(view: &gtk::ColumnView, sender: &ComponentSender<Fil
 /// * `cell` - The cell's root widget
 /// * `item` - The list item the cell belongs to
 fn attach_cell_handlers(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
+    let key = cell.as_ptr() as usize;
+    CELL_ITEMS.with(|items| items.borrow_mut().insert(key, item.downgrade()));
+    cell.connect_destroy(move |_| {
+        CELL_ITEMS.with(|items| items.borrow_mut().remove(&key));
+    });
     attach_context_click(cell, item);
     drag::attach_drag_source(cell, item);
     drag::attach_folder_drop(cell, item);
@@ -1067,7 +1124,9 @@ fn attach_cell_handlers(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
 /// Make right-clicking a cell open the pane's context menu for its row.
 ///
 /// The column view does not report which row was right-clicked, so each cell listens
-/// itself and triggers the pane's context menu action with its row position.
+/// itself and triggers the pane's context menu action with its row position. The menu
+/// opens on release, and not after a right-button drag (which selects rows instead):
+/// moving the pointer cancels the click.
 ///
 /// # Arguments
 ///
@@ -1080,14 +1139,13 @@ fn attach_context_click(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
     cell.add_css_class(CELL_CLASS);
     let item = item.downgrade();
     let cell_widget = cell.clone().upcast::<gtk::Widget>();
-    click.connect_pressed(move |gesture, _, x, y| {
+    click.connect_released(move |_, _, x, y| {
         let (Some(item), Some(view)) = (
             item.upgrade(),
             cell_widget.ancestor(gtk::ColumnView::static_type()),
         ) else {
             return;
         };
-        gesture.set_state(gtk::EventSequenceState::Claimed);
         let point = cell_widget
             .compute_point(&view, &graphene::Point::new(x as f32, y as f32))
             .unwrap_or_else(|| graphene::Point::new(x as f32, y as f32));
@@ -1098,6 +1156,69 @@ fn attach_context_click(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
         );
     });
     cell.add_controller(click);
+}
+
+/// Make dragging with the right button select every row from where the drag started
+/// to the pointer, as it moves (the selection can then be dragged with the left button).
+///
+/// # Arguments
+///
+/// * `view` - The file list
+fn attach_range_select(view: &gtk::ColumnView) {
+    let drag = gtk::GestureDrag::builder()
+        .button(gdk::BUTTON_SECONDARY)
+        .build();
+    // The row the drag started on; `None` until the pointer has moved far enough.
+    let start: Rc<std::cell::Cell<Option<u32>>> = Rc::default();
+    {
+        let start = Rc::clone(&start);
+        drag.connect_drag_begin(move |_, _, _| start.set(None));
+    }
+    drag.connect_drag_update(move |gesture, dx, dy| {
+        let (Some(view), Some((x, y))) = (
+            gesture.widget().and_downcast::<gtk::ColumnView>(),
+            gesture.start_point(),
+        ) else {
+            return;
+        };
+        let Some(selection) = view.model() else {
+            return;
+        };
+        let rows = selection.n_items();
+        if rows == 0 {
+            return;
+        }
+        let first = match start.get() {
+            Some(first) => first,
+            None if dx.hypot(dy) < RANGE_SELECT_THRESHOLD => return,
+            // Starting below the last row counts as starting on it.
+            None => row_at(&view, x, y).unwrap_or(rows - 1),
+        };
+        start.set(Some(first));
+        // Beyond the rows: above them is the first row, below them the last.
+        let current = row_at(&view, x + dx, y + dy).unwrap_or(if dy < 0.0 { 0 } else { rows - 1 });
+        let (low, high) = (first.min(current), first.max(current));
+        selection.select_range(low, high - low + 1, true);
+    });
+    view.add_controller(drag);
+}
+
+/// The position of the row at (`x`, `y`) in the file list, if there is one.
+fn row_at(view: &gtk::ColumnView, x: f64, y: f64) -> Option<u32> {
+    let mut widget = view.pick(x, y, gtk::PickFlags::DEFAULT);
+    while let Some(current) = widget {
+        let key = current.as_ptr() as usize;
+        let item =
+            CELL_ITEMS.with(|items| items.borrow().get(&key).and_then(glib::WeakRef::upgrade));
+        if let Some(item) = item {
+            return Some(item.position());
+        }
+        if current == *view.upcast_ref::<gtk::Widget>() {
+            return None;
+        }
+        widget = current.parent();
+    }
+    None
 }
 
 /// Keep the ".." row first whatever column and direction the list is sorted by.
@@ -1409,5 +1530,9 @@ mod tests {
         assert!(marks.is_in_use(Path::new("/srv/a.txt")));
         assert!(!marks.is_in_use(Path::new("/srv/a.txt.bak")));
         assert!(!marks.is_in_use(Path::new("/srv")));
+        assert!(
+            marks.is_in_use(Path::new("/srv/a.txt.filepart")),
+            "a partial copy is in use"
+        );
     }
 }

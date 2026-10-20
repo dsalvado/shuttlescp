@@ -49,6 +49,9 @@ const MAX_COMPLETED: usize = 500;
 /// Width of the slot for the expander arrow; files get an empty one, so their names
 /// line up with folder names.
 const EXPANDER_SLOT_WIDTH: i32 = 20;
+/// Shortest time between two requests to refresh the pane a job writes to, so a job of
+/// many small files does not keep re-reading the folder.
+const TARGET_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// Icon of a finished item.
 const DONE_ICON: &str = "object-select-symbolic";
 /// Icon of a failed item.
@@ -188,6 +191,9 @@ pub enum TransferPanelMsg {
 pub enum TransferPanelOutput {
     /// A job finished; the file panes may need refreshing.
     JobFinished,
+    /// A job wrote something new on this side (its first data, or a whole item): the
+    /// pane there should refresh to show it.
+    TargetChanged(Side),
     /// The files and folders running jobs use changed: the panes show them as busy.
     InUse {
         /// On this computer.
@@ -259,6 +265,8 @@ struct JobState {
     fading: bool,
     /// When it reached Completed or Failed (a counter), to drop the oldest first.
     shelved: u64,
+    /// Its first bytes arrived (and the pane it writes to was asked to refresh).
+    writing: bool,
 }
 
 impl JobState {
@@ -320,6 +328,8 @@ pub struct TransferPanel {
     counts: (usize, usize, usize),
     /// Paths in use last reported to the main window: local, remote.
     in_use: (Vec<PathBuf>, Vec<PathBuf>),
+    /// When the panes were last asked to refresh for a job's progress.
+    last_target_refresh: Option<Instant>,
     /// Counter giving each shelved job its place in time.
     next_shelf: u64,
 }
@@ -434,6 +444,7 @@ impl Component for TransferPanel {
             banner_text: gtk::Label::default(),
             counts: (0, 0, 0),
             in_use: (Vec::new(), Vec::new()),
+            last_target_refresh: None,
             next_shelf: 0,
         };
         let (placeholder, banner, banner_text, list) = (
@@ -512,6 +523,7 @@ impl Component for TransferPanel {
         root: &Self::Root,
     ) {
         let now = Instant::now();
+        self.announce_target(id, &event, now, &sender);
         match event {
             TransferEvent::Planned(items) => self.show_plan(id, &items, now),
             TransferEvent::Resumed { id: item, from } => {
@@ -607,6 +619,7 @@ impl TransferPanel {
                 flashing: false,
                 fading: false,
                 shelved: 0,
+                writing: false,
             },
         );
         self.store(ListKind::Queue).append(&row_object(RowKey {
@@ -627,6 +640,48 @@ impl TransferPanel {
                 })
                 .drop_on_shutdown()
         });
+    }
+
+    /// Ask for the pane a job writes to to refresh when something new appears there:
+    /// once its first bytes arrive (its folders and first partial files exist by then),
+    /// and as each of its sources finishes. At most once per
+    /// [`TARGET_REFRESH_INTERVAL`]; the refresh when the job ends catches the rest.
+    fn announce_target(
+        &mut self,
+        id: u64,
+        event: &TransferEvent,
+        now: Instant,
+        sender: &ComponentSender<Self>,
+    ) {
+        let side = {
+            let mut shared = self.shared.borrow_mut();
+            let Some(job) = shared.jobs.get_mut(&id) else {
+                return;
+            };
+            if job.job.kind == JobKind::Delete {
+                return;
+            }
+            let new = match event {
+                TransferEvent::Progress { .. } => !std::mem::replace(&mut job.writing, true),
+                TransferEvent::ItemFinished { id: item, .. } => job
+                    .items
+                    .get(*item)
+                    .is_some_and(|item| item.parent.is_none()),
+                _ => false,
+            };
+            if !new {
+                return;
+            }
+            job.job.dest_side()
+        };
+        if self
+            .last_target_refresh
+            .is_some_and(|last| now.duration_since(last) < TARGET_REFRESH_INTERVAL)
+        {
+            return;
+        }
+        self.last_target_refresh = Some(now);
+        let _ = sender.output(TransferPanelOutput::TargetChanged(side));
     }
 
     /// Run a finished, incomplete job again (back in the Queue), continuing where it
