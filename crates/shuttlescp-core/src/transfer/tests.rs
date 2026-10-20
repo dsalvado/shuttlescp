@@ -599,3 +599,33 @@ fn file_info_same_as_compares_size_and_whole_seconds() {
         modified: None
     }));
 }
+
+#[test]
+fn paths_in_use_are_the_sources_and_their_copies() {
+    let upload = job(
+        JobKind::Copy,
+        vec![PathBuf::from("/home/me/a"), PathBuf::from("/home/me/b.txt")],
+        Path::new("/srv"),
+    );
+    assert_eq!(
+        upload.paths_in_use(),
+        [
+            (Side::Local, PathBuf::from("/home/me/a")),
+            (Side::Local, PathBuf::from("/home/me/b.txt")),
+            (Side::Remote, PathBuf::from("/srv/a")),
+            (Side::Remote, PathBuf::from("/srv/b.txt")),
+        ]
+    );
+
+    let delete = Job {
+        kind: JobKind::Delete,
+        ..upload
+    };
+    assert_eq!(
+        delete.paths_in_use(),
+        [
+            (Side::Local, PathBuf::from("/home/me/a")),
+            (Side::Local, PathBuf::from("/home/me/b.txt")),
+        ]
+    );
+}

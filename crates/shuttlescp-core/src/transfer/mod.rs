@@ -137,6 +137,23 @@ impl Job {
         !(stays_local && self.side == Side::Local)
     }
 
+    /// The files and folders the job reads or writes, by side: its sources, and
+    /// (unless deleting) what they become at the destination. Everything inside a
+    /// folder listed here is in use too.
+    pub fn paths_in_use(&self) -> Vec<(Side, PathBuf)> {
+        let sources = self
+            .sources
+            .iter()
+            .map(|source| (self.side, source.clone()));
+        let copies = self
+            .sources
+            .iter()
+            .filter(|_| self.kind != JobKind::Delete)
+            .filter_map(|source| source.file_name())
+            .map(|name| (self.dest_side(), self.dest_dir.join(name)));
+        sources.chain(copies).collect()
+    }
+
     /// Where copies go: the other side, or the same side for a [`Job::same_side`] job.
     pub fn dest_side(&self) -> Side {
         if self.same_side {

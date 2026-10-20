@@ -1,7 +1,7 @@
 //! Main window: menu bar on top, then one tab per session (see [`crate::session`]),
 //! each holding a local explorer on the left and a remote explorer on the right, and
 //! the bottom panel with the log and each session's transfer lists. The last tab,
-//! "New Tab", opens the Login dialog for another connection.
+//! "New Connection", opens the Login dialog for another connection.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,6 @@ use shuttlescp_core::transfer::{Job, JobKind, Side};
 
 use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
-use crate::file_pane::FilePaneMsg;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
 use crate::resize_grips;
@@ -51,7 +50,7 @@ const WINDOW_CLOSED: &str = "window closed";
 const QUIT_COMMAND: &str = "File > Quit";
 /// Exit reason when the last session tab is closed with its X button.
 const SESSION_TAB_CLOSED: &str = "session tab closed";
-/// Icon of the "New Tab" tab, which opens the Login dialog for another connection.
+/// Icon of the "New Connection" tab, which opens the Login dialog for another connection.
 const NEW_TAB_ICON: &str = "tab-new-symbolic";
 /// Initial height of the session area above the bottom panel, in pixels.
 const SESSION_AREA_HEIGHT: i32 = 470;
@@ -157,6 +156,14 @@ pub enum AppMsg {
     },
     /// Run a job in a session (a delete, once confirmed).
     StartJob { session: SessionId, job: Job },
+    /// The files and folders a session's running transfers use changed.
+    PathsInUse {
+        session: SessionId,
+        /// On this computer.
+        local: Vec<PathBuf>,
+        /// On the server.
+        remote: Vec<PathBuf>,
+    },
     /// A session's transfer finished: show its panes' new contents.
     TransferFinished(SessionId),
     /// Development aid for the UI gallery: open a second session and show the first
@@ -189,7 +196,7 @@ pub enum AppMsg {
 
 /// Root component of the application.
 pub struct App {
-    /// The session tabs, in tab order (the "New Tab" tab comes after them).
+    /// The session tabs, in tab order (the "New Connection" tab comes after them).
     sessions: Vec<Session>,
     /// Id the next session gets.
     next_session: SessionId,
@@ -206,7 +213,7 @@ pub struct App {
     theme_list: ThemeList,
     /// Why the app is closing, written to the log's session-end banner.
     exit_reason: &'static str,
-    /// The Login dialog (hidden until opened from File > Login or "New Tab").
+    /// The Login dialog (hidden until opened from File > Login or "New Connection").
     login: Controller<LoginDialog>,
     /// File > Disconnect, enabled while the current session is connected.
     disconnect_action: RelmAction<DisconnectAction>,
@@ -249,7 +256,8 @@ impl SimpleComponent for App {
                     gtk::HeaderBar {
                         // Slim, with small square window buttons (see style.css).
                         add_css_class: "compact-titlebar",
-                        set_decoration_layout: Some(":minimize,maximize,close"),
+                        // "icon" shows the app icon in the top left corner.
+                        set_decoration_layout: Some("icon:minimize,maximize,close"),
                     },
 
                     #[name = "menu_bar"]
@@ -403,10 +411,10 @@ impl SimpleComponent for App {
             running_transfers,
             quitting,
         };
-        // The "New Tab" tab, always last: clicking it opens the Login dialog.
+        // The "New Connection" tab, always last: clicking it opens the Login dialog.
         let new_tab = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         new_tab.append(&gtk::Image::from_icon_name(NEW_TAB_ICON));
-        new_tab.append(&gtk::Label::new(Some("New Tab")));
+        new_tab.append(&gtk::Label::new(Some("New Connection")));
         new_tab.set_tooltip_text(Some("Connect to another server in a new tab"));
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
         model.add_session(start_dir, window_size.width / 2, &sender);
@@ -424,7 +432,7 @@ impl SimpleComponent for App {
             let _ = WidgetExt::activate_action(&about_window, "win.about", None);
         });
         widgets.build_label.add_controller(about_click);
-        // Choosing the "New Tab" tab (by click or keyboard) opens the Login dialog
+        // Choosing the "New Connection" tab (by click or keyboard) opens the Login dialog
         // instead of showing its empty page. Our handler runs before GTK's default one,
         // which performs the switch, so stopping the emission here cancels it.
         {
@@ -486,7 +494,13 @@ impl SimpleComponent for App {
                     connection.dir = dir;
                 }
             }
-            AppMsg::SessionSwitched => self.transfers_follow_session(),
+            AppMsg::SessionSwitched => {
+                self.transfers_follow_session();
+                // Show what changed in its folders while another tab was in front.
+                if let Some(session) = self.current() {
+                    session.refresh_panes();
+                }
+            }
             AppMsg::BottomTabSwitched => self.session_follows_transfers(),
             #[cfg(debug_assertions)]
             AppMsg::GalleryFocusFirst => self.session_notebook.set_current_page(Some(0)),
@@ -494,6 +508,13 @@ impl SimpleComponent for App {
             AppMsg::GalleryDemo => {
                 if let Some(first) = self.sessions.first_mut() {
                     first.show_counts(2, 1, 0);
+                    // Two items of its local folder in use, to picture them in red.
+                    let mut in_use: Vec<PathBuf> = std::fs::read_dir(&first.local_dir)
+                        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+                        .unwrap_or_default();
+                    in_use.sort();
+                    in_use.truncate(2);
+                    first.show_in_use(in_use, Vec::new());
                 }
                 let start = self.sessions[0].local_dir.clone();
                 self.add_session(start, self.session_notebook.width() / 2, &sender);
@@ -586,12 +607,18 @@ impl SimpleComponent for App {
                 let total = self.sessions.iter().map(|session| session.running).sum();
                 self.running_transfers.set(total);
             }
+            AppMsg::PathsInUse {
+                session,
+                local,
+                remote,
+            } => {
+                if let Some(session) = self.session_mut(session) {
+                    session.show_in_use(local, remote);
+                }
+            }
             AppMsg::TransferFinished(session) => {
                 if let Some(session) = self.session(session) {
-                    session.local_pane.emit(FilePaneMsg::Refresh);
-                    if let Some(connection) = &session.connection {
-                        connection.pane.emit(FilePaneMsg::Refresh);
-                    }
+                    session.refresh_panes();
                 }
             }
             AppMsg::WindowChanged { size, maximized } => {
@@ -655,7 +682,7 @@ impl App {
         self.sessions.iter_mut().find(|session| session.id == id)
     }
 
-    /// Open a new, unconnected session tab (before "New Tab") and bring it forward.
+    /// Open a new, unconnected session tab (before "New Connection") and bring it forward.
     ///
     /// # Arguments
     ///
@@ -698,7 +725,7 @@ impl App {
         // Fill in the tab's title before GTK first measures it.
         session.refresh(&self.host, true);
         let index = self.sessions.len();
-        // `index` counts sessions, so it fits; "New Tab" stays after them.
+        // `index` counts sessions, so it fits; "New Connection" stays after them.
         let position = u32::try_from(index).unwrap_or(u32::MAX);
         self.session_notebook.insert_page(
             &session.page,
@@ -746,7 +773,7 @@ impl App {
             self.quit(SESSION_TAB_CLOSED);
             return;
         }
-        // Bring a neighbour forward first, so removing the page never lands on "New Tab".
+        // Bring a neighbour forward first, so removing the page never lands on "New Connection".
         let neighbour = if index + 1 < self.sessions.len() {
             index + 1
         } else {

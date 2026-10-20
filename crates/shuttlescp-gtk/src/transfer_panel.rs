@@ -188,6 +188,13 @@ pub enum TransferPanelMsg {
 pub enum TransferPanelOutput {
     /// A job finished; the file panes may need refreshing.
     JobFinished,
+    /// The files and folders running jobs use changed: the panes show them as busy.
+    InUse {
+        /// On this computer.
+        local: Vec<PathBuf>,
+        /// On the server.
+        remote: Vec<PathBuf>,
+    },
     /// The number of jobs in the lists changed.
     Counts {
         /// Jobs still running.
@@ -311,6 +318,8 @@ pub struct TransferPanel {
     banner_text: gtk::Label,
     /// Counts last reported to the main window: running, completed, failed.
     counts: (usize, usize, usize),
+    /// Paths in use last reported to the main window: local, remote.
+    in_use: (Vec<PathBuf>, Vec<PathBuf>),
     /// Counter giving each shelved job its place in time.
     next_shelf: u64,
 }
@@ -424,6 +433,7 @@ impl Component for TransferPanel {
             banner: gtk::Box::default(),
             banner_text: gtk::Label::default(),
             counts: (0, 0, 0),
+            in_use: (Vec::new(), Vec::new()),
             next_shelf: 0,
         };
         let (placeholder, banner, banner_text, list) = (
@@ -963,7 +973,8 @@ impl TransferPanel {
     }
 
     /// Show each list's placeholder while it is empty, enable the Clear buttons while
-    /// there is something to clear, and tell the main window the counts.
+    /// there is something to clear, and tell the main window the counts and the paths
+    /// in use.
     fn update_chrome(&mut self, sender: &ComponentSender<Self>) {
         let counts = {
             let shared = self.shared.borrow();
@@ -986,6 +997,29 @@ impl TransferPanel {
         self.placeholders[2].set_visible(counts.2 == 0);
         self.clear_buttons[0].set_sensitive(counts.1 > 0);
         self.clear_buttons[1].set_sensitive(counts.2 > 0);
+        let in_use = {
+            let shared = self.shared.borrow();
+            let mut in_use = (Vec::new(), Vec::new());
+            for (side, path) in shared
+                .jobs
+                .values()
+                .filter(|job| job.is_running())
+                .flat_map(|job| job.job.paths_in_use())
+            {
+                match side {
+                    Side::Local => in_use.0.push(path),
+                    Side::Remote => in_use.1.push(path),
+                }
+            }
+            in_use
+        };
+        if in_use != self.in_use {
+            self.in_use = in_use.clone();
+            let _ = sender.output(TransferPanelOutput::InUse {
+                local: in_use.0,
+                remote: in_use.1,
+            });
+        }
         if counts != self.counts {
             self.counts = counts;
             let _ = sender.output(TransferPanelOutput::Counts {

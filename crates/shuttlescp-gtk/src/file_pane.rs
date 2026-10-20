@@ -6,11 +6,13 @@
 
 mod drag;
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::iter;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use relm4::gtk::prelude::*;
 use relm4::gtk::{gdk, gio, glib, graphene};
@@ -59,6 +61,8 @@ const CELL_CLASS: &str = "pane-cell";
 const DROP_COPY_ACTION: &str = "drop-copy";
 const DROP_MOVE_ACTION: &str = "drop-move";
 const DROP_CANCEL_ACTION: &str = "drop-cancel";
+/// CSS class of the text of an item a running transfer uses (see style.css).
+const IN_USE_CLASS: &str = "in-transfer";
 /// Name suggested for a new folder.
 const NEW_FOLDER_NAME: &str = "New Folder";
 
@@ -114,6 +118,9 @@ pub enum FilePaneMsg {
     /// The answer from the drop menu: copy or move the dropped items, or (`None`) leave
     /// them.
     DropChosen(Option<JobKind>),
+    /// These files and folders (and everything inside them) are used by running
+    /// transfers: show them as busy until the next update.
+    InUse(Vec<PathBuf>),
 }
 
 /// Files and folders dropped on a pane.
@@ -199,6 +206,75 @@ pub struct Listing {
     result: Result<Vec<FileEntry>, String>,
 }
 
+/// Items running transfers use, drawn in red until they finish. Shared by a pane and
+/// its rows, so the visible cells can be restyled without rebuilding the list.
+#[derive(Default)]
+struct InUseMarks {
+    /// Paths in use; everything inside them is in use too.
+    paths: RefCell<Vec<PathBuf>>,
+    /// The text labels of the cells on screen and the path each shows, by label.
+    labels: RefCell<HashMap<usize, (glib::WeakRef<gtk::Label>, PathBuf)>>,
+}
+
+impl InUseMarks {
+    /// Whether a transfer uses `path`.
+    fn is_in_use(&self, path: &Path) -> bool {
+        self.paths
+            .borrow()
+            .iter()
+            .any(|used| path.starts_with(used))
+    }
+
+    /// A cell's label now shows `path` (`None` for the ".." row): style it, and restyle
+    /// it when the paths in use change.
+    fn bind(&self, label: &gtk::Label, path: Option<&Path>) {
+        let key = label.as_ptr() as usize;
+        match path {
+            Some(path) => {
+                self.style(label, path);
+                self.labels
+                    .borrow_mut()
+                    .insert(key, (label.downgrade(), path.to_path_buf()));
+            }
+            None => {
+                label.remove_css_class(IN_USE_CLASS);
+                self.labels.borrow_mut().remove(&key);
+            }
+        }
+    }
+
+    /// Replace the paths in use and restyle the cells on screen.
+    fn set(&self, paths: Vec<PathBuf>) {
+        self.paths.replace(paths);
+        self.labels
+            .borrow_mut()
+            .retain(|_, (label, path)| match label.upgrade() {
+                Some(label) => {
+                    self.style(&label, path);
+                    true
+                }
+                None => false,
+            });
+    }
+
+    fn style(&self, label: &gtk::Label, path: &Path) {
+        if self.is_in_use(path) {
+            label.add_css_class(IN_USE_CLASS);
+        } else {
+            label.remove_css_class(IN_USE_CLASS);
+        }
+    }
+}
+
+// Written by hand: the widgets inside have nothing useful to show.
+impl std::fmt::Debug for InUseMarks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InUseMarks")
+            .field("paths", &self.paths.borrow())
+            .finish_non_exhaustive()
+    }
+}
+
 /// One line of the file list.
 #[derive(Debug)]
 enum Row {
@@ -212,6 +288,8 @@ enum Row {
         entry: FileEntry,
         /// Its full path.
         path: PathBuf,
+        /// What running transfers use, to draw this row in red while it is in use.
+        in_use: Rc<InUseMarks>,
         /// Theme icon for special folders such as Documents; `None` for everything else.
         special_icon: Option<&'static str>,
     },
@@ -243,6 +321,8 @@ pub struct FilePane {
     peer_available: bool,
     /// What the last operation did, shown with the next listing's item count.
     notice: Option<String>,
+    /// Items running transfers use; shared with the rows.
+    in_use: Rc<InUseMarks>,
 }
 
 /// The actions of the right-click menu.
@@ -354,6 +434,7 @@ impl FilePane {
                 };
                 Row::Entry {
                     path: dir.join(entry.name()),
+                    in_use: Rc::clone(&self.in_use),
                     entry,
                     special_icon,
                 }
@@ -518,6 +599,7 @@ impl Component for FilePane {
             context_menu,
             drop_menu,
             pending_drop: None,
+            in_use: Rc::default(),
             actions,
             // The local pane has nowhere to copy to until a server is connected.
             peer_available: side == Side::Remote,
@@ -621,6 +703,7 @@ impl Component for FilePane {
                 });
                 self.popup_at(&self.drop_menu, root, dropped.x, dropped.y);
             }
+            FilePaneMsg::InUse(paths) => self.in_use.set(paths),
             FilePaneMsg::DropChosen(kind) => {
                 let Some(drop) = self.pending_drop.take() else {
                     return;
@@ -1104,6 +1187,15 @@ fn file_icon(entry: &FileEntry) -> gio::Icon {
     gio::content_type_get_icon(&content_type)
 }
 
+/// Draw a cell's text in red while a running transfer uses its row's item.
+fn bind_in_use(row: &Row, label: &gtk::Label) {
+    match row {
+        Row::Entry { path, in_use, .. } => in_use.bind(label, Some(path)),
+        // The ".." row is never in use; a recycled label may still carry the style.
+        Row::Parent { .. } => label.remove_css_class(IN_USE_CLASS),
+    }
+}
+
 /// Create the label used by the plain text columns.
 ///
 /// # Arguments
@@ -1172,6 +1264,7 @@ impl RelmColumn for NameColumn {
 
     fn bind(item: &mut Self::Item, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
         let (icon, arrow, label) = widgets;
+        bind_in_use(item, label);
         arrow.set_visible(matches!(item, Row::Parent { .. }));
         match item {
             Row::Parent { .. } => {
@@ -1219,6 +1312,7 @@ impl RelmColumn for SizeColumn {
     }
 
     fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
+        bind_in_use(item, label);
         match item {
             Row::Entry { entry, .. } if entry.kind() == EntryKind::File => {
                 label.set_label(&format_size(entry.size()));
@@ -1250,6 +1344,7 @@ impl RelmColumn for ModifiedColumn {
     }
 
     fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
+        bind_in_use(item, label);
         let text = match item {
             Row::Parent { .. } => String::new(),
             Row::Entry { entry, .. } => entry.modified().map(format_modified).unwrap_or_default(),
@@ -1277,6 +1372,7 @@ mod tests {
             .expect("list temp dir")
             .remove(0);
         let row = Row::Entry {
+            in_use: Rc::default(),
             path: temp.path().join("a.txt"),
             entry,
             special_icon: None,
@@ -1298,5 +1394,20 @@ mod tests {
             compare_rows(&parent(), &parent(), FileEntry::size_order),
             Ordering::Equal
         );
+    }
+
+    #[test]
+    fn items_inside_a_folder_in_use_are_in_use() {
+        let marks = InUseMarks::default();
+        marks.set(vec![
+            PathBuf::from("/srv/photos"),
+            PathBuf::from("/srv/a.txt"),
+        ]);
+
+        assert!(marks.is_in_use(Path::new("/srv/photos")));
+        assert!(marks.is_in_use(Path::new("/srv/photos/2026/beach.jpg")));
+        assert!(marks.is_in_use(Path::new("/srv/a.txt")));
+        assert!(!marks.is_in_use(Path::new("/srv/a.txt.bak")));
+        assert!(!marks.is_in_use(Path::new("/srv")));
     }
 }

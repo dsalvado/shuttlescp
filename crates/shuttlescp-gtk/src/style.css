@@ -123,7 +123,13 @@ headerbar.compact-titlebar {
 }
 
 headerbar.compact-titlebar .title {
-    font-weight: normal;
+    font-weight: bold;
+}
+
+/* The app icon in the main window's top left corner. */
+headerbar.compact-titlebar windowcontrols > image.icon {
+    -gtk-icon-size: 16px;
+    margin: 0 4px 0 2px;
 }
 
 /* Small square window buttons instead of the theme's large round ones. */
@@ -243,6 +249,13 @@ notebook.session-tabs > header > tabs > tab {
     box-shadow: none;
     outline: none;
     font-size: smaller;
+}
+
+/* Tabs that do not join their page stop short of the base line, so it runs unbroken
+   under them (their side borders would otherwise cut through it). */
+notebook.bottom-panel > header > tabs > tab:not(:checked),
+notebook.session-tabs > header > tabs > tab:not(:checked) {
+    margin-bottom: 2px;
 }
 
 notebook.bottom-panel > header > tabs > tab:hover:not(:checked),
@@ -660,26 +673,32 @@ notebook.bottom-panel > header > tabs > tab.group-start ~ tab {
     box-shadow: inset 1px 0 alpha(black, 0.18), inset 2px 0 alpha(white, 0.22);
 }
 notebook.bottom-panel.shows-group-0 > header > tabs > tab.group-0:not(:checked) {
+    margin-bottom: 0;
     background-color: @view_bg_color;
     background-image: linear-gradient(alpha(#3584e4, 0.14), alpha(#3584e4, 0.14));
 }
 notebook.bottom-panel.shows-group-1 > header > tabs > tab.group-1:not(:checked) {
+    margin-bottom: 0;
     background-color: @view_bg_color;
     background-image: linear-gradient(alpha(#2ec27e, 0.14), alpha(#2ec27e, 0.14));
 }
 notebook.bottom-panel.shows-group-2 > header > tabs > tab.group-2:not(:checked) {
+    margin-bottom: 0;
     background-color: @view_bg_color;
     background-image: linear-gradient(alpha(#ff7800, 0.14), alpha(#ff7800, 0.14));
 }
 notebook.bottom-panel.shows-group-3 > header > tabs > tab.group-3:not(:checked) {
+    margin-bottom: 0;
     background-color: @view_bg_color;
     background-image: linear-gradient(alpha(#9141ac, 0.14), alpha(#9141ac, 0.14));
 }
 notebook.bottom-panel.shows-group-4 > header > tabs > tab.group-4:not(:checked) {
+    margin-bottom: 0;
     background-color: @view_bg_color;
     background-image: linear-gradient(alpha(#2190a4, 0.14), alpha(#2190a4, 0.14));
 }
 notebook.bottom-panel.shows-group-5 > header > tabs > tab.group-5:not(:checked) {
+    margin-bottom: 0;
     background-color: @view_bg_color;
     background-image: linear-gradient(alpha(#e5a50a, 0.14), alpha(#e5a50a, 0.14));
 }
@@ -700,4 +719,9 @@ image.session-activity {
 @keyframes session-activity-turn {
     from { -gtk-icon-transform: rotate(0turn); }
     to { -gtk-icon-transform: rotate(1turn); }
+}
+
+/* A file or folder a running transfer uses: red until the transfer ends. */
+label.in-transfer {
+    color: #e01b24;
 }

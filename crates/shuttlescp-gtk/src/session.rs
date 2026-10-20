@@ -83,6 +83,8 @@ pub struct Session {
     transfer_tabs: TransferTabs,
     /// Transfers running.
     pub running: usize,
+    /// Paths on the server that running transfers use, for a remote pane opened later.
+    remote_in_use: Vec<PathBuf>,
 }
 
 /// The tab label of a session.
@@ -153,6 +155,11 @@ impl Session {
             sender.input_sender(),
             move |output| match output {
                 TransferPanelOutput::JobFinished => AppMsg::TransferFinished(id),
+                TransferPanelOutput::InUse { local, remote } => AppMsg::PathsInUse {
+                    session: id,
+                    local,
+                    remote,
+                },
                 TransferPanelOutput::Counts {
                     running,
                     completed,
@@ -190,6 +197,7 @@ impl Session {
             transfer_pages,
             transfer_tabs,
             running: 0,
+            remote_in_use: Vec::new(),
         }
     }
 
@@ -246,6 +254,7 @@ impl Session {
             .forward(sender.input_sender(), move |output| {
                 pane_message(id, Side::Remote, output)
             });
+        pane.emit(FilePaneMsg::InUse(self.remote_in_use.clone()));
         self.split.set_end_child(Some(pane.widget()));
         self.transfer_tabs
             .show_connection(Some(&site.display_name()));
@@ -277,6 +286,23 @@ impl Session {
             self.local_pane.emit(FilePaneMsg::PeerAvailable(false));
             // Dropping the pane drops its session, which closes the connection.
             drop(connection);
+        }
+    }
+
+    /// Show which files and folders running transfers use, in each pane.
+    pub fn show_in_use(&mut self, local: Vec<PathBuf>, remote: Vec<PathBuf>) {
+        self.local_pane.emit(FilePaneMsg::InUse(local));
+        if let Some(connection) = &self.connection {
+            connection.pane.emit(FilePaneMsg::InUse(remote.clone()));
+        }
+        self.remote_in_use = remote;
+    }
+
+    /// Re-read the folders both panes show.
+    pub fn refresh_panes(&self) {
+        self.local_pane.emit(FilePaneMsg::Refresh);
+        if let Some(connection) = &self.connection {
+            connection.pane.emit(FilePaneMsg::Refresh);
         }
     }
 
