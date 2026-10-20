@@ -6,7 +6,8 @@
 //! * [`sites`] / [`config`] - saved connection sites and user preferences (JSON files)
 //! * [`site_export`] - portable export / import with passphrase-encrypted passwords
 //! * [`secrets`] - passwords in the system's password store
-//! * [`remote`] - SSH host-key checks, login and SFTP listing
+//! * [`remote`] - connecting over SFTP (SSH host-key checks) or FTP / FTPS (TLS certificate
+//!   checks), browsing and file operations
 //! * [`transfer`] - copying, moving and deleting files and folders, with progress
 //! * [`pending`] - unfinished transfers, kept so they can be resumed
 //! * [`session`] - the login, export and import workflows

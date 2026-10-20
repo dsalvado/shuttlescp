@@ -88,6 +88,9 @@ pub struct Site {
     /// Whether a password for this site is stored in the keyring.
     #[serde(default)]
     pub password_saved: bool,
+    /// FTP settings (used only by FTP sites).
+    #[serde(default)]
+    pub ftp: FtpOptions,
 }
 
 /// Create a new random site id: 32 hex digits (128 bits).
@@ -111,7 +114,89 @@ pub fn new_site_id() -> String {
         })
 }
 
+/// How an FTP connection is encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FtpEncryption {
+    /// Plain FTP: everything, the password included, travels unencrypted.
+    None,
+    /// FTPS with explicit TLS: connects in plain and switches to TLS (AUTH TLS) before
+    /// logging in. The standard way, on the usual port 21.
+    #[default]
+    ExplicitTls,
+    /// FTPS with implicit TLS: TLS from the first byte, usually on port 990. Older, but
+    /// still used.
+    ImplicitTls,
+}
+
+impl FtpEncryption {
+    /// All choices, in the order the Login dialog lists them.
+    pub const ALL: [Self; 3] = [Self::None, Self::ExplicitTls, Self::ImplicitTls];
+
+    /// Name shown to the user (WinSCP's wording).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "No encryption",
+            Self::ExplicitTls => "TLS/SSL explicit encryption",
+            Self::ImplicitTls => "TLS/SSL implicit encryption",
+        }
+    }
+
+    /// The usual port: 990 for implicit TLS, 21 otherwise.
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::ImplicitTls => 990,
+            Self::None | Self::ExplicitTls => 21,
+        }
+    }
+
+    /// Position in [`FtpEncryption::ALL`].
+    pub fn index(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::ExplicitTls => 1,
+            Self::ImplicitTls => 2,
+        }
+    }
+
+    /// The choice at a position in [`FtpEncryption::ALL`].
+    pub fn from_index(index: u32) -> Option<Self> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
+    }
+}
+
+/// Settings of FTP sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FtpOptions {
+    /// Plain, explicit TLS or implicit TLS.
+    pub encryption: FtpEncryption,
+    /// Passive mode: the client opens the data connections (works through firewalls
+    /// and NAT). Off means active mode: the server connects back to the client.
+    pub passive: bool,
+}
+
+// Written by hand: passive mode is the usual default, which `derive` would make `false`.
+impl Default for FtpOptions {
+    fn default() -> Self {
+        Self {
+            encryption: FtpEncryption::default(),
+            passive: true,
+        }
+    }
+}
+
 impl Site {
+    /// The usual port for this site's protocol (and, for FTP, its encryption).
+    pub fn default_port(&self) -> u16 {
+        match self.protocol {
+            Protocol::Ftp => self.ftp.encryption.default_port(),
+            Protocol::Sftp | Protocol::Scp => self.protocol.default_port(),
+        }
+    }
+
     /// Name shown in the site list, like `user@host` or `user@host:2222`.
     pub fn display_name(&self) -> String {
         let mut name = if self.user.is_empty() {
@@ -119,7 +204,7 @@ impl Site {
         } else {
             format!("{}@{}", self.user, self.host)
         };
-        if self.port != self.protocol.default_port() {
+        if self.port != self.default_port() {
             name.push_str(&format!(":{}", self.port));
         }
         name
@@ -214,6 +299,7 @@ mod tests {
             port,
             user: user.to_owned(),
             password_saved: false,
+            ftp: crate::sites::FtpOptions::default(),
         }
     }
 

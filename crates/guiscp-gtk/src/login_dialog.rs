@@ -18,7 +18,7 @@ use guiscp_core::remote::{ConnectError, HostKey, Remote};
 use guiscp_core::secrets;
 use guiscp_core::session::{self, ExportReport, ImportReport, KeyringAction};
 use guiscp_core::site_export::ExportFile;
-use guiscp_core::sites::{Protocol, Site, SiteBook, new_site_id};
+use guiscp_core::sites::{FtpEncryption, FtpOptions, Protocol, Site, SiteBook, new_site_id};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
@@ -71,6 +71,10 @@ pub enum LoginMsg {
     Cancel,
     /// The protocol drop-down changed to this position.
     ProtocolSelected(u32),
+    /// The FTP encryption drop-down changed to this position.
+    EncryptionSelected(u32),
+    /// The "Passive mode" box was ticked or cleared.
+    PassiveToggled(bool),
     /// The port field changed.
     PortChanged(i32),
     /// The "Save password" box was ticked or cleared.
@@ -107,6 +111,15 @@ pub enum LoginMsg {
     Login,
     /// The user trusts this new host key: remember it and connect.
     TrustHostKey(Box<HostKey>),
+    /// The user trusts this server's TLS certificate: remember it and connect.
+    TrustCertificate {
+        /// Server address.
+        host: String,
+        /// Server port.
+        port: u16,
+        /// The certificate's fingerprint.
+        fingerprint: String,
+    },
 }
 
 /// What the Login dialog starts with.
@@ -164,6 +177,8 @@ pub struct LoginDialog {
     editing: bool,
     protocol: Protocol,
     port: u16,
+    /// FTP settings (shown for FTP sites).
+    ftp: FtpOptions,
     /// Whether Save stores the typed password in the keyring.
     save_password: bool,
     // Text buffers shared with the entries: the entries edit them directly, and the
@@ -203,9 +218,12 @@ impl LoginDialog {
         self.protocol = site
             .as_ref()
             .map_or(Protocol::default(), |site| site.protocol);
+        self.ftp = site
+            .as_ref()
+            .map_or_else(FtpOptions::default, |site| site.ftp);
         self.port = site
             .as_ref()
-            .map_or(self.protocol.default_port(), |site| site.port);
+            .map_or_else(|| self.default_port(), |site| site.port);
         self.host
             .set_text(site.as_ref().map_or("", |site| site.host.as_str()));
         self.user
@@ -214,6 +232,11 @@ impl LoginDialog {
         // New sites offer to save the password; saved ones keep their current choice.
         self.save_password = site.as_ref().is_none_or(|site| site.password_saved);
         self.editing = self.selection == Selection::NewSite;
+    }
+
+    /// The usual port for the protocol (and FTP encryption) in the form.
+    fn default_port(&self) -> u16 {
+        default_port(self.protocol, self.ftp.encryption)
     }
 
     /// Pick `selection`, refresh the list highlight and the fields.
@@ -307,6 +330,7 @@ impl LoginDialog {
             port: self.port,
             user: self.user.text().trim().to_owned(),
             password_saved: existing.as_ref().is_some_and(|site| site.password_saved),
+            ftp: self.ftp,
         };
         // Capture the typed password and the "Save password" choice now: `select` below
         // reloads the form for the saved site, which clears the field and resets the box.
@@ -534,15 +558,48 @@ impl Component for LoginDialog {
                                 set_label: "File protocol:",
                                 set_xalign: 0.0,
                             },
-                            gtk::DropDown::from_strings(&protocol_labels) {
-                                set_halign: gtk::Align::Start,
-                                // Read-only until "New Site" or Edit.
-                                #[watch]
-                                set_sensitive: model.editing,
-                                #[watch]
-                                set_selected: model.protocol.index(),
-                                connect_selected_notify[sender] => move |dropdown| {
-                                    sender.input(LoginMsg::ProtocolSelected(dropdown.selected()));
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 8,
+
+                                gtk::DropDown::from_strings(&protocol_labels) {
+                                    set_halign: gtk::Align::Start,
+                                    // Read-only until "New Site" or Edit.
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    #[watch]
+                                    set_selected: model.protocol.index(),
+                                    connect_selected_notify[sender] => move |dropdown| {
+                                        sender.input(LoginMsg::ProtocolSelected(dropdown.selected()));
+                                    },
+                                },
+                                // FTP only: encryption and passive mode.
+                                gtk::DropDown::from_strings(&encryption_labels) {
+                                    set_tooltip_text: Some("How the FTP connection is encrypted"),
+                                    #[watch]
+                                    set_visible: model.protocol == Protocol::Ftp,
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    #[watch]
+                                    set_selected: model.ftp.encryption.index(),
+                                    connect_selected_notify[sender] => move |dropdown| {
+                                        sender.input(LoginMsg::EncryptionSelected(dropdown.selected()));
+                                    },
+                                },
+                                gtk::CheckButton::with_label("Passive mode") {
+                                    set_tooltip_text: Some(
+                                        "The client opens the data connections (works through \
+                                         firewalls and NAT). Untick for active mode.",
+                                    ),
+                                    #[watch]
+                                    set_visible: model.protocol == Protocol::Ftp,
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    #[watch]
+                                    set_active: model.ftp.passive,
+                                    connect_toggled[sender] => move |check| {
+                                        sender.input(LoginMsg::PassiveToggled(check.is_active()));
+                                    },
                                 },
                             },
                         },
@@ -791,6 +848,7 @@ impl Component for LoginDialog {
             editing: false,
             protocol: Protocol::default(),
             port: Protocol::default().default_port(),
+            ftp: FtpOptions::default(),
             save_password: true,
             host: gtk::EntryBuffer::default(),
             user: gtk::EntryBuffer::default(),
@@ -804,6 +862,7 @@ impl Component for LoginDialog {
         model.select(Selection::Nothing);
 
         let protocol_labels: Vec<&str> = Protocol::ALL.iter().map(|p| p.label()).collect();
+        let encryption_labels: Vec<&str> = FtpEncryption::ALL.iter().map(|e| e.label()).collect();
         let site_list_box = model.site_list.widget();
         let widgets = view_output!();
         ComponentParts { model, widgets }
@@ -886,12 +945,24 @@ impl Component for LoginDialog {
                     && protocol != self.protocol
                 {
                     // Follow the protocol's usual port unless a custom one was entered.
-                    if self.port == self.protocol.default_port() {
-                        self.port = protocol.default_port();
+                    if self.port == self.default_port() {
+                        self.port = default_port(protocol, self.ftp.encryption);
                     }
                     self.protocol = protocol;
                 }
             }
+            LoginMsg::EncryptionSelected(index) => {
+                if let Some(encryption) = FtpEncryption::from_index(index)
+                    && encryption != self.ftp.encryption
+                {
+                    // Implicit TLS has its own usual port (990).
+                    if self.port == self.default_port() {
+                        self.port = encryption.default_port();
+                    }
+                    self.ftp.encryption = encryption;
+                }
+            }
+            LoginMsg::PassiveToggled(passive) => self.ftp.passive = passive,
             LoginMsg::PortChanged(value) => {
                 if let Ok(port) = u16::try_from(value) {
                     self.port = port;
@@ -900,6 +971,17 @@ impl Component for LoginDialog {
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
             LoginMsg::Login => self.start_login(&sender, None),
             LoginMsg::TrustHostKey(key) => self.start_login(&sender, Some(*key)),
+            LoginMsg::TrustCertificate {
+                host,
+                port,
+                fingerprint,
+            } => match guiscp_core::remote::trust_certificate(&host, port, &fingerprint) {
+                Ok(()) => self.start_login(&sender, None),
+                Err(error) => {
+                    tracing::warn!("cannot remember the certificate: {error}");
+                    self.status = error.to_string();
+                }
+            },
             LoginMsg::ShowAtStartupToggled(show) => {
                 if show != self.show_at_startup {
                     self.show_at_startup = show;
@@ -1021,6 +1103,38 @@ impl Component for LoginDialog {
                         confirm_dialog::ask(root.upcast_ref(), wording, move |trusted| {
                             if trusted {
                                 sender.input(LoginMsg::TrustHostKey(key.clone()));
+                            }
+                        });
+                    }
+                    Err(ConnectError::UntrustedCertificate {
+                        host,
+                        port,
+                        fingerprint,
+                        reason,
+                    }) => {
+                        self.status =
+                            String::from("Waiting for you to check the server's certificate");
+                        let question = format!("Trust the certificate of {host}?");
+                        let detail = format!(
+                            "The server's TLS certificate cannot be verified: {reason}. FTP \
+                             servers often use a self-signed certificate. Its fingerprint \
+                             is:\n\n{fingerprint}\n\nIf it matches the server's real \
+                             certificate, trust it: it will be remembered for this server."
+                        );
+                        let wording = Confirmation {
+                            title: "Untrusted Certificate",
+                            question: &question,
+                            detail: &detail,
+                            confirm_label: "Trust and Connect",
+                        };
+                        let sender = sender.clone();
+                        confirm_dialog::ask(root.upcast_ref(), wording, move |trusted| {
+                            if trusted {
+                                sender.input(LoginMsg::TrustCertificate {
+                                    host: host.clone(),
+                                    port,
+                                    fingerprint: fingerprint.clone(),
+                                });
                             }
                         });
                     }
@@ -1248,6 +1362,14 @@ fn site_row(icon: &str, name: &str, has_password: bool) -> gtk::Box {
         row.append(&key);
     }
     row
+}
+
+/// The usual port for a protocol and, for FTP, its encryption.
+fn default_port(protocol: Protocol, encryption: FtpEncryption) -> u16 {
+    match protocol {
+        Protocol::Ftp => encryption.default_port(),
+        Protocol::Sftp | Protocol::Scp => protocol.default_port(),
+    }
 }
 
 #[cfg(test)]

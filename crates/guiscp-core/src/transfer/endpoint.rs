@@ -4,11 +4,11 @@ use std::ffi::OsString;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite};
 
-use crate::remote::Remote;
+use crate::remote::{Remote, RemoteMeta};
 
 /// What a walk needs to know about a file or folder.
 #[derive(Debug, Clone)]
@@ -59,7 +59,7 @@ impl Endpoint {
                 } else {
                     remote.lstat(path).await?
                 };
-                Ok(sftp_node(&metadata))
+                Ok(remote_node(&metadata))
             }
         }
     }
@@ -92,8 +92,8 @@ impl Endpoint {
             }
             Self::Remote(remote) => {
                 for (name, metadata) in remote.read_dir_raw(dir).await? {
-                    let mut node = sftp_node(&metadata);
-                    if follow && metadata.is_symlink() {
+                    let mut node = remote_node(&metadata);
+                    if follow && metadata.is_symlink {
                         node = self.stat(&dir.join(&name), true).await.unwrap_or(node);
                     }
                     children.push((OsString::from(name), node));
@@ -118,15 +118,7 @@ impl Endpoint {
                 }
                 Box::pin(file)
             }
-            Self::Remote(remote) => {
-                let mut file = remote.open(path).await?;
-                if offset > 0 {
-                    file.seek(SeekFrom::Start(offset))
-                        .await
-                        .map_err(seek_failed)?;
-                }
-                Box::pin(file)
-            }
+            Self::Remote(remote) => remote.open_at(path, offset).await?,
         })
     }
 
@@ -150,13 +142,7 @@ impl Endpoint {
                 }
                 Box::pin(file)
             }
-            Self::Remote(remote) => {
-                let mut file = remote.open_write(path, offset == 0).await?;
-                if offset > 0 {
-                    file.seek(SeekFrom::Start(offset)).await.map_err(failed)?;
-                }
-                Box::pin(file)
-            }
+            Self::Remote(remote) => remote.open_write_at(path, offset).await?,
         })
     }
 
@@ -245,14 +231,7 @@ impl Endpoint {
                 .await
                 .map_err(|error| error.to_string())?
             }
-            Self::Remote(remote) => {
-                let seconds = time
-                    .duration_since(UNIX_EPOCH)
-                    .ok()
-                    .and_then(|since| u32::try_from(since.as_secs()).ok())
-                    .ok_or_else(|| format!("{} has a date SFTP cannot store", path.display()))?;
-                remote.set_modified(path, seconds).await
-            }
+            Self::Remote(remote) => remote.set_modified(path, time).await,
         }
     }
 }
@@ -264,13 +243,11 @@ pub(super) fn partial_path(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
-/// A [`Node`] from SFTP file attributes.
-fn sftp_node(metadata: &russh_sftp::client::fs::Metadata) -> Node {
+/// A [`Node`] from what the server reports.
+fn remote_node(metadata: &RemoteMeta) -> Node {
     Node {
-        is_dir: metadata.is_dir(),
-        size: metadata.size.unwrap_or(0),
-        modified: metadata
-            .mtime
-            .map(|seconds| UNIX_EPOCH + Duration::from_secs(u64::from(seconds))),
+        is_dir: metadata.is_dir,
+        size: metadata.size,
+        modified: metadata.modified,
     }
 }

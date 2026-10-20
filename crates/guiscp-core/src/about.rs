@@ -8,7 +8,7 @@
 pub const APP_NAME: &str = "GuiSCP";
 
 /// One-line description of the app.
-pub const DESCRIPTION: &str = "Graphical SFTP client for copying files between this \
+pub const DESCRIPTION: &str = "Graphical SFTP and FTP client for copying files between this \
                                computer and remote servers, in the spirit of WinSCP.";
 
 /// How the running program was built. Front ends fill this in from their build script.

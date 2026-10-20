@@ -235,6 +235,7 @@ mod tests {
             port: 22,
             user: String::from("me"),
             password_saved: false,
+            ftp: crate::sites::FtpOptions::default(),
         };
         assert_eq!(keyring_label(&site), "GuiSCP: me@host");
     }

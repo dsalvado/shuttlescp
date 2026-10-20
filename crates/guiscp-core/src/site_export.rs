@@ -173,6 +173,9 @@ pub struct ExportedSite {
     pub port: u16,
     /// Login user name.
     pub user: String,
+    /// FTP settings (exports from older versions have none: the defaults apply).
+    #[serde(default)]
+    pub ftp: crate::sites::FtpOptions,
     /// Base64 of nonce followed by ciphertext, when the password was exported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
@@ -288,6 +291,7 @@ pub fn export_sites(
             host: site.host.clone(),
             port: site.port,
             user: site.user.clone(),
+            ftp: site.ftp,
             password,
         });
     }
@@ -358,6 +362,7 @@ pub fn import_sites(
                 port: exported.port,
                 user: exported.user.clone(),
                 password_saved: false,
+                ftp: exported.ftp,
             };
             Ok((site, password))
         })
@@ -479,6 +484,7 @@ mod tests {
             port: 22,
             user: String::from("me"),
             password_saved: true,
+            ftp: crate::sites::FtpOptions::default(),
         }
     }
 
