@@ -208,6 +208,12 @@ label.about-name {
     font-weight: bold;
 }
 
+/* The source code link: just the underlined address, aligned with the text above. */
+button.about-link {
+    min-height: 0;
+    padding: 0;
+}
+
 label.about-details {
     font-family: monospace;
     font-size: 8pt;

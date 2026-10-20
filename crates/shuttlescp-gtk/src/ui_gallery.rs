@@ -24,7 +24,7 @@ use crate::passphrase_dialog::{self, PassphrasePurpose};
 /// Environment variable naming the folder the pictures go into.
 pub const ENV_VAR: &str = "SHUTTLESCP_UI_GALLERY";
 /// Application ID used while taking the pictures.
-pub const APP_ID: &str = "io.github.shuttlescp.ShuttleSCP.Gallery";
+pub const APP_ID: &str = "io.github.dsalvado.ShuttleSCP.Gallery";
 /// Time for a window to open and draw before its picture is taken.
 const SETTLE: Duration = Duration::from_millis(800);
 

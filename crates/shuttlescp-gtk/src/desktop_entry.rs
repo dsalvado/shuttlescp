@@ -12,9 +12,13 @@ use relm4::gtk::glib;
 
 use shuttlescp_core::about;
 
-/// Desktop entry the app installed while it was called GuiSCP; removed so the launcher
+/// Desktop entries earlier versions installed under other app ids (while the app was
+/// called GuiSCP, and before its id named the GitHub account); removed so the launcher
 /// does not list the app twice.
-const LEGACY_ENTRY: &str = "io.github.guiscp.GuiScp.desktop";
+const LEGACY_ENTRIES: [&str; 2] = [
+    "io.github.guiscp.GuiScp.desktop",
+    "io.github.shuttlescp.ShuttleSCP.desktop",
+];
 
 /// Theme icon used for the app (also on the About dialog).
 pub const APP_ICON: &str = "folder-remote";
@@ -37,11 +41,12 @@ pub fn install(app_id: &str) {
         }
     };
     let applications = glib::user_data_dir().join("applications");
-    let legacy = applications.join(LEGACY_ENTRY);
-    if legacy.exists() {
-        match std::fs::remove_file(&legacy) {
-            Ok(()) => tracing::info!("removed the old GuiSCP desktop entry {}", legacy.display()),
-            Err(error) => tracing::warn!("cannot remove {}: {error}", legacy.display()),
+    for legacy in LEGACY_ENTRIES.map(|name| applications.join(name)) {
+        if legacy.exists() {
+            match std::fs::remove_file(&legacy) {
+                Ok(()) => tracing::info!("removed the old desktop entry {}", legacy.display()),
+                Err(error) => tracing::warn!("cannot remove {}: {error}", legacy.display()),
+            }
         }
     }
     let path = applications.join(format!("{app_id}.desktop"));

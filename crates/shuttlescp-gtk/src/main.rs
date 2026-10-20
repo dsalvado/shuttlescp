@@ -28,7 +28,7 @@ use shuttlescp_core::logging;
 use crate::app::{App, AppInit};
 
 /// GTK application identifier (reverse-DNS form, used for D-Bus and desktop integration).
-const APP_ID: &str = "io.github.shuttlescp.ShuttleSCP";
+const APP_ID: &str = "io.github.dsalvado.ShuttleSCP";
 
 fn main() {
     // Settings are read before logging starts because they hold the log level; a load

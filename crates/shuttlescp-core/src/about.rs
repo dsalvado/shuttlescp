@@ -11,6 +11,12 @@ pub const APP_NAME: &str = "ShuttleSCP";
 pub const DESCRIPTION: &str = "Graphical SFTP and FTP client for copying files between this \
                                computer and remote servers, in the spirit of WinSCP.";
 
+/// The licence the app is published under, as shown to users.
+pub const LICENSE: &str = "GNU General Public License, version 3 or later";
+
+/// Where the source code is published.
+pub const WEBSITE: &str = env!("CARGO_PKG_REPOSITORY");
+
 /// How the running program was built. Front ends fill this in from their build script.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildInfo {

@@ -390,7 +390,7 @@ impl SimpleComponent for App {
             next_session: 0,
             session_notebook: session_notebook.clone(),
             pending: PendingStore::load(PendingTransfers::default_path()),
-            host: glib::host_name().into(),
+            host: computer_name(),
             config,
             config_path,
             logger,
@@ -1173,6 +1173,16 @@ fn track_window_size(window: &gtk::ApplicationWindow, sender: &ComponentSender<A
     let on_height = report.clone();
     window.connect_default_height_notify(move |window| on_height(window));
     window.connect_maximized_notify(move |window| report(window));
+}
+
+/// This computer's name, for the titles of sessions that are not connected. The UI
+/// gallery uses a made-up one, so its pictures can be shared.
+fn computer_name() -> String {
+    #[cfg(debug_assertions)]
+    if std::env::var_os(crate::ui_gallery::ENV_VAR).is_some() {
+        return String::from("my-computer");
+    }
+    glib::host_name().into()
 }
 
 /// Mark a notebook with the colour of the session it shows (none: no colour).

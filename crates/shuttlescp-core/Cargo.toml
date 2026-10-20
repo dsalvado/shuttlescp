@@ -4,6 +4,8 @@ description = "ShuttleSCP business logic, independent of any GUI toolkit"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # No GUI toolkit (GTK, GLib, relm4, ...) may be added here: front ends depend on this
 # crate, never the other way round.

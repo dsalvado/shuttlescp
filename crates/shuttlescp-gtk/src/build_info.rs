@@ -88,6 +88,14 @@ pub fn show_about(parent: &gtk::Window, log_path: Option<&std::path::Path>) {
             &["dim-label"],
         ));
     }
+    heading.append(&dialog::text(
+        &format!("Free software: {}", about::LICENSE),
+        &["dim-label"],
+    ));
+    let website = gtk::LinkButton::with_label(about::WEBSITE, about::WEBSITE);
+    website.set_halign(gtk::Align::Start);
+    website.add_css_class("about-link");
+    heading.append(&website);
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     top.append(&logo);
     top.append(&heading);

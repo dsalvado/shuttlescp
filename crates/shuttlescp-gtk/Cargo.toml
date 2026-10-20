@@ -5,6 +5,8 @@ description = "ShuttleSCP for Linux: relm4 / GTK 4 front end"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 shuttlescp-core = { path = "../shuttlescp-core" }
