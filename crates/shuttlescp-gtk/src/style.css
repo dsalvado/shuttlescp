@@ -86,6 +86,14 @@ menubar > item {
     border-radius: 3px;
 }
 
+/* The open menu's title: a soft highlight, instead of the blue line GTK's own theme
+   (used on Windows) draws along its bottom edge. */
+menubar > item:selected {
+    box-shadow: none;
+    background-color: alpha(@theme_selected_bg_color, 0.2);
+    color: inherit;
+}
+
 /* Smaller text in the menu bar and its menus than in the rest of the window. */
 menubar,
 menubar popover.menu {
