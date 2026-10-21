@@ -1171,7 +1171,14 @@ impl App {
         let Some(current) = self.session(session) else {
             return;
         };
-        let dest_dir = match side.other() {
+        // A delete has no destination: it stays on the pane's side, so deleting local
+        // files works without a connection.
+        let dest_side = if kind == JobKind::Delete {
+            side
+        } else {
+            side.other()
+        };
+        let dest_dir = match dest_side {
             Side::Local => SidePath::Local(current.local_dir.clone()),
             Side::Remote => match &current.connection {
                 Some(connection) => SidePath::Remote(connection.dir.clone()),
