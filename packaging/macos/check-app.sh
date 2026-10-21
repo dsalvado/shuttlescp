@@ -81,21 +81,30 @@ if [[ -z "${SKIP_RUN:-}" && $problems -eq 0 ]]; then
         problem "GTK could not load some of its files (above)"
     fi
     # Every library and file the running app uses must come from the bundle (or macOS),
-    # even on a Mac that has Homebrew.
+    # even on a Mac that has Homebrew. Translations are the exception: GTK looks for them
+    # in a folder compiled into it, which no setting can move. Without Homebrew it finds
+    # none and shows its few own words (in file dialogs) in English; with it, it reads
+    # Homebrew's. They are text only, so either way nothing breaks.
     outside=$(lsof -p "$pid" -Fn 2> /dev/null | sed -n 's/^n//p' |
-        grep -E '^(/opt/homebrew|/usr/local)/' | sort -u || true)
+        grep -E '^(/opt/homebrew|/usr/local)/' | grep -vE '/share/locale/[^/]+/LC_MESSAGES/[^/]+\.mo$' |
+        sort -u || true)
     if [[ -n "$outside" ]]; then
         echo "$outside" >&2
         problem "the running app uses files outside the bundle (above)"
     fi
     kill -TERM "$pid" 2> /dev/null || true
-    for _ in $(seq 10); do
+    for _ in $(seq 20); do
         kill -0 "$pid" 2> /dev/null || break
         sleep 1
     done
     if kill -0 "$pid" 2> /dev/null; then
-        problem "the app did not quit when asked"
+        problem "the app did not quit when asked (its output and log follow)"
+        # Where it is stuck, for the record.
+        sample "$pid" 2 -file "$scratch/sample.txt" > /dev/null 2>&1 &&
+            grep -E "^ +[0-9]+ Thread_.*main-thread" -A 40 "$scratch/sample.txt" | cut -c1-160 >&2 || true
         kill -KILL "$pid" 2> /dev/null || true
+        tail -n 20 "$scratch/output.txt" >&2 || true
+        tail -n 20 "$log" >&2 || true
     fi
     rm -rf "$scratch"
 fi
