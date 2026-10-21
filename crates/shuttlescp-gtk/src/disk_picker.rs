@@ -198,8 +198,39 @@ fn list_disks(monitor: &gio::VolumeMonitor) -> Vec<Disk> {
         let path = mount.root().path()?;
         // The icon is kept as GIO's text form, so the core crate needs no GIO types.
         let icon = IconExt::to_string(&mount.icon())
+            .filter(|text| icon_loadable(text))
             .map_or_else(|| ROOT_DISK_ICON.to_owned(), |text| text.to_string());
         (path != root).then(|| Disk::new(mount.name().into(), SidePath::Local(path), icon))
     }));
     found
+}
+
+/// Whether GTK can show a disk's icon, given in GIO's text form. On Windows GIO names
+/// icons stored inside system files, such as `C:\Windows\system32\imageres.dll,-36`
+/// (icon 36 of that file); read back, that text is a file that does not exist.
+fn icon_loadable(text: &str) -> bool {
+    gio::Icon::for_string(text).is_ok_and(|icon| {
+        icon.downcast_ref::<gio::FileIcon>()
+            .is_none_or(|icon| icon.file().path().is_some_and(|path| path.is_file()))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icons_inside_system_files_are_not_loadable() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let picture = temp.path().join("disk.png");
+        std::fs::write(&picture, b"").expect("write");
+        let missing = format!("{},-36", temp.path().join("imageres.dll").display());
+
+        assert!(icon_loadable(ROOT_DISK_ICON), "a theme icon");
+        assert!(
+            icon_loadable(&picture.display().to_string()),
+            "an icon file"
+        );
+        assert!(!icon_loadable(&missing), "icon 36 of a system file");
+    }
 }
