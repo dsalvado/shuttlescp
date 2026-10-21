@@ -33,10 +33,10 @@ jobs:
       - name: Check out the code
         uses: actions/checkout@v7
 
-      - name: Install GTK 4
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libgtk-4-dev
+      # The same packages everywhere (see the script): an AppImage only bundles what
+      # the build machine has.
+      - name: Install GTK 4 and its add-ons
+        run: sudo packaging/linux/install-build-deps.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -57,3 +57,36 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+  # Build the AppImage on every change too, exactly as a release would, and keep it as
+  # an artifact (a file attached to the run, downloadable for 14 days from the run's
+  # page). A problem in the packaging then shows before a release, not after.
+  appimage:
+    name: AppImage
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Install GTK 4 and its add-ons
+        run: sudo packaging/linux/install-build-deps.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the AppImage
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          packaging/linux/build-appimage.sh
+
+      - name: Keep it as an artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ShuttleSCP-AppImage
+          path: dist/ShuttleSCP-*-x86_64.AppImage
+          retention-days: 14
+          if-no-files-found: error

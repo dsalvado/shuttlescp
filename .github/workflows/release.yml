@@ -50,10 +50,10 @@ jobs:
             exit 1
           fi
 
-      - name: Install GTK 4
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libgtk-4-dev
+      # The same packages everywhere (see the script): an AppImage only bundles what
+      # the build machine has.
+      - name: Install GTK 4 and its add-ons
+        run: sudo packaging/linux/install-build-deps.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

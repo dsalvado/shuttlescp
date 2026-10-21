@@ -7,7 +7,20 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-10-20
+## [0.9.1] - 2026-10-21
+
+### Fixed
+
+- The AppImage includes GTK's add-ons again: SVG images load (0.9.0 showed a fallback
+  arrow on the ".." row), drawing uses the graphics card instead of falling back to
+  software, and input methods (accents, Asian scripts) work.
+
+### Changed
+
+- Every change now builds the AppImage in CI too, so packaging problems show before a
+  release.
+
+## [0.9.0] - 2026-10-21
 
 The first public release: a public beta. Feedback and bug reports are welcome on
 [GitHub Issues](https://github.com/dsalvado/shuttlescp/issues).
@@ -38,5 +51,6 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/dsalvado/shuttlescp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/dsalvado/shuttlescp/releases/tag/v0.9.0
