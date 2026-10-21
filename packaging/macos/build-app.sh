@@ -53,11 +53,15 @@ for size in 16 32 128 256 512; do
         -o "$ICONSET/icon_${size}x${size}@2x.png"
 done
 
-# 3. The bundle.
+# 3. The Mac-style icons used inside the app (see fetch-icons.sh).
+"$ROOT/packaging/macos/fetch-icons.sh"
+
+# 4. The bundle. cp -P keeps the icons' alias links as links.
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/shuttlescp"
 iconutil --convert icns "$ICONSET" --output "$APP/Contents/Resources/ShuttleSCP.icns"
+cp -RP "$WORK/icons" "$APP/Contents/Resources/icons"
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -91,7 +95,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# 4. Sign it (ad hoc, see the top).
+# 5. Sign it (ad hoc, see the top).
 codesign --force --sign - "$APP"
 
 echo "==> Built $APP"

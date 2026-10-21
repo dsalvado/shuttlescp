@@ -530,7 +530,10 @@ impl SimpleComponent for App {
         }
         resize_grips::add_corner_grips(&root, &widgets.overlay);
         #[cfg(target_os = "macos")]
-        theme::follow_system_appearance(&root);
+        {
+            theme::follow_system_appearance(&root);
+            theme::use_mac_icons();
+        }
         track_window_size(&root, &sender);
         let about_click = gtk::GestureClick::new();
         let about_window = root.clone();

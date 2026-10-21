@@ -253,6 +253,40 @@ pub fn follow_system_appearance(window: &gtk::ApplicationWindow) {
     });
 }
 
+/// macOS: the Mac-style icon theme (made by packaging/macos/fetch-icons.sh from
+/// WhiteSur), used instead of GTK's own Linux-style icons.
+#[cfg(target_os = "macos")]
+const MAC_ICON_THEME: &str = "ShuttleSCP-WhiteSur";
+
+/// macOS: use the Mac-style icons, if they are there: in the app bundle
+/// (`ShuttleSCP.app/Contents/Resources/icons`), or for a build run from `target/`, in
+/// `target/macos/icons`. Without them GTK's own icons stay.
+#[cfg(target_os = "macos")]
+pub fn use_mac_icons() {
+    let Some(dir) = mac_icons_dir() else {
+        tracing::debug!("no Mac icons found; run packaging/macos/fetch-icons.sh");
+        return;
+    };
+    let (Some(display), Some(settings)) = (gdk::Display::default(), gtk::Settings::default())
+    else {
+        return;
+    };
+    tracing::debug!("using the Mac icons in {}", dir.display());
+    gtk::IconTheme::for_display(&display).add_search_path(&dir);
+    settings.set_gtk_icon_theme_name(Some(MAC_ICON_THEME));
+}
+
+/// macOS: the folder holding the Mac icon theme, if any.
+#[cfg(target_os = "macos")]
+fn mac_icons_dir() -> Option<PathBuf> {
+    // Contents/MacOS/shuttlescp in a bundle, target/<profile>/shuttlescp in a build.
+    let exe = std::env::current_exe().ok()?;
+    let above = exe.parent()?.parent()?;
+    [above.join("Resources/icons"), above.join("macos/icons")]
+        .into_iter()
+        .find(|dir| dir.join(MAC_ICON_THEME).join("index.theme").is_file())
+}
+
 /// macOS: whether the system appearance is Dark. Read with the `defaults` tool (a few
 /// milliseconds), which keeps the app free of unsafe system calls; the setting is
 /// missing in Light mode.
