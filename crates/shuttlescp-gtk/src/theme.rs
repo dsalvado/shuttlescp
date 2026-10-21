@@ -37,6 +37,8 @@ const ACCENT_NAMES: [&str; 4] = [
 
 /// Name of the GTK settings property holding the theme.
 const THEME_PROPERTY: &str = "gtk-theme-name";
+/// GTK settings holding the light/dark and contrast preferences.
+const PREFERENCE_PROPERTIES: [&str; 2] = ["gtk-interface-color-scheme", "gtk-interface-contrast"];
 
 /// Directories GTK searches for themes, in GTK's own lookup order.
 ///
@@ -213,10 +215,21 @@ pub fn available_themes(search_dirs: &[PathBuf]) -> Vec<String> {
 ///
 /// * `choice` - Theme to use; [`ThemeChoice::System`] drops any override
 pub fn apply(choice: &ThemeChoice) {
+    use relm4::gtk::prelude::*;
+
     let Some(settings) = gtk::Settings::default() else {
         tracing::error!("cannot change theme: no display connected");
         return;
     };
+    // Loading Adwaita-dark or HighContrast leaves "dark" or "more contrast" on GTK's
+    // theme loader, and GTK reads it back when picking the next theme, so without a
+    // desktop that sets these preferences (Windows) the look stuck. Announcing the
+    // settings again copies their real values back to the loader first.
+    for property in PREFERENCE_PROPERTIES {
+        if settings.find_property(property).is_some() {
+            settings.notify(property);
+        }
+    }
     match choice {
         // Removes the app-specific value so GTK follows the desktop setting again.
         ThemeChoice::System => settings.reset_property(THEME_PROPERTY),
