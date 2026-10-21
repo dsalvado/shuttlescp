@@ -2,8 +2,9 @@
 #
 # Runs when a version tag such as "v0.9.0" is pushed (see docs/RELEASING.md). It checks
 # that the tag matches the version in Cargo.toml and that CHANGELOG.md describes it,
-# runs the tests, builds the AppImage, writes and signs the update manifest, and
-# publishes everything as a GitHub release whose notes are the changelog's section.
+# runs the tests, builds the AppImage and (on a Mac) the macOS disk image, writes and
+# signs the update manifest, and publishes everything as a GitHub release whose notes
+# are the changelog's section.
 # Installed copies of ShuttleSCP then find the new version through the manifest.
 name: Release
 
@@ -16,8 +17,45 @@ permissions:
   contents: write
 
 jobs:
+  # The macOS disk image, built on the oldest macOS runner: the app then runs on that
+  # macOS or newer (see packaging/macos/build-app.sh). It is handed to the publishing
+  # job below as an artifact. Nothing here is signed with a secret.
+  macos:
+    name: macOS disk image
+    runs-on: macos-14
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Install GTK 4 and the packaging tools
+        run: packaging/macos/install-build-deps.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # build-app.sh also checks the bundle (check-app.sh).
+      - name: Build the disk image
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          packaging/macos/build-dmg.sh
+
+      - name: Hand it to the publishing job
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-dmg
+          path: dist/ShuttleSCP-*-macos-arm64.dmg
+          retention-days: 1
+          if-no-files-found: error
+
   release:
     name: Build and publish
+    needs: macos
     # Ubuntu 24.04: the AppImage then runs on systems with glibc 2.39 or newer and
     # needs nothing installed. Building on the oldest supported system is the rule.
     runs-on: ubuntu-24.04
@@ -77,6 +115,13 @@ jobs:
       - name: Check the AppImage
         run: packaging/linux/check-appimage.sh dist/ShuttleSCP-*-x86_64.AppImage
 
+      # v8 fails if the file does not match the checksum recorded when it was handed over.
+      - name: Collect the macOS disk image
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-dmg
+          path: dist
+
       # The private signing key is a repository secret: GitHub hands it to this step
       # only, and hides it in the logs. It is written to a temporary file just for the
       # signing and removed straight after.
@@ -96,7 +141,7 @@ jobs:
           key=$(mktemp)
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
-          PUBLIC_KEY="$public_key" packaging/make-release-manifest.sh dist/ShuttleSCP-*-x86_64.AppImage "$key"
+          PUBLIC_KEY="$public_key" packaging/make-release-manifest.sh dist/ShuttleSCP-*-x86_64.AppImage "$key" dist/ShuttleSCP-*-macos-arm64.dmg
 
       # gh is GitHub's command-line tool, already on the runner. The token is a
       # short-lived one GitHub makes for this run, limited by "permissions" above.
@@ -115,6 +160,7 @@ jobs:
             --title "$title" \
             --notes-file dist/release-notes.md \
             dist/ShuttleSCP-*-x86_64.AppImage \
+            dist/ShuttleSCP-*-macos-arm64.dmg \
             dist/latest.json \
             dist/latest.json.sig \
             dist/SHA256SUMS

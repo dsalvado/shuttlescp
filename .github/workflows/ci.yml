@@ -95,3 +95,47 @@ jobs:
           path: dist/ShuttleSCP-*-x86_64.AppImage
           retention-days: 14
           if-no-files-found: error
+
+  # macOS: lint and test there too (it compiles the Mac-only code: the Keychain, the
+  # Finder icons), then build the .dmg exactly as a release would and keep it as an
+  # artifact. macos-14 is the oldest macOS runner GitHub offers; Homebrew builds its
+  # libraries for the system it runs on, so this sets the oldest macOS the app runs
+  # on (see packaging/macos/build-app.sh). Apple silicon, like the runner.
+  macos:
+    name: macOS app
+    runs-on: macos-14
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Install GTK 4 and the packaging tools
+        run: packaging/macos/install-build-deps.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # build-app.sh runs check-app.sh on the bundle: no library from outside it, and
+      # the app starts from it and quits. See the scripts.
+      - name: Build the disk image
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          packaging/macos/build-dmg.sh
+
+      - name: Keep it as an artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ShuttleSCP-macOS
+          path: dist/ShuttleSCP-*-macos-arm64.dmg
+          retention-days: 14
+          if-no-files-found: error
