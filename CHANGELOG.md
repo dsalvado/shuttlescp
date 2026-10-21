@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-21
+
 ### Added
 
 - **macOS version** (Apple silicon, macOS 14 or newer), as a disk image with a
@@ -89,7 +91,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/dsalvado/shuttlescp/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/dsalvado/shuttlescp/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/dsalvado/shuttlescp/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/dsalvado/shuttlescp/compare/v0.9.0...v0.9.1
