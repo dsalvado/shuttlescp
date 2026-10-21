@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use relm4::RelmRemoveAllExt;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use shuttlescp_core::remote::{ConnectError, HostKey, Remote};
 use shuttlescp_core::secrets;
@@ -169,6 +169,9 @@ pub enum LoginCmd {
         saved: bool,
         /// Error text if the keyring refused.
         result: Result<(), String>,
+        /// The typed password, handed back when storing it failed: saving the site
+        /// emptied the password field, and the password would otherwise be lost.
+        unsaved: Option<SecretString>,
     },
     /// The keyring entry of a deleted site was removed.
     PasswordForgotten(Result<(), String>),
@@ -426,6 +429,7 @@ impl LoginDialog {
                     LoginCmd::PasswordChanged {
                         site_id,
                         saved: true,
+                        unsaved: result.is_err().then_some(password),
                         result: result.map_err(|error| error.to_string()),
                     }
                 });
@@ -437,6 +441,7 @@ impl LoginDialog {
                         site_id,
                         saved: false,
                         result: result.map_err(|error| error.to_string()),
+                        unsaved: None,
                     }
                 });
             }
@@ -1355,6 +1360,7 @@ impl Component for LoginDialog {
                 site_id,
                 saved,
                 result,
+                unsaved,
             } => match result {
                 Ok(()) => {
                     if let Some(site) = self.book.sites.iter_mut().find(|site| site.id == site_id) {
@@ -1381,6 +1387,16 @@ impl Component for LoginDialog {
                 Err(error) => {
                     tracing::error!("keyring update failed: {error}");
                     self.status = format!("Keyring: {error}");
+                    // Put the password back, so Login still works with it.
+                    if let Some(password) = unsaved
+                        && !self.editing
+                        && self.selected_site().is_some_and(|site| site.id == site_id)
+                    {
+                        self.password.set_text(password.expose_secret());
+                        self.status = format!(
+                            "Password not saved ({error}); it stays in the field for this login"
+                        );
+                    }
                 }
             },
             LoginCmd::PassphraseSaved { site_id, result } => match result {
