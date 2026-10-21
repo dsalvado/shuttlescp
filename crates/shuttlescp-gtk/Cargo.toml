@@ -16,6 +16,14 @@ relm4 = "0.11"
 secrecy.workspace = true
 tracing.workspace = true
 
+# macOS: the icons Finder shows, asked from the system's NSWorkspace (see mac_icons.rs).
+# Only the parts used are switched on; the calls used are all safe Rust.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "NSImageRep", "NSWorkspace", "objc2-uniform-type-identifiers"] }
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 

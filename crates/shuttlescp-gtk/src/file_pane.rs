@@ -1308,6 +1308,41 @@ fn file_icon(entry: &FileEntry) -> gio::Icon {
     gio::content_type_get_icon(&content_type)
 }
 
+/// Show a file or folder's icon: on macOS the one Finder shows (see
+/// [`crate::mac_icons`]), elsewhere, or if macOS has none, the icon theme's.
+///
+/// # Arguments
+///
+/// * `icon` - The row's image
+/// * `entry` - The file or folder
+/// * `path` - Its full path (used on macOS for special folders, which are local)
+/// * `special_icon` - Theme icon of a special folder such as Documents, if it is one
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn show_entry_icon(
+    icon: &gtk::Image,
+    entry: &FileEntry,
+    path: &Path,
+    special_icon: Option<&'static str>,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::mac_icons;
+        let finder = match entry.kind() {
+            EntryKind::Directory if special_icon.is_some() => mac_icons::local_folder(path),
+            EntryKind::Directory => mac_icons::folder(),
+            EntryKind::File => mac_icons::file(entry.name()),
+        };
+        if let Some(finder) = finder {
+            icon.set_paintable(Some(&finder));
+            return;
+        }
+    }
+    match entry.kind() {
+        EntryKind::Directory => icon.set_icon_name(Some(special_icon.unwrap_or(FOLDER_ICON))),
+        EntryKind::File => icon.set_from_gicon(&file_icon(entry)),
+    }
+}
+
 /// Draw a cell's text in red while a running transfer uses its row's item.
 fn bind_in_use(row: &Row, label: &gtk::Label) {
     match row {
@@ -1389,20 +1424,23 @@ impl RelmColumn for NameColumn {
         arrow.set_visible(matches!(item, Row::Parent { .. }));
         match item {
             Row::Parent { .. } => {
+                #[cfg(target_os = "macos")]
+                if let Some(folder) = crate::mac_icons::folder() {
+                    icon.set_paintable(Some(&folder));
+                } else {
+                    icon.set_icon_name(Some(FOLDER_ICON));
+                }
+                #[cfg(not(target_os = "macos"))]
                 icon.set_icon_name(Some(FOLDER_ICON));
                 label.set_label("..");
             }
             Row::Entry {
                 entry,
+                path,
                 special_icon,
                 ..
             } => {
-                match entry.kind() {
-                    EntryKind::Directory => {
-                        icon.set_icon_name(Some(special_icon.unwrap_or(FOLDER_ICON)));
-                    }
-                    EntryKind::File => icon.set_from_gicon(&file_icon(entry)),
-                }
+                show_entry_icon(icon, entry, path, *special_icon);
                 label.set_label(&entry.display_name());
             }
         }

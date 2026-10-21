@@ -11,6 +11,8 @@ mod file_pane;
 mod key_passphrase_dialog;
 mod log_tail;
 mod login_dialog;
+#[cfg(target_os = "macos")]
+mod mac_icons;
 mod name_dialog;
 mod passphrase_dialog;
 mod resize_grips;
