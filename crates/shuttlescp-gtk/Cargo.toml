@@ -27,6 +27,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "NSImageRep", "NSWorkspace", "objc2-uniform-type-identifiers"] }
 objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType"] }
 
+# Windows: the icons File Explorer shows (see win_icons.rs); the crate keeps the unsafe
+# Windows calls on its side.
+[target.'cfg(windows)'.dependencies]
+file_icon_provider = "1.0.2"
+
 [dev-dependencies]
 tempfile.workspace = true
 

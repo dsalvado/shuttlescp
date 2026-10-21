@@ -1318,41 +1318,85 @@ fn file_icon(entry: &FileEntry) -> gio::Icon {
     gio::content_type_get_icon(&content_type)
 }
 
-/// Show a file or folder's icon: on macOS the one Finder shows (see
-/// [`crate::mac_icons`]), elsewhere, or if macOS has none, the icon theme's.
+/// Show a file or folder's icon: the one the system's file manager shows (see
+/// [`system_icon`]), or else the icon theme's.
 ///
 /// # Arguments
 ///
 /// * `icon` - The row's image
 /// * `entry` - The file or folder
-/// * `path` - Its full path (used on macOS for special folders, which are local)
+/// * `path` - Its full path
 /// * `special_icon` - Theme icon of a special folder such as Documents, if it is one
-#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 fn show_entry_icon(
     icon: &gtk::Image,
     entry: &FileEntry,
     path: &SidePath,
     special_icon: Option<&'static str>,
 ) {
-    #[cfg(target_os = "macos")]
-    {
-        use crate::mac_icons;
-        let finder = match entry.kind() {
-            EntryKind::Directory if special_icon.is_some() => {
-                path.as_local().and_then(mac_icons::local_folder)
-            }
-            EntryKind::Directory => mac_icons::folder(),
-            EntryKind::File => mac_icons::file(entry.name()),
-        };
-        if let Some(finder) = finder {
-            icon.set_paintable(Some(&finder));
-            return;
-        }
+    if let Some(system) = system_icon(entry, path, special_icon) {
+        icon.set_paintable(Some(&system));
+        return;
     }
     match entry.kind() {
         EntryKind::Directory => icon.set_icon_name(Some(special_icon.unwrap_or(FOLDER_ICON))),
         EntryKind::File => icon.set_from_gicon(&file_icon(entry)),
     }
+}
+
+/// The icon Finder shows for a file or folder (see [`crate::mac_icons`]). Special
+/// folders, which are on this Mac, are looked up by path.
+#[cfg(target_os = "macos")]
+fn system_icon(
+    entry: &FileEntry,
+    path: &SidePath,
+    special_icon: Option<&'static str>,
+) -> Option<gdk::Texture> {
+    use crate::mac_icons;
+    match entry.kind() {
+        EntryKind::Directory if special_icon.is_some() => {
+            path.as_local().and_then(mac_icons::local_folder)
+        }
+        EntryKind::Directory => mac_icons::folder(),
+        EntryKind::File => mac_icons::file(entry.name()),
+    }
+}
+
+/// The icon File Explorer shows for a file or folder (see [`crate::win_icons`]).
+/// Special folders, which are on this computer, are looked up by path.
+#[cfg(windows)]
+fn system_icon(
+    entry: &FileEntry,
+    path: &SidePath,
+    special_icon: Option<&'static str>,
+) -> Option<gdk::Texture> {
+    use crate::win_icons;
+    match entry.kind() {
+        EntryKind::Directory if special_icon.is_some() => {
+            path.as_local().and_then(win_icons::local_folder)
+        }
+        EntryKind::Directory => win_icons::folder(),
+        EntryKind::File => win_icons::file(entry.name(), path.as_local()),
+    }
+}
+
+/// Linux: the icon theme's icons are the desktop's own, so there is no other source.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn system_icon(
+    _entry: &FileEntry,
+    _path: &SidePath,
+    _special_icon: Option<&'static str>,
+) -> Option<gdk::Texture> {
+    None
+}
+
+/// The system file manager's icon for an ordinary folder; `None` on Linux.
+fn system_folder_icon() -> Option<gdk::Texture> {
+    #[cfg(target_os = "macos")]
+    return crate::mac_icons::folder();
+    #[cfg(windows)]
+    return crate::win_icons::folder();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    None
 }
 
 /// Draw a cell's text in red while a running transfer uses its row's item.
@@ -1436,14 +1480,10 @@ impl RelmColumn for NameColumn {
         arrow.set_visible(matches!(item, Row::Parent { .. }));
         match item {
             Row::Parent { .. } => {
-                #[cfg(target_os = "macos")]
-                if let Some(folder) = crate::mac_icons::folder() {
-                    icon.set_paintable(Some(&folder));
-                } else {
-                    icon.set_icon_name(Some(FOLDER_ICON));
+                match system_folder_icon() {
+                    Some(folder) => icon.set_paintable(Some(&folder)),
+                    None => icon.set_icon_name(Some(FOLDER_ICON)),
                 }
-                #[cfg(not(target_os = "macos"))]
-                icon.set_icon_name(Some(FOLDER_ICON));
                 label.set_label("..");
             }
             Row::Entry {

@@ -23,6 +23,8 @@ mod transfer_panel;
 #[cfg(debug_assertions)]
 mod ui_gallery;
 mod update_dialog;
+#[cfg(windows)]
+mod win_icons;
 
 use relm4::RelmApp;
 
