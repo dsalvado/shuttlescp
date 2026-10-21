@@ -168,6 +168,9 @@ is missing or does not match the app's public key.
 
 - **Build the AppImage**: `packaging/linux/build-appimage.sh` makes
   `dist/ShuttleSCP-<version>-x86_64.AppImage`, exactly as the release workflow does.
+- **Check it**: `packaging/linux/check-appimage.sh dist/ShuttleSCP-*-x86_64.AppImage`
+  runs the checks CI and the release run on every AppImage (GTK's add-ons inside, no
+  forced theme or display backend).
 - **Check workflow files** before pushing them with
   [actionlint](https://github.com/rhysd/actionlint): `actionlint .github/workflows/*.yml`.
 - **Run the checks CI runs**:

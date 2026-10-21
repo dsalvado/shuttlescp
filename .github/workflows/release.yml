@@ -72,6 +72,11 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           packaging/linux/build-appimage.sh
 
+      # Problems earlier releases shipped with (missing GTK add-ons, a forced theme),
+      # checked on the AppImage itself before it is signed. See the script.
+      - name: Check the AppImage
+        run: packaging/linux/check-appimage.sh dist/ShuttleSCP-*-x86_64.AppImage
+
       # The private signing key is a repository secret: GitHub hands it to this step
       # only, and hides it in the logs. It is written to a temporary file just for the
       # signing and removed straight after.

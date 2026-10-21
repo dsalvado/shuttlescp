@@ -83,6 +83,11 @@ jobs:
           export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           packaging/linux/build-appimage.sh
 
+      # Problems earlier releases shipped with (missing GTK add-ons, a forced theme),
+      # checked on the AppImage itself. See the script.
+      - name: Check the AppImage
+        run: packaging/linux/check-appimage.sh dist/ShuttleSCP-*-x86_64.AppImage
+
       - name: Keep it as an artifact
         uses: actions/upload-artifact@v7
         with:

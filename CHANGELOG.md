@@ -7,6 +7,18 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-21
+
+### Fixed
+
+- The AppImage follows the theme picked in View › Theme (and the desktop's theme)
+  again; 0.9.1 was always drawn in plain Adwaita.
+
+### Changed
+
+- Every built AppImage is checked automatically before release: GTK's add-ons are
+  inside, and nothing forces the theme or the display backend.
+
 ## [0.9.1] - 2026-10-21
 
 ### Fixed
@@ -51,6 +63,7 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/dsalvado/shuttlescp/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/dsalvado/shuttlescp/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/dsalvado/shuttlescp/releases/tag/v0.9.0
