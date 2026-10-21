@@ -35,7 +35,7 @@ The automation lives in `.github/workflows/`, as YAML files GitHub reads:
 | File | Runs when | Does |
 |---|---|---|
 | `ci.yml` | a push to `master`, or a pull request | formatting check, lint (clippy), tests |
-| `release.yml` | a tag like `v1.0.0` is pushed | tests, AppImage, signed manifest, GitHub release |
+| `release.yml` | a tag like `v1.0.0` is pushed | tests, AppImage, macOS disk image, signed manifest, GitHub release |
 | `pages.yml` | `site/` changes on `master` | publishes the web page at https://shuttlescp.dsalvado.ca/ |
 
 Each workflow has **jobs**; each job runs on a **runner**, a fresh virtual machine GitHub
@@ -171,6 +171,14 @@ is missing or does not match the app's public key.
 - **Check it**: `packaging/linux/check-appimage.sh dist/ShuttleSCP-*-x86_64.AppImage`
   runs the checks CI and the release run on every AppImage (GTK's add-ons inside, no
   forced theme or display backend).
+- **Build the macOS app and disk image** (on a Mac): `packaging/macos/build-dmg.sh` makes
+  `dist/ShuttleSCP-<version>-macos-arm64.dmg` as the release workflow does; the release
+  builds it on GitHub's macos-14 runner, so the app runs on macOS 14 or newer (a build on
+  a newer Mac only runs on that macOS or newer, as Homebrew builds for the system it is
+  on).
+- **Check the app**: `packaging/macos/check-app.sh` (also run by `build-app.sh`): no
+  library from outside the bundle, GTK's run-time files inside, a valid signature, and
+  the app starts from the bundle without touching Homebrew.
 - **Check workflow files** before pushing them with
   [actionlint](https://github.com/rhysd/actionlint): `actionlint .github/workflows/*.yml`.
 - **Run the checks CI runs**:

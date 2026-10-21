@@ -7,6 +7,25 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- **macOS version** (Apple silicon, macOS 14 or newer), as a disk image with a
+  self-contained app. It follows the Mac: menus in the menu bar at the top of the screen,
+  window buttons on the left, the system's light or dark appearance, Mac-sized text,
+  Mac-style icons (from the WhiteSur icon theme) and the file icons Finder shows.
+  Passwords are saved in the Keychain. It checks for new versions and offers the new
+  disk image; it is not signed with an Apple Developer ID, so macOS asks to confirm it
+  the first time it is opened.
+- The server's pane has a drive list too: its mounted disks and network shares (Linux),
+  volumes (macOS) or drive letters (Windows).
+
+### Fixed
+
+- A password whose saving to the keyring failed is kept in the field for logging in,
+  instead of being lost.
+- With GTK's default theme (no Adwaita-style theme installed), the selected session and
+  transfer tabs were see-through and some highlights were missing.
+
 ## [0.9.3] - 2026-10-21
 
 ### Changed

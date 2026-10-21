@@ -10,7 +10,7 @@ on:
     branches: [master]
     paths:
       - "site/**"
-      - "docs/screenshot.png"
+      - "docs/screenshot*.png"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -40,8 +40,9 @@ jobs:
       - name: Set up Pages
         uses: actions/configure-pages@v6
 
-      - name: Add the screenshot
-        run: cp docs/screenshot.png site/screenshot.png
+      # One per system (screenshot.png is Linux's, screenshot-macos.png the Mac's).
+      - name: Add the screenshots
+        run: cp docs/screenshot*.png site/
 
       - name: Package the page
         uses: actions/upload-pages-artifact@v5
