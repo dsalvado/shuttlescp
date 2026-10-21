@@ -135,7 +135,9 @@ pub const DIALOG_BUTTONS: &str = "close:";
 pub const DIALOG_BUTTONS: &str = ":close";
 
 /// A compact title bar (see "Title bars" in style.css). On macOS its window buttons are
-/// the system's own (the coloured "traffic lights").
+/// drawn as the Mac's "traffic lights" (style-macos.css). GTK's switch to the system's
+/// own buttons is not used: with GTK 4.22, a click on one could leave AppKit waiting
+/// for the mouse button forever, and the app could then no longer quit.
 ///
 /// # Arguments
 ///
@@ -146,11 +148,6 @@ pub fn title_bar(title: Option<&str>, layout: &str) -> gtk::HeaderBar {
     let bar = gtk::HeaderBar::new();
     bar.add_css_class("compact-titlebar");
     bar.set_decoration_layout(Some(layout));
-    // Set by name: the typed setter needs the gtk4 crate's "v4_18" feature, which also
-    // changes other APIs this app uses. GTK before 4.18 lacks it and keeps GTK's buttons.
-    if cfg!(target_os = "macos") && bar.find_property("use-native-controls").is_some() {
-        bar.set_property("use-native-controls", true);
-    }
     if let Some(title) = title {
         let label = gtk::Label::builder()
             .label(title)

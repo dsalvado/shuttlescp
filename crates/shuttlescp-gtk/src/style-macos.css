@@ -26,3 +26,64 @@ textview.log-tail > text {
     font-family: "SF Mono", Menlo, monospace;
     font-size: 11px;
 }
+
+/* Window buttons as the Mac's "traffic lights": 12px circles 8px apart, red, yellow and
+   green, grey while the window is in the background; the symbols show while the
+   pointer is over the buttons. */
+headerbar.compact-titlebar windowcontrols > button {
+    min-height: 12px;
+    min-width: 12px;
+    /* The title bar (28px, style.css) would stretch them to its height. */
+    margin: 8px 4px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 0.5px alpha(black, 0.18);
+}
+
+/* GTK's theme gives the symbol a 30px minimum and its own hover background, which
+   would stretch the circles. */
+headerbar.compact-titlebar windowcontrols {
+    border-spacing: 0;
+}
+
+headerbar.compact-titlebar windowcontrols > button > image,
+headerbar.compact-titlebar windowcontrols > button:hover > image,
+headerbar.compact-titlebar windowcontrols > button:active > image {
+    min-height: 0;
+    min-width: 0;
+    -gtk-icon-size: 8px;
+    padding: 2px;
+    background: none;
+    box-shadow: none;
+    color: alpha(black, 0.55);
+    opacity: 0;
+}
+
+headerbar.compact-titlebar windowcontrols:hover > button > image {
+    opacity: 1;
+}
+
+headerbar.compact-titlebar windowcontrols > button.close,
+headerbar.compact-titlebar windowcontrols > button.close:hover {
+    background-color: #ff5f57;
+    color: alpha(black, 0.55);
+}
+
+headerbar.compact-titlebar windowcontrols > button.minimize,
+headerbar.compact-titlebar windowcontrols > button.minimize:hover {
+    background-color: #febc2e;
+}
+
+headerbar.compact-titlebar windowcontrols > button.maximize,
+headerbar.compact-titlebar windowcontrols > button.maximize:hover {
+    background-color: #28c840;
+}
+
+headerbar.compact-titlebar windowcontrols > button:active {
+    box-shadow: inset 0 0 0 12px alpha(black, 0.15);
+}
+
+headerbar.compact-titlebar:backdrop windowcontrols > button {
+    background-color: alpha(currentColor, 0.18);
+}
