@@ -2,21 +2,21 @@
 
    GTK on macOS counts 72 dots per inch, so a point is one pixel there; on Linux it
    counts 96, and 9pt is 12px. The sizes in style.css would be a quarter smaller on a
-   Mac, so here they are set in pixels, at the sizes of Apple's guidelines: 13px for
-   text and controls, 11px for small text. The font itself is already the system's
-   (San Francisco). */
+   Mac, so here they are set in pixels: 14px for text and controls (a step above the
+   13px of Apple's guidelines, easier to read in the dense file lists), 12px for small
+   text. The font itself is already the system's (San Francisco). */
 
 window {
-    font-size: 13px;
+    font-size: 14px;
 }
 
 /* Right-click menus of the file panes: the size of the Mac's own menus. */
 popover.menu.pane-menu {
-    font-size: 13px;
+    font-size: 14px;
 }
 
 label.about-name {
-    font-size: 17px;
+    font-size: 18px;
 }
 
 /* Fixed-width text: the Mac's own monospaced fonts. */
@@ -24,7 +24,7 @@ label.about-details,
 textview.log-tail,
 textview.log-tail > text {
     font-family: "SF Mono", Menlo, monospace;
-    font-size: 11px;
+    font-size: 12px;
 }
 
 /* Window buttons as the Mac's "traffic lights": 12px circles 8px apart, red, yellow and
@@ -86,4 +86,45 @@ headerbar.compact-titlebar windowcontrols > button:active {
 
 headerbar.compact-titlebar:backdrop windowcontrols > button {
     background-color: alpha(currentColor, 0.18);
+}
+
+/* Controls with the Mac's rounder corners. */
+entry,
+spinbutton,
+button.text-button,
+dropdown > button {
+    min-height: 24px;
+    border-radius: 6px;
+}
+
+/* Tabs as in Finder: taller, rounder, with room around the label; the ones not shown
+   in softer text. The session colours and the strip's base line stay as in style.css. */
+notebook.bottom-panel > header,
+notebook.session-tabs > header {
+    padding: 6px 8px 0 8px;
+}
+
+notebook.bottom-panel > header > tabs > tab,
+notebook.session-tabs > header > tabs > tab {
+    min-height: 22px;
+    padding: 3px 16px 4px 16px;
+    border-radius: 7px 7px 0 0;
+    font-size: 12px;
+}
+
+notebook.bottom-panel > header > tabs > tab:not(:checked) label,
+notebook.session-tabs > header > tabs > tab:not(:checked) label {
+    color: alpha(currentColor, 0.7);
+}
+
+/* The ends of a session's bracket of transfer tabs, and its pages, rounded to match. */
+notebook.bottom-panel > header > tabs > tab.group-start {
+    border-top-left-radius: 7px;
+}
+notebook.bottom-panel > header > tabs > tab.group-end {
+    border-top-right-radius: 7px;
+}
+.session-page,
+.session-transfers {
+    border-radius: 0 0 7px 7px;
 }
