@@ -1,5 +1,11 @@
 /* Application-wide style overrides. Loaded with application priority, so these rules
-   win over whichever GTK theme is active. */
+   win over whichever GTK theme is active.
+
+   Theme colours are taken by their classic names (@theme_bg_color for windows,
+   @theme_base_color for lists and text, @theme_selected_bg_color for the accent), which
+   every GTK 4 theme defines. The newer @window_bg_color / @view_bg_color /
+   @accent_bg_color exist only in libadwaita-style themes: GTK's own default theme (the
+   AppImage on some systems, macOS) lacks them, and a rule using them is dropped. */
 
 /* Smaller text throughout the app (the desktop default here is 10pt). Popovers and menus
    inherit it from the window. */
@@ -271,12 +277,12 @@ notebook.session-tabs > header > tabs > tab:hover:not(:checked) {
 
 /* The log tab (not a session's) joins its page in the plain view colour. */
 notebook.bottom-panel > header > tabs > tab:checked {
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
     border-color: alpha(currentColor, 0.15);
 }
 
 notebook.bottom-panel > stack {
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
 }
 
 /* Log text: a fixed-width font so columns of the log line up. */
@@ -306,7 +312,7 @@ textview.log-tail > text {
 }
 
 list.site-list > row.picked {
-    background-color: alpha(@accent_bg_color, 0.3);
+    background-color: alpha(@theme_selected_bg_color, 0.3);
 }
 
 /* Compact drop-down menus (the theme default is 32px tall items). */
@@ -332,7 +338,7 @@ popover.menu.pane-menu modelbutton {
 /* Dragging files: the folder row a drop would go into is highlighted as a whole, rather
    than the theme's outline around the single cell under the pointer. */
 columnview.data-table row.drop-row {
-    background-color: alpha(@accent_bg_color, 0.3);
+    background-color: alpha(@theme_selected_bg_color, 0.3);
 }
 columnview.data-table .pane-cell:drop(active) {
     box-shadow: none;
@@ -406,7 +412,7 @@ button.tab-close {
 /* "Interrupted transfers can be resumed" bar above the transfers list. */
 .transfer-panel .transfer-banner {
     padding: 3px 8px;
-    background-color: alpha(@accent_bg_color, 0.12);
+    background-color: alpha(@theme_selected_bg_color, 0.12);
     border-bottom: 1px solid alpha(currentColor, 0.1);
 }
 .transfer-panel .transfer-list {
@@ -453,13 +459,13 @@ notebook.bottom-panel > header tab box.tab-highlight {
     border-radius: 0 0 3px 3px;
 }
 .session-page {
-    background-color: @window_bg_color;
+    background-color: @theme_bg_color;
 }
 .session-transfers {
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
 }
 notebook.session-tabs > header > tabs > tab:checked {
-    background-color: @window_bg_color;
+    background-color: @theme_bg_color;
 }
 
 /* Session colour 0: blue. */
@@ -680,32 +686,32 @@ notebook.bottom-panel > header > tabs > tab.group-start ~ tab {
 }
 notebook.bottom-panel.shows-group-0 > header > tabs > tab.group-0:not(:checked) {
     margin-bottom: 0;
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
     background-image: linear-gradient(alpha(#3584e4, 0.14), alpha(#3584e4, 0.14));
 }
 notebook.bottom-panel.shows-group-1 > header > tabs > tab.group-1:not(:checked) {
     margin-bottom: 0;
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
     background-image: linear-gradient(alpha(#2ec27e, 0.14), alpha(#2ec27e, 0.14));
 }
 notebook.bottom-panel.shows-group-2 > header > tabs > tab.group-2:not(:checked) {
     margin-bottom: 0;
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
     background-image: linear-gradient(alpha(#ff7800, 0.14), alpha(#ff7800, 0.14));
 }
 notebook.bottom-panel.shows-group-3 > header > tabs > tab.group-3:not(:checked) {
     margin-bottom: 0;
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
     background-image: linear-gradient(alpha(#9141ac, 0.14), alpha(#9141ac, 0.14));
 }
 notebook.bottom-panel.shows-group-4 > header > tabs > tab.group-4:not(:checked) {
     margin-bottom: 0;
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
     background-image: linear-gradient(alpha(#2190a4, 0.14), alpha(#2190a4, 0.14));
 }
 notebook.bottom-panel.shows-group-5 > header > tabs > tab.group-5:not(:checked) {
     margin-bottom: 0;
-    background-color: @view_bg_color;
+    background-color: @theme_base_color;
     background-image: linear-gradient(alpha(#e5a50a, 0.14), alpha(#e5a50a, 0.14));
 }
 
