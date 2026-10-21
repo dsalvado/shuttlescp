@@ -37,11 +37,14 @@ zeroize = "1"
 ring = "0.17"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
-# The password keyring backend is the Linux Secret Service (GNOME Keyring, KWallet...).
-# Other systems get a stub that reports the keyring as unavailable until a native
-# backend (Windows Credential Manager, macOS Keychain) is added.
+# The password keyring backend is the Linux Secret Service (GNOME Keyring, KWallet...)
+# and the macOS Keychain. Other systems get a stub that reports the keyring as
+# unavailable until a native backend (Windows Credential Manager) is added.
 [target.'cfg(target_os = "linux")'.dependencies]
 oo7 = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
 
 [dev-dependencies]
 tempfile.workspace = true

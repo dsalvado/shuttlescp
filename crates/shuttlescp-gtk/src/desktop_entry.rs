@@ -3,7 +3,7 @@
 //! On Wayland, GNOME and other desktops pick a running app's icon from the desktop
 //! entry whose name matches the app id, not from the window. So at startup the app
 //! writes (or updates) `~/.local/share/applications/<app id>.desktop`, which also makes
-//! ShuttleSCP appear in the desktop's app launcher.
+//! ShuttleSCP appear in the desktop's app launcher. Other systems only get the icon.
 
 use std::path::Path;
 
@@ -37,6 +37,11 @@ pub fn install(app_id: &str) {
     install_icon();
     // Used for windows on X11, and by desktops that read the window's icon.
     gtk::Window::set_default_icon_name(APP_ICON);
+    // Desktop entries are a Linux (freedesktop) thing: a macOS .app bundle carries its
+    // own launcher details.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
 
     // From an AppImage, the program itself lives in a temporary mount that is gone once
     // it exits: the launcher must start the AppImage file instead.

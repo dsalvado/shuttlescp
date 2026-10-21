@@ -5,9 +5,11 @@
 //! by this app in a file of its own. Each entry is tagged with the app name and the site
 //! id, which also makes it identifiable in tools such as Seahorse.
 //!
-//! Other platforms do not have a backend yet (Windows Credential Manager and the macOS
-//! Keychain are the natural ones): there every call reports [`KeyringError::Unsupported`]
-//! and the app simply works without saved passwords.
+//! On macOS it is the user's login Keychain, which the system unlocks at login.
+//!
+//! Other platforms do not have a backend yet (Windows Credential Manager is the natural
+//! one): there every call reports [`KeyringError::Unsupported`] and the app simply works
+//! without saved passwords.
 
 use secrecy::SecretString;
 use thiserror::Error;
@@ -168,8 +170,91 @@ mod backend {
     }
 }
 
+/// macOS: the login Keychain through `security-framework`.
+///
+/// A Keychain generic password is keyed by a service and an account: the service is the
+/// `application` attribute and the account the `site-id`, so entries show in Keychain
+/// Access as "shuttlescp" with the site id as account. The Keychain calls block (and may
+/// ask the user to allow access), so they run on tokio's blocking threads.
+#[cfg(target_os = "macos")]
+mod backend {
+    use secrecy::{ExposeSecret, SecretString};
+    use security_framework::passwords::{
+        PasswordOptions, delete_generic_password, generic_password, set_generic_password_options,
+    };
+
+    use super::KeyringError;
+
+    /// `errSecItemNotFound`: no entry matches the service and account.
+    const ITEM_NOT_FOUND: i32 = -25300;
+
+    // Lets `?` convert library errors.
+    impl From<security_framework::base::Error> for KeyringError {
+        fn from(error: security_framework::base::Error) -> Self {
+            Self::Service(error.to_string())
+        }
+    }
+
+    /// Run a blocking Keychain call off the async worker threads.
+    async fn blocking<T: Send + 'static>(
+        call: impl FnOnce() -> Result<T, KeyringError> + Send + 'static,
+    ) -> Result<T, KeyringError> {
+        tokio::task::spawn_blocking(call)
+            .await
+            .map_err(|error| KeyringError::Service(error.to_string()))?
+    }
+
+    /// The Keychain service and account for keyring attributes.
+    fn service_account(attributes: &[(&str, &str); 2]) -> (String, String) {
+        (attributes[0].1.to_owned(), attributes[1].1.to_owned())
+    }
+
+    pub(super) async fn store(
+        attributes: &[(&str, &str); 2],
+        label: &str,
+        password: &SecretString,
+    ) -> Result<(), KeyringError> {
+        let (service, account) = service_account(attributes);
+        let label = label.to_owned();
+        let password = password.clone();
+        blocking(move || {
+            let mut options = PasswordOptions::new_generic_password(&service, &account);
+            options.set_label(&label);
+            set_generic_password_options(password.expose_secret().as_bytes(), options)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn load(
+        attributes: &[(&str, &str); 2],
+    ) -> Result<Option<SecretString>, KeyringError> {
+        let (service, account) = service_account(attributes);
+        blocking(move || {
+            match generic_password(PasswordOptions::new_generic_password(&service, &account)) {
+                Ok(secret) => {
+                    let text = String::from_utf8(secret).map_err(|_| KeyringError::NotText)?;
+                    Ok(Some(SecretString::from(text)))
+                }
+                Err(error) if error.code() == ITEM_NOT_FOUND => Ok(None),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+    }
+
+    pub(super) async fn delete(attributes: &[(&str, &str); 2]) -> Result<(), KeyringError> {
+        let (service, account) = service_account(attributes);
+        blocking(move || match delete_generic_password(&service, &account) {
+            Err(error) if error.code() != ITEM_NOT_FOUND => Err(error.into()),
+            _ => Ok(()),
+        })
+        .await
+    }
+}
+
 /// Other platforms: no password store yet.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod backend {
     use secrecy::SecretString;
 
@@ -204,5 +289,31 @@ mod tests {
             attributes("abc"),
             [("application", "shuttlescp"), ("site-id", "abc")]
         );
+    }
+
+    /// Writes to the real login Keychain, so only run on request:
+    /// `cargo test -p shuttlescp-core keychain_round_trip -- --ignored`
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "uses the user's real Keychain"]
+    async fn keychain_round_trip() {
+        use secrecy::ExposeSecret;
+
+        let site = "shuttlescp-test-keychain-round-trip";
+        let label = "ShuttleSCP: keychain test";
+        delete_password(site).await.unwrap();
+        assert!(load_password(site, label).await.unwrap().is_none());
+
+        store_password(site, label, &SecretString::from("first"))
+            .await
+            .unwrap();
+        store_password(site, label, &SecretString::from("second"))
+            .await
+            .unwrap();
+        let loaded = load_password(site, label).await.unwrap().unwrap();
+        assert_eq!(loaded.expose_secret(), "second");
+
+        delete_password(site).await.unwrap();
+        assert!(load_password(site, label).await.unwrap().is_none());
     }
 }
