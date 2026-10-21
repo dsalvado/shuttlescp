@@ -64,6 +64,10 @@ pub struct Manifest {
     pub notes_url: String,
     /// The Linux AppImage.
     pub appimage: Asset,
+    /// The macOS disk image, from 0.10 on. Manifests before it have none, and apps
+    /// before it ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<Asset>,
 }
 
 /// A file of a release.
@@ -122,11 +126,13 @@ pub fn verify_manifest(
         .map_err(|_| String::from("the update is not signed by the ShuttleSCP release key"))?;
     let manifest: Manifest = serde_json::from_slice(manifest)
         .map_err(|error| format!("the update description cannot be read: {error}"))?;
-    if !manifest.appimage.url.starts_with(DOWNLOAD_PREFIX) {
-        return Err(format!(
-            "the update would be downloaded from an unexpected place: {}",
-            manifest.appimage.url
-        ));
+    for asset in std::iter::once(&manifest.appimage).chain(&manifest.macos) {
+        if !asset.url.starts_with(DOWNLOAD_PREFIX) {
+            return Err(format!(
+                "the update would be downloaded from an unexpected place: {}",
+                asset.url
+            ));
+        }
     }
     Ok(manifest)
 }
@@ -359,6 +365,7 @@ mod tests {
                 size: 11,
                 sha256: hex(&Sha256::digest(b"hello world")),
             },
+            macos: None,
         })
         .expect("serialize")
     }
@@ -501,5 +508,48 @@ mod tests {
 
         assert_eq!(std::fs::read(&old).expect("read"), b"new");
         assert!(!new.exists());
+    }
+
+    #[test]
+    fn a_manifest_without_a_mac_download_still_reads() {
+        // Arrange: the manifest of 0.9.x, before the macOS download existed.
+        let key = key_pair();
+        let manifest = manifest_json(&release_url());
+
+        // Act
+        let read = verify_manifest(
+            &manifest,
+            key.sign(&manifest).as_ref(),
+            key.public_key().as_ref(),
+        )
+        .expect("accepted");
+
+        // Assert
+        assert_eq!(read.macos, None);
+    }
+
+    #[test]
+    fn a_mac_download_from_elsewhere_is_refused() {
+        // Arrange
+        let key = key_pair();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&manifest_json(&release_url())).expect("json");
+        value["macos"] = serde_json::json!({
+            "name": "ShuttleSCP-1.2.0-macos-arm64.dmg",
+            "url": "https://example.com/ShuttleSCP.dmg",
+            "size": 1,
+            "sha256": "00",
+        });
+        let manifest = serde_json::to_vec(&value).expect("serialize");
+
+        // Act
+        let result = verify_manifest(
+            &manifest,
+            key.sign(&manifest).as_ref(),
+            key.public_key().as_ref(),
+        );
+
+        // Assert
+        assert!(result.is_err_and(|error| error.contains("unexpected place")));
     }
 }

@@ -93,6 +93,26 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
     notes.add_css_class("about-link");
     dialog.content.append(&notes);
 
+    // On macOS the app does not replace itself (it has no Apple Developer ID to sign a
+    // new copy with): the browser downloads the new disk image, which installs as the
+    // first one did.
+    if cfg!(target_os = "macos")
+        && let Some(dmg) = &manifest.macos
+    {
+        dialog.content.append(&dialog::text(
+            "Download it, open the disk image and drag ShuttleSCP onto Applications, \
+             replacing this version.",
+            &["dim-label"],
+        ));
+        dialog.add_close_button("Later");
+        let (window, url) = (dialog.window.clone(), dmg.url.clone());
+        dialog.add_button("Download", ButtonKind::Suggested, move || {
+            open_uri(&url);
+            window.close();
+        });
+        dialog.window.present();
+        return;
+    }
     let Some(appimage) = update::running_appimage() else {
         // Not an AppImage (e.g. built from source): nothing here can be replaced.
         dialog.content.append(&dialog::text(

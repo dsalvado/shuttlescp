@@ -144,6 +144,12 @@ pub fn run(
                             size: 0,
                             sha256: String::new(),
                         },
+                        macos: Some(shuttlescp_core::update::Asset {
+                            name: String::from("ShuttleSCP-1.0.0-macos-arm64.dmg"),
+                            url: format!("{repository}/releases/download/v1.0.0/x.dmg"),
+                            size: 0,
+                            sha256: String::new(),
+                        }),
                     },
                     |_| {},
                 );

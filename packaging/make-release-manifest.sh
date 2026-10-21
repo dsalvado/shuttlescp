@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Write and sign a release's update manifest (latest.json and latest.json.sig) and its
-# checksums (SHA256SUMS), next to the AppImage.
+# checksums (SHA256SUMS), next to the AppImage, for it and (if given) the macOS disk
+# image.
 #
 # The app downloads latest.json and latest.json.sig from the latest release, checks the
 # signature with the public key built into it, and only then trusts the version, the
 # download address, the size and the SHA-256 written here (see
 # crates/shuttlescp-core/src/update.rs).
 #
-# Usage: packaging/make-release-manifest.sh <AppImage> <signing-key.pem>
+# Usage: packaging/make-release-manifest.sh <AppImage> <signing-key.pem> [<dmg>]
 #   The signing key is the release workflow's UPDATE_SIGNING_KEY secret, written to a
 #   temporary file.
 #   PUBLIC_KEY (optional): the public key built into the app (base64); when given, the
@@ -18,6 +19,7 @@ set -euo pipefail
 
 APPIMAGE=$1
 KEY=$2
+DMG=${3:-}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DIR=$(dirname "$APPIMAGE")
 NAME=$(basename "$APPIMAGE")
@@ -28,6 +30,17 @@ TAG="v$VERSION"
 SIZE=$(stat --format=%s "$APPIMAGE")
 SHA256=$(sha256sum "$APPIMAGE" | cut -d' ' -f1)
 PUBLISHED=$(date --utc +%Y-%m-%dT%H:%M:%SZ)
+
+# The macOS download's entry, if there is one. It must sit next to the AppImage, as
+# both are published together.
+MACOS=""
+if [[ -n "$DMG" ]]; then
+    [[ "$(dirname "$DMG")" == "$DIR" ]] || { echo "error: $DMG is not next to $APPIMAGE" >&2; exit 1; }
+    DMG_NAME=$(basename "$DMG")
+    MACOS=$(printf ',\n  "macos": {\n    "name": "%s",\n    "url": "%s",\n    "size": %s,\n    "sha256": "%s"\n  }' \
+        "$DMG_NAME" "$REPOSITORY/releases/download/$TAG/$DMG_NAME" \
+        "$(stat --format=%s "$DMG")" "$(sha256sum "$DMG" | cut -d' ' -f1)")
+fi
 
 # The manifest. Its exact bytes are what is signed, so it is written once and never
 # reformatted afterwards.
@@ -41,7 +54,7 @@ cat > "$DIR/latest.json" <<EOF
     "url": "$REPOSITORY/releases/download/$TAG/$NAME",
     "size": $SIZE,
     "sha256": "$SHA256"
-  }
+  }$MACOS
 }
 EOF
 
@@ -60,6 +73,6 @@ if [[ -n "${PUBLIC_KEY:-}" ]]; then
 fi
 
 # Checksums, for people who download by hand ("sha256sum --check SHA256SUMS").
-(cd "$DIR" && sha256sum "$NAME" > SHA256SUMS)
+(cd "$DIR" && sha256sum "$NAME" ${DMG_NAME:+"$DMG_NAME"} > SHA256SUMS)
 
-echo "==> Wrote latest.json, latest.json.sig and SHA256SUMS for $NAME ($VERSION)"
+echo "==> Wrote latest.json, latest.json.sig and SHA256SUMS for $NAME${DMG_NAME:+ and $DMG_NAME} ($VERSION)"
