@@ -253,6 +253,32 @@ pub fn follow_system_appearance(window: &gtk::ApplicationWindow) {
     });
 }
 
+/// macOS: draw text as macOS does. By default GTK rounds each letter's width and
+/// position to whole pixels and hints the outlines, which makes San Francisco look
+/// boxy next to the Mac's own apps; macOS keeps the exact positions and smooths the
+/// outlines in grey.
+#[cfg(target_os = "macos")]
+pub fn use_mac_text_rendering() {
+    use relm4::gtk::prelude::*;
+
+    let Some(settings) = gtk::Settings::default() else {
+        return;
+    };
+    // By name: the typed setters need newer GTK features of the gtk4 crate.
+    if let Some(manual) = settings
+        .find_property("gtk-font-rendering")
+        .and_then(|property| glib::EnumClass::with_type(property.value_type()))
+        .and_then(|rendering| rendering.to_value_by_nick("manual"))
+    {
+        settings.set_property_from_value("gtk-font-rendering", &manual);
+    }
+    settings.set_property("gtk-hint-font-metrics", false);
+    settings.set_gtk_xft_antialias(1);
+    settings.set_gtk_xft_hinting(0);
+    settings.set_gtk_xft_hintstyle(Some("hintnone"));
+    settings.set_gtk_xft_rgba(Some("none"));
+}
+
 /// macOS: the Mac-style icon theme (made by packaging/macos/fetch-icons.sh from
 /// WhiteSur), used instead of GTK's own Linux-style icons.
 #[cfg(target_os = "macos")]

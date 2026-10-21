@@ -6,8 +6,11 @@
    13px of Apple's guidelines, easier to read in the dense file lists), 12px for small
    text. The font itself is already the system's (San Francisco). */
 
+/* San Francisco is drawn a little tighter at text sizes, as macOS does it (Apple's
+   tracking table: -0.15px at 14px); GTK does not do this by itself. */
 window {
     font-size: 14px;
+    letter-spacing: -0.15px;
 }
 
 /* Right-click menus of the file panes: the size of the Mac's own menus. */

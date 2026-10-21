@@ -532,6 +532,7 @@ impl SimpleComponent for App {
         #[cfg(target_os = "macos")]
         {
             theme::follow_system_appearance(&root);
+            theme::use_mac_text_rendering();
             theme::use_mac_icons();
         }
         track_window_size(&root, &sender);
