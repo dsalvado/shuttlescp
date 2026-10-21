@@ -253,10 +253,12 @@ pub fn follow_system_appearance(window: &gtk::ApplicationWindow) {
     });
 }
 
-/// macOS: draw text as macOS does. By default GTK rounds each letter's width and
-/// position to whole pixels and hints the outlines, which makes San Francisco look
-/// boxy next to the Mac's own apps; macOS keeps the exact positions and smooths the
-/// outlines in grey.
+/// macOS: draw text closer to macOS. By default GTK rounds each letter's width and
+/// position to whole pixels, which makes San Francisco look boxy next to the Mac's own
+/// apps; macOS keeps the exact positions. The outlines get light hinting (aligned to
+/// the pixel grid vertically only), smoothed in grey: without any hinting, text on a
+/// 1x (non-Retina) monitor came out fuzzy; on Retina screens light hinting makes
+/// almost no difference.
 #[cfg(target_os = "macos")]
 pub fn use_mac_text_rendering() {
     use relm4::gtk::prelude::*;
@@ -274,8 +276,8 @@ pub fn use_mac_text_rendering() {
     }
     settings.set_property("gtk-hint-font-metrics", false);
     settings.set_gtk_xft_antialias(1);
-    settings.set_gtk_xft_hinting(0);
-    settings.set_gtk_xft_hintstyle(Some("hintnone"));
+    settings.set_gtk_xft_hinting(1);
+    settings.set_gtk_xft_hintstyle(Some("hintslight"));
     settings.set_gtk_xft_rgba(Some("none"));
 }
 
