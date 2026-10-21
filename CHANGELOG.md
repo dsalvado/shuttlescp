@@ -18,6 +18,8 @@ becomes its release notes on GitHub.
 
 - Every built AppImage is checked automatically before release: GTK's add-ons are
   inside, and nothing forces the theme or the display backend.
+- The View › Theme menu is wider with the names centred, and each theme shows a small
+  swatch of its window and accent colours.
 
 ## [0.9.1] - 2026-10-21
 

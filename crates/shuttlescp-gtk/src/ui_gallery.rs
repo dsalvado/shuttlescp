@@ -55,6 +55,14 @@ pub fn run(
     let ago = |hours: u64| SystemTime::now() - Duration::from_secs(hours * 3600);
     let steps: Vec<Step> = vec![
         ("main-window", Box::new(|_| {})),
+        (
+            "menu-view",
+            Box::new(|window| {
+                if let Some(menu) = theme_menu(window) {
+                    menu.popup();
+                }
+            }),
+        ),
         ("sessions", Box::new(move |_| open_sessions())),
         ("sessions-first", Box::new(move |_| focus_first())),
         ("login", Box::new(move |_| open_login())),
@@ -179,13 +187,22 @@ pub fn run(
         // next one.
         if index > 0 {
             let (name, _) = &steps[index - 1];
-            let window = if name.starts_with("main") || name.starts_with("sessions") {
-                // These steps picture the main window itself.
-                main.clone()
+            let path = dir.join(format!("{index:02}-{name}.png"));
+            if name.starts_with("menu") {
+                // A menu is its own surface: picture it, then close it.
+                if let Some(menu) = theme_menu(&main) {
+                    save_png(menu.upcast_ref(), &path);
+                    menu.popdown();
+                }
             } else {
-                newest_dialog(&main).unwrap_or_else(|| main.clone())
-            };
-            save_png(&window, &dir.join(format!("{index:02}-{name}.png")));
+                let window = if name.starts_with("main") || name.starts_with("sessions") {
+                    // These steps picture the main window itself.
+                    main.clone()
+                } else {
+                    newest_dialog(&main).unwrap_or_else(|| main.clone())
+                };
+                save_png(window.upcast_ref(), &path);
+            }
         }
         close_dialogs(&main);
         let Some((_, open)) = steps.get(index) else {
@@ -218,8 +235,28 @@ fn close_dialogs(main: &gtk::Window) {
     }
 }
 
-/// Render `window` as GTK draws it and save it as a PNG.
-fn save_png(window: &gtk::Window, path: &std::path::Path) {
+/// The View menu: the menu holding the theme list.
+fn theme_menu(main: &gtk::Window) -> Option<gtk::Popover> {
+    fn find(widget: &gtk::Widget) -> Option<gtk::Widget> {
+        if widget.has_css_class("theme-list") {
+            return Some(widget.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if let Some(found) = find(&current) {
+                return Some(found);
+            }
+            child = current.next_sibling();
+        }
+        None
+    }
+    find(main.upcast_ref())?
+        .ancestor(gtk::Popover::static_type())
+        .and_downcast()
+}
+
+/// Render a window or menu as GTK draws it and save it as a PNG.
+fn save_png(window: &gtk::Widget, path: &std::path::Path) {
     let (width, height) = (window.width(), window.height());
     let paintable = gtk::WidgetPaintable::new(Some(window));
     let snapshot = gtk::Snapshot::new();
