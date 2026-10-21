@@ -178,6 +178,10 @@ pub struct ExportedSite {
     /// FTP settings (exports from older versions have none: the defaults apply).
     #[serde(default)]
     pub ftp: crate::sites::FtpOptions,
+    /// SSH key settings: the key file's path and whether to use the agent. The key and
+    /// its passphrase are never exported (exports from older versions have none).
+    #[serde(default)]
+    pub ssh: crate::sites::SshAuth,
     /// Base64 of nonce followed by ciphertext, when the password was exported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
@@ -294,6 +298,10 @@ pub fn export_sites(
             port: site.port,
             user: site.user.clone(),
             ftp: site.ftp,
+            ssh: crate::sites::SshAuth {
+                passphrase_saved: false,
+                ..site.ssh.clone()
+            },
             password,
         });
     }
@@ -365,6 +373,10 @@ pub fn import_sites(
                 user: exported.user.clone(),
                 password_saved: false,
                 ftp: exported.ftp,
+                ssh: crate::sites::SshAuth {
+                    passphrase_saved: false,
+                    ..exported.ssh.clone()
+                },
             };
             Ok((site, password))
         })
@@ -487,6 +499,7 @@ mod tests {
             user: String::from("me"),
             password_saved: true,
             ftp: crate::sites::FtpOptions::default(),
+            ssh: crate::sites::SshAuth::default(),
         }
     }
 

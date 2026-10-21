@@ -3,11 +3,12 @@
 //!
 //! The session fields stay disabled until the user clicks "New Site", or picks a saved
 //! site and clicks Edit. Passwords are kept in the desktop keyring; the form shows
-//! whether one is saved. The work itself (keyring, login, export / import) is done by
+//! whether one is saved. SFTP and SCP sites can also log in with a private key file
+//! and the desktop's SSH agent; a protected key's passphrase is asked for when needed. The work itself (keyring, login, export / import) is done by
 //! `shuttlescp_core::session` and friends, run as background commands so the window never
 //! freezes, e.g. while the desktop asks to unlock the keyring. This file only presents it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use relm4::RelmRemoveAllExt;
 use relm4::gtk::prelude::*;
@@ -18,10 +19,13 @@ use shuttlescp_core::remote::{ConnectError, HostKey, Remote};
 use shuttlescp_core::secrets;
 use shuttlescp_core::session::{self, ExportReport, ImportReport, KeyringAction};
 use shuttlescp_core::site_export::ExportFile;
-use shuttlescp_core::sites::{FtpEncryption, FtpOptions, Protocol, Site, SiteBook, new_site_id};
+use shuttlescp_core::sites::{
+    FtpEncryption, FtpOptions, Protocol, Site, SiteBook, SshAuth, new_site_id,
+};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
+use crate::key_passphrase_dialog::{self, KeyPassphrase};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
 
 /// Label of the first entry in the site list, which starts a new site.
@@ -80,6 +84,14 @@ pub enum LoginMsg {
     PortChanged(i32),
     /// The "Save password" box was ticked or cleared.
     SavePasswordToggled(bool),
+    /// The "Browse..." button of the key file field was clicked.
+    BrowseKeyFile,
+    /// The user chose a private key file.
+    KeyFileChosen(PathBuf),
+    /// The "Use SSH agent" box was ticked or cleared.
+    UseAgentToggled(bool),
+    /// The user typed the passphrase of the site's key file: log in with it.
+    KeyPassphraseGiven(KeyPassphrase),
     /// Text in a field changed (re-evaluates whether Save is allowed).
     FormEdited,
     /// The Export button was clicked.
@@ -160,6 +172,13 @@ pub enum LoginCmd {
     },
     /// The keyring entry of a deleted site was removed.
     PasswordForgotten(Result<(), String>),
+    /// A site's key passphrase was stored in the keyring (after it opened the key).
+    PassphraseSaved {
+        /// The site.
+        site_id: String,
+        /// Error text if the keyring refused.
+        result: Result<(), String>,
+    },
     /// An export finished, with a summary or an error.
     Exported(Result<ExportReport, String>),
     /// An import finished: the sites (with `password_saved` set where the keyring
@@ -187,6 +206,13 @@ pub struct LoginDialog {
     host: gtk::EntryBuffer,
     user: gtk::EntryBuffer,
     password: gtk::EntryBuffer,
+    /// The private key file field (SFTP and SCP).
+    key_file: gtk::EntryBuffer,
+    /// Whether the site also tries the SSH agent's keys.
+    use_agent: bool,
+    /// A key passphrase typed for the login under way, and whether to save it once it
+    /// has worked.
+    pending_passphrase: Option<KeyPassphrase>,
     site_list: SiteList,
     /// Last result or progress note, shown at the bottom left.
     status: String,
@@ -230,6 +256,16 @@ impl LoginDialog {
         self.user
             .set_text(site.as_ref().map_or("", |site| site.user.as_str()));
         self.password.set_text("");
+        let ssh = site
+            .as_ref()
+            .map_or_else(SshAuth::default, |site| site.ssh.clone());
+        self.key_file.set_text(
+            ssh.key_file
+                .as_deref()
+                .map_or_else(String::new, |path| path.display().to_string()),
+        );
+        self.use_agent = ssh.use_agent;
+        self.pending_passphrase = None;
         // New sites offer to save the password; saved ones keep their current choice.
         self.save_password = site.as_ref().is_none_or(|site| site.password_saved);
         self.editing = self.selection == Selection::NewSite;
@@ -277,10 +313,14 @@ impl LoginDialog {
         };
         let typed = (!self.password.text().is_empty())
             .then(|| SecretString::from(self.password.text().as_str()));
+        let passphrase = self
+            .pending_passphrase
+            .as_ref()
+            .map(|pending| pending.passphrase.clone());
         self.busy = true;
         self.status = format!("Connecting to {}...", site.display_name());
         sender.oneshot_command(async move {
-            let result = session::login(&site, typed, approved_key).await;
+            let result = session::login(&site, typed, passphrase, approved_key).await;
             LoginCmd::Connected(result.map(|remote| (site, remote)))
         });
     }
@@ -322,6 +362,12 @@ impl LoginDialog {
             return;
         }
         let existing = self.selected_site().cloned();
+        let key_file = key_file_path(&self.key_file.text());
+        // A saved passphrase belongs to the key it opened: it goes when the key changes.
+        let old_passphrase = existing
+            .as_ref()
+            .filter(|site| site.ssh.passphrase_saved && site.ssh.key_file != key_file)
+            .map(|site| session::passphrase_entry(&site.id));
         let site = Site {
             id: existing
                 .as_ref()
@@ -332,7 +378,24 @@ impl LoginDialog {
             user: self.user.text().trim().to_owned(),
             password_saved: existing.as_ref().is_some_and(|site| site.password_saved),
             ftp: self.ftp,
+            ssh: SshAuth {
+                passphrase_saved: old_passphrase.is_none()
+                    && existing
+                        .as_ref()
+                        .is_some_and(|site| site.ssh.passphrase_saved),
+                key_file,
+                use_agent: self.use_agent,
+            },
         };
+        if let Some(entry) = old_passphrase {
+            sender.oneshot_command(async move {
+                LoginCmd::PasswordForgotten(
+                    secrets::delete_password(&entry)
+                        .await
+                        .map_err(|error| error.to_string()),
+                )
+            });
+        }
         // Capture the typed password and the "Save password" choice now: `select` below
         // reloads the form for the saved site, which clears the field and resets the box.
         let typed = (!self.password.text().is_empty())
@@ -395,6 +458,16 @@ impl LoginDialog {
         }
         let site = self.book.sites.remove(index);
         self.write_sites(&format!("deleted site {}", site.display_name()));
+        if site.ssh.passphrase_saved {
+            let entry = session::passphrase_entry(&site.id);
+            sender.oneshot_command(async move {
+                LoginCmd::PasswordForgotten(
+                    secrets::delete_password(&entry)
+                        .await
+                        .map_err(|error| error.to_string()),
+                )
+            });
+        }
         if site.password_saved {
             sender.oneshot_command(async move {
                 LoginCmd::PasswordForgotten(
@@ -421,6 +494,36 @@ impl LoginDialog {
                 self.status = format!("Cannot save sites: {error}");
             }
         }
+    }
+
+    /// Open a file chooser for the private key file, starting in `~/.ssh`.
+    ///
+    /// # Arguments
+    ///
+    /// * `root` - The dialog window
+    /// * `sender` - Receives the chosen file
+    fn choose_key_file(&mut self, root: &gtk::Window, sender: &ComponentSender<Self>) {
+        let chooser = gtk::FileChooserNative::new(
+            Some("Private Key File"),
+            Some(root),
+            gtk::FileChooserAction::Open,
+            Some("_Choose"),
+            Some("_Cancel"),
+        );
+        if let Some(ssh) = std::env::home_dir().map(|home| home.join(".ssh"))
+            && ssh.is_dir()
+        {
+            let _ = chooser.set_current_folder(Some(&gtk::gio::File::for_path(ssh)));
+        }
+        let sender = sender.clone();
+        chooser.connect_response(move |chooser, response| {
+            let path = (response == gtk::ResponseType::Accept)
+                .then(|| chooser.file().and_then(|file| file.path()))
+                .flatten();
+            sender.input(path.map_or(LoginMsg::Abandoned, LoginMsg::KeyFileChosen));
+        });
+        chooser.show();
+        self.chooser = Some(chooser);
     }
 
     /// Open a native file chooser over the dialog.
@@ -482,7 +585,7 @@ impl Component for LoginDialog {
             set_modal: true,
             // Closing only hides the dialog, so it can be shown again from the menu.
             set_hide_on_close: true,
-            set_default_size: (760, 420),
+            set_default_size: (760, 470),
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
@@ -715,6 +818,53 @@ impl Component for LoginDialog {
                             },
                         },
 
+                        // SSH keys (SFTP and SCP): a private key file, tried first, and the
+                        // keys of the desktop's SSH agent; the password comes after them.
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 2,
+                            #[watch]
+                            set_visible: model.protocol != Protocol::Ftp,
+
+                            gtk::Label {
+                                set_label: "Private key file:",
+                                set_xalign: 0.0,
+                            },
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 8,
+
+                                gtk::Entry::with_buffer(&model.key_file) {
+                                    set_hexpand: true,
+                                    set_placeholder_text: Some("None (OpenSSH or PuTTY .ppk key)"),
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    connect_changed => LoginMsg::FormEdited,
+                                },
+                                gtk::Button {
+                                    set_label: "Browse...",
+                                    set_tooltip_text: Some("Choose a private key file"),
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    connect_clicked => LoginMsg::BrowseKeyFile,
+                                },
+                                gtk::CheckButton {
+                                    set_label: Some("Use SSH agent"),
+                                    set_tooltip_text: Some(
+                                        "Also try the keys held by the desktop's SSH agent \
+                                         (as ssh does)"
+                                    ),
+                                    #[watch]
+                                    set_sensitive: model.editing,
+                                    #[watch]
+                                    set_active: model.use_agent,
+                                    connect_toggled[sender] => move |check| {
+                                        sender.input(LoginMsg::UseAgentToggled(check.is_active()));
+                                    },
+                                },
+                            },
+                        },
+
                         // Saved-password indicator (left; stays readable while the fields
                         // are disabled) and Save / Cancel (right), along the bottom edge.
                         gtk::Box {
@@ -852,6 +1002,9 @@ impl Component for LoginDialog {
             host: gtk::EntryBuffer::default(),
             user: gtk::EntryBuffer::default(),
             password: gtk::EntryBuffer::default(),
+            key_file: gtk::EntryBuffer::default(),
+            use_agent: true,
+            pending_passphrase: None,
             site_list,
             status: String::new(),
             busy: false,
@@ -970,6 +1123,16 @@ impl Component for LoginDialog {
                 }
             }
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
+            LoginMsg::BrowseKeyFile => self.choose_key_file(root.upcast_ref(), &sender),
+            LoginMsg::KeyFileChosen(path) => {
+                self.chooser = None;
+                self.key_file.set_text(path.display().to_string());
+            }
+            LoginMsg::UseAgentToggled(active) => self.use_agent = active,
+            LoginMsg::KeyPassphraseGiven(answer) => {
+                self.pending_passphrase = Some(answer);
+                self.start_login(&sender, None);
+            }
             LoginMsg::Login => self.start_login(&sender, None),
             LoginMsg::TrustHostKey(key) => self.start_login(&sender, Some(*key)),
             LoginMsg::TrustCertificate {
@@ -1078,6 +1241,25 @@ impl Component for LoginDialog {
                     Ok((site, remote)) => {
                         self.status.clear();
                         self.password.set_text("");
+                        // The passphrase opened the key: save it if asked to.
+                        if let Some(pending) = self.pending_passphrase.take()
+                            && pending.save
+                        {
+                            let (site_id, entry, label) = (
+                                site.id.clone(),
+                                session::passphrase_entry(&site.id),
+                                session::passphrase_label(&site),
+                            );
+                            sender.oneshot_command(async move {
+                                let result =
+                                    secrets::store_password(&entry, &label, &pending.passphrase)
+                                        .await;
+                                LoginCmd::PassphraseSaved {
+                                    site_id,
+                                    result: result.map_err(|error| error.to_string()),
+                                }
+                            });
+                        }
                         // Sending fails only if the main window is gone; nothing to do then.
                         let _ = sender.output(LoginOutput::Connected { site, remote });
                         root.close();
@@ -1139,8 +1321,32 @@ impl Component for LoginDialog {
                             }
                         });
                     }
+                    Err(ConnectError::KeyPassphraseRequired { path, wrong }) => {
+                        let save = self
+                            .pending_passphrase
+                            .take()
+                            .is_some_and(|pending| pending.save);
+                        self.status = String::from("Waiting for the key's passphrase");
+                        let sender = sender.clone();
+                        key_passphrase_dialog::ask(
+                            root.upcast_ref(),
+                            &path,
+                            wrong,
+                            move |answer| {
+                                sender.input(match answer {
+                                    Some(mut answer) => {
+                                        // Keep the earlier "save" choice when asked again.
+                                        answer.save |= save;
+                                        LoginMsg::KeyPassphraseGiven(answer)
+                                    }
+                                    None => LoginMsg::Abandoned,
+                                });
+                            },
+                        );
+                    }
                     Err(error) => {
                         tracing::warn!("login failed: {error}");
+                        self.pending_passphrase = None;
                         self.status = error.to_string();
                     }
                 }
@@ -1176,6 +1382,15 @@ impl Component for LoginDialog {
                     tracing::error!("keyring update failed: {error}");
                     self.status = format!("Keyring: {error}");
                 }
+            },
+            LoginCmd::PassphraseSaved { site_id, result } => match result {
+                Ok(()) => {
+                    if let Some(site) = self.book.sites.iter_mut().find(|site| site.id == site_id) {
+                        site.ssh.passphrase_saved = true;
+                    }
+                    self.write_sites("stored a key passphrase in the keyring");
+                }
+                Err(error) => tracing::error!("cannot save the key passphrase: {error}"),
             },
             LoginCmd::PasswordForgotten(result) => {
                 if let Err(error) = result {
@@ -1373,9 +1588,37 @@ fn default_port(protocol: Protocol, encryption: FtpEncryption) -> u16 {
     }
 }
 
+/// The key file path typed in the form: `None` when empty; a leading `~/` means the
+/// home folder, as in a shell.
+fn key_file_path(text: &str) -> Option<PathBuf> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    match (text.strip_prefix("~/"), std::env::home_dir()) {
+        (Some(rest), Some(home)) => Some(home.join(rest)),
+        _ => Some(Path::new(text).to_path_buf()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_file_paths_expand_the_home_folder() {
+        let home = std::env::home_dir().expect("home");
+
+        assert_eq!(key_file_path("  "), None);
+        assert_eq!(
+            key_file_path("~/.ssh/id_ed25519"),
+            Some(home.join(".ssh/id_ed25519"))
+        );
+        assert_eq!(
+            key_file_path(" /keys/server.ppk "),
+            Some(PathBuf::from("/keys/server.ppk"))
+        );
+    }
 
     #[test]
     fn selection_for_row_maps_rows_after_new_site() {

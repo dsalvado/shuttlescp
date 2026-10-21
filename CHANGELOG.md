@@ -16,6 +16,9 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 
 - Connections over SFTP and SCP (SSH), and FTP with plain, explicit or implicit TLS
   (FTPS), in passive or active mode.
+- SSH login with a private key file (OpenSSH, or PuTTY `.ppk` brought over from WinSCP)
+  or the keys of the desktop's SSH agent, tried before the password as `ssh` does. A
+  protected key asks for its passphrase, which can be saved in the keyring.
 - Saved sites, with passwords kept in the desktop keyring (GNOME Keyring, KWallet), and
   export and import of sites with passwords encrypted under a passphrase.
 - Two file panes, this computer and the server, sortable by name, size or date, with

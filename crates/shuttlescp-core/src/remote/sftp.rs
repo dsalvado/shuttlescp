@@ -1,5 +1,9 @@
 //! SFTP over SSH: verifying the server's host key against `~/.ssh/known_hosts`, logging
 //! in, and the file operations behind [`super::Remote`].
+//!
+//! Logging in tries, in the order OpenSSH's `ssh` does: the site's private key file
+//! (OpenSSH or PuTTY `.ppk`), then the keys held by the desktop's SSH agent, then the
+//! password. The first one the server accepts wins.
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -7,8 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use russh::client;
+use russh::keys::agent::AgentIdentity;
+use russh::keys::agent::client::AgentClient;
 use russh::keys::known_hosts::learn_known_hosts;
-use russh::keys::{HashAlg, PublicKeyOrCertificate, check_known_hosts};
+use russh::keys::{
+    HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, check_known_hosts,
+};
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::fs::Metadata;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
@@ -16,9 +24,14 @@ use secrecy::{ExposeSecret, SecretString};
 use tokio::io::AsyncSeekExt;
 
 use super::{
-    CONNECT_TIMEOUT, ConnectError, HostKey, RemoteMeta, RemoteReader, RemoteWriter, path_text,
+    CONNECT_TIMEOUT, ConnectError, Credentials, HostKey, RemoteMeta, RemoteReader, RemoteWriter,
+    path_text,
 };
 use crate::sites::Site;
+
+/// Most agent keys offered to one server. Servers stop a login after a few failed
+/// attempts (OpenSSH: 6 by default), and the password must still get its turn.
+const MAX_AGENT_KEYS: usize = 4;
 
 /// What the host key check found, recorded by the SSH handler for after the handshake.
 #[derive(Debug)]
@@ -232,7 +245,7 @@ pub fn fingerprint(key: &HostKey) -> String {
 /// # Arguments
 ///
 /// * `site` - Server details
-/// * `password` - Password to log in with
+/// * `credentials` - Password and key passphrase to log in with
 /// * `approved_key` - A host key the user has just agreed to trust (after an
 ///   [`ConnectError::UnknownHostKey`]); it is added to `known_hosts`
 ///
@@ -245,7 +258,7 @@ pub fn fingerprint(key: &HostKey) -> String {
 /// Returns a [`ConnectError`] describing the step that failed
 pub(super) async fn connect(
     site: &Site,
-    password: Option<SecretString>,
+    credentials: Credentials,
     approved_key: Option<HostKey>,
 ) -> Result<(Sftp, PathBuf), ConnectError> {
     let verdict = Arc::new(Mutex::new(None));
@@ -287,18 +300,11 @@ pub(super) async fn connect(
         Ok(Ok(ssh)) => ssh,
     };
 
-    let password = password.ok_or(ConnectError::PasswordRequired)?;
+    authenticate(&mut ssh, site, &credentials).await?;
     let network = |error: russh::Error| ConnectError::Network {
         host: site.host.clone(),
         reason: error.to_string(),
     };
-    let auth = ssh
-        .authenticate_password(site.user.as_str(), password.expose_secret())
-        .await
-        .map_err(network)?;
-    if !auth.success() {
-        return Err(ConnectError::AuthenticationFailed);
-    }
     let channel = ssh.channel_open_session().await.map_err(network)?;
     channel
         .request_subsystem(true, "sftp")
@@ -318,4 +324,269 @@ pub(super) async fn connect(
         },
         PathBuf::from(home),
     ))
+}
+
+/// Log in: with the site's key file, then the agent's keys, then the password.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::KeyPassphraseRequired`] or [`ConnectError::KeyUnreadable`]
+/// when the key file cannot be used, [`ConnectError::AuthenticationFailed`] when the
+/// password is refused, [`ConnectError::KeysRejected`] when only keys were tried and
+/// all refused, and [`ConnectError::PasswordRequired`] when there was nothing to try
+async fn authenticate(
+    ssh: &mut client::Handle<HostKeyCheck>,
+    site: &Site,
+    credentials: &Credentials,
+) -> Result<(), ConnectError> {
+    let user = site.user.as_str();
+    let failed = |reason: String| ConnectError::Network {
+        host: site.host.clone(),
+        reason,
+    };
+    // RSA keys sign with the best hash the server supports (rsa-sha2-512 or -256).
+    let rsa_hash = ssh
+        .best_supported_rsa_hash()
+        .await
+        .map_err(|error| failed(error.to_string()))?
+        .flatten();
+    let mut keys_tried = 0;
+
+    // 1. The site's key file.
+    if let Some(path) = &site.ssh.key_file {
+        let key = load_key(path, credentials.key_passphrase.as_ref())?;
+        keys_tried += 1;
+        let auth = ssh
+            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash))
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+        if auth.success() {
+            tracing::info!("logged in with the key file {}", path.display());
+            return Ok(());
+        }
+        tracing::info!("the server did not accept the key file {}", path.display());
+    }
+
+    // 2. The SSH agent's keys (GNOME Keyring, ssh-agent, ...). No agent is fine.
+    if site.ssh.use_agent {
+        match AgentClient::connect_env().await {
+            Ok(mut agent) => {
+                let identities = agent.request_identities().await.unwrap_or_else(|error| {
+                    tracing::warn!("cannot list the SSH agent's keys: {error}");
+                    Vec::new()
+                });
+                let public_keys = identities
+                    .into_iter()
+                    .filter_map(|identity| match identity {
+                        AgentIdentity::PublicKey { key, .. } => Some(key),
+                        AgentIdentity::Certificate { .. } => None,
+                    });
+                for key in public_keys.take(MAX_AGENT_KEYS) {
+                    keys_tried += 1;
+                    let fingerprint = key.fingerprint(HashAlg::Sha256);
+                    let auth = ssh
+                        .authenticate_publickey_with(user, key, rsa_hash, &mut agent)
+                        .await
+                        .map_err(|error| failed(error.to_string()))?;
+                    if auth.success() {
+                        tracing::info!("logged in with the SSH agent's key {fingerprint}");
+                        return Ok(());
+                    }
+                }
+            }
+            Err(error) => tracing::debug!("no SSH agent to use: {error}"),
+        }
+    }
+
+    // 3. The password.
+    let Some(password) = &credentials.password else {
+        return Err(if keys_tried > 0 {
+            ConnectError::KeysRejected
+        } else {
+            ConnectError::PasswordRequired
+        });
+    };
+    let auth = ssh
+        .authenticate_password(user, password.expose_secret())
+        .await
+        .map_err(|error| failed(error.to_string()))?;
+    if auth.success() {
+        Ok(())
+    } else {
+        Err(ConnectError::AuthenticationFailed)
+    }
+}
+
+/// Read a private key file (OpenSSH, PKCS#8 or PuTTY `.ppk`), opening it with
+/// `passphrase` if it is protected.
+///
+/// The key is first tried without a passphrase: a protected key then reports that it
+/// needs one, which the caller asks the user for.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::KeyPassphraseRequired`] if the key is protected and no
+/// passphrase (or a wrong one) was given, and [`ConnectError::KeyUnreadable`] if the
+/// file cannot be read or is not a supported key
+pub(super) fn load_key(
+    path: &Path,
+    passphrase: Option<&SecretString>,
+) -> Result<PrivateKey, ConnectError> {
+    let unreadable = |reason: String| ConnectError::KeyUnreadable {
+        path: path.to_path_buf(),
+        reason,
+    };
+    let text = std::fs::read_to_string(path).map_err(|error| unreadable(error.to_string()))?;
+    let error = match russh::keys::decode_secret_key(&text, None) {
+        Ok(key) => return Ok(key),
+        Err(error) => error,
+    };
+    if !is_protected(&text, &error) {
+        return Err(unreadable(error.to_string()));
+    }
+    let Some(passphrase) = passphrase else {
+        return Err(ConnectError::KeyPassphraseRequired {
+            path: path.to_path_buf(),
+            wrong: false,
+        });
+    };
+    russh::keys::decode_secret_key(&text, Some(passphrase.expose_secret())).map_err(|_| {
+        ConnectError::KeyPassphraseRequired {
+            path: path.to_path_buf(),
+            wrong: true,
+        }
+    })
+}
+
+/// Whether a key that failed to load without a passphrase is passphrase-protected:
+/// the library says so, or the file's own header does (PEM "ENCRYPTED", or a PuTTY key
+/// whose "Encryption" is not "none").
+fn is_protected(text: &str, error: &russh::keys::Error) -> bool {
+    matches!(error, russh::keys::Error::KeyIsEncrypted)
+        || text.lines().take(3).any(|line| line.contains("ENCRYPTED"))
+        || text
+            .lines()
+            .find_map(|line| line.strip_prefix("Encryption:"))
+            .is_some_and(|value| value.trim() != "none")
+}
+
+#[cfg(test)]
+mod tests {
+    use secrecy::SecretString;
+
+    use super::*;
+    use crate::sites::{FtpOptions, Protocol, SshAuth};
+
+    /// A key in `test-data/keys` (throwaway keys, see the README there).
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test-data/keys")
+            .join(name)
+    }
+
+    fn passphrase(text: &str) -> SecretString {
+        SecretString::from(text)
+    }
+
+    #[test]
+    fn plain_keys_load_without_a_passphrase() {
+        for name in ["ed25519", "rsa", "ed25519.ppk"] {
+            assert!(load_key(&fixture(name), None).is_ok(), "{name} should load");
+        }
+    }
+
+    #[test]
+    fn a_putty_key_is_the_same_key_as_its_openssh_original() {
+        let openssh = load_key(&fixture("ed25519"), None).expect("openssh");
+        let putty = load_key(&fixture("ed25519.ppk"), None).expect("ppk");
+
+        assert_eq!(
+            openssh.public_key().key_data(),
+            putty.public_key().key_data()
+        );
+    }
+
+    #[test]
+    fn a_protected_key_asks_for_its_passphrase_and_opens_with_it() {
+        let path = fixture("ed25519-protected");
+
+        assert!(matches!(
+            load_key(&path, None),
+            Err(ConnectError::KeyPassphraseRequired { wrong: false, .. })
+        ));
+        assert!(matches!(
+            load_key(&path, Some(&passphrase("not it"))),
+            Err(ConnectError::KeyPassphraseRequired { wrong: true, .. })
+        ));
+        assert!(load_key(&path, Some(&passphrase("correct horse battery staple"))).is_ok());
+    }
+
+    #[test]
+    fn a_missing_file_or_a_non_key_is_reported_as_unreadable() {
+        for name in ["not-a-key.txt", "no-such-file"] {
+            assert!(
+                matches!(
+                    load_key(&fixture(name), None),
+                    Err(ConnectError::KeyUnreadable { .. })
+                ),
+                "{name}"
+            );
+        }
+    }
+
+    /// Logs in to a real SSH server in the ways a user can. Needs a server that
+    /// accepts both the given key file and a key in the running SSH agent, already in
+    /// `~/.ssh/known_hosts`:
+    ///
+    /// ```sh
+    /// SHUTTLESCP_LIVE_SSH=me@host SHUTTLESCP_LIVE_KEY=~/.ssh/id_ed25519 \
+    ///     cargo test -p shuttlescp-core live_ -- --ignored
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a real SSH server; see the comment"]
+    async fn live_login_with_a_key_file_the_agent_or_nothing() {
+        let target = std::env::var("SHUTTLESCP_LIVE_SSH").expect("SHUTTLESCP_LIVE_SSH=user@host");
+        let key = std::env::var("SHUTTLESCP_LIVE_KEY").expect("SHUTTLESCP_LIVE_KEY=key file");
+        let (user, host) = target.split_once('@').expect("user@host");
+        let site = |key_file: Option<PathBuf>, use_agent: bool| Site {
+            id: String::from("live-test"),
+            protocol: Protocol::Sftp,
+            host: host.to_owned(),
+            port: 22,
+            user: user.to_owned(),
+            password_saved: false,
+            ftp: FtpOptions::default(),
+            ssh: SshAuth {
+                key_file,
+                use_agent,
+                passphrase_saved: false,
+            },
+        };
+        let login = |site: Site| async move {
+            connect(&site, Credentials::default(), None)
+                .await
+                .map(|(_, home)| home)
+        };
+
+        // The key file alone.
+        let home = login(site(Some(PathBuf::from(&key)), false)).await;
+        assert!(home.is_ok(), "key file: {:?}", home.err());
+        // The agent alone.
+        let home = login(site(None, true)).await;
+        assert!(home.is_ok(), "agent: {:?}", home.err());
+        // A key the server does not know, and no password.
+        let refused = login(site(Some(fixture("ed25519")), false)).await;
+        assert!(
+            matches!(refused, Err(ConnectError::KeysRejected)),
+            "{:?}",
+            refused.err()
+        );
+        // Nothing to log in with.
+        let nothing = login(site(None, false)).await;
+        assert!(
+            matches!(nothing, Err(ConnectError::PasswordRequired)),
+            "{:?}",
+            nothing.err()
+        );
+    }
 }

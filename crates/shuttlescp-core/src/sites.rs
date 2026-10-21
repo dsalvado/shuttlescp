@@ -91,6 +91,37 @@ pub struct Site {
     /// FTP settings (used only by FTP sites).
     #[serde(default)]
     pub ftp: FtpOptions,
+    /// How to log in with keys (used only by SFTP and SCP sites). Files from before keys
+    /// were supported have none: no key file, the agent used.
+    #[serde(default)]
+    pub ssh: SshAuth,
+}
+
+/// Logging in to an SSH server (SFTP and SCP) with keys rather than, or before, a
+/// password.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshAuth {
+    /// A private key file to log in with (OpenSSH or PuTTY `.ppk`), tried first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<PathBuf>,
+    /// Also try the keys held by the desktop's SSH agent (`SSH_AUTH_SOCK`), as `ssh`
+    /// does.
+    pub use_agent: bool,
+    /// Whether the key file's passphrase is stored in the keyring.
+    pub passphrase_saved: bool,
+}
+
+// Written out by hand: the agent is used unless turned off, so a derived default
+// (`false`) would be wrong.
+impl Default for SshAuth {
+    fn default() -> Self {
+        Self {
+            key_file: None,
+            use_agent: true,
+            passphrase_saved: false,
+        }
+    }
 }
 
 /// Create a new random site id: 32 hex digits (128 bits).
@@ -310,6 +341,7 @@ mod tests {
             user: user.to_owned(),
             password_saved: false,
             ftp: crate::sites::FtpOptions::default(),
+            ssh: SshAuth::default(),
         }
     }
 

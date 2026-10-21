@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use secrecy::SecretString;
 
-use crate::remote::{self, ConnectError, HostKey, Remote};
+use crate::remote::{self, ConnectError, Credentials, HostKey, Remote};
 use crate::secrets;
 use crate::site_export::{self, ExportFile};
 use crate::sites::Site;
@@ -52,12 +52,33 @@ pub fn keyring_label(site: &Site) -> String {
     format!("ShuttleSCP: {}", site.display_name())
 }
 
-/// Log in to `site`: with the typed password, or else the one saved in the keyring.
+/// The keyring entry holding a site's key file passphrase, kept apart from its
+/// password.
+///
+/// # Arguments
+///
+/// * `site_id` - The site's id
+pub fn passphrase_entry(site_id: &str) -> String {
+    format!("{site_id}#key-passphrase")
+}
+
+/// Name a site's key passphrase gets in the keyring, as keyring tools show it.
+///
+/// # Arguments
+///
+/// * `site` - The site
+pub fn passphrase_label(site: &Site) -> String {
+    format!("ShuttleSCP: key passphrase for {}", site.display_name())
+}
+
+/// Log in to `site`: with its key file and the SSH agent, and the typed password and
+/// key passphrase, or else the ones saved in the keyring.
 ///
 /// # Arguments
 ///
 /// * `site` - Server details
 /// * `typed` - Password typed by the user, if any
+/// * `typed_passphrase` - Key file passphrase typed by the user, if any
 /// * `approved_key` - A host key the user has just agreed to trust
 ///
 /// # Errors
@@ -66,22 +87,49 @@ pub fn keyring_label(site: &Site) -> String {
 pub async fn login(
     site: &Site,
     typed: Option<SecretString>,
+    typed_passphrase: Option<SecretString>,
     approved_key: Option<HostKey>,
 ) -> Result<Remote, ConnectError> {
     let password = match typed {
         Some(password) => Some(password),
         None if site.password_saved => {
-            match secrets::load_password(&site.id, &keyring_label(site)).await {
-                Ok(password) => password,
-                Err(error) => {
-                    tracing::warn!("cannot read the saved password: {error}");
-                    None
-                }
-            }
+            saved_secret(&site.id, &keyring_label(site), "password").await
         }
         None => None,
     };
-    remote::connect(site, password, approved_key).await
+    let key_passphrase = match typed_passphrase {
+        Some(passphrase) => Some(passphrase),
+        None if site.ssh.passphrase_saved && site.ssh.key_file.is_some() => {
+            saved_secret(
+                &passphrase_entry(&site.id),
+                &passphrase_label(site),
+                "key passphrase",
+            )
+            .await
+        }
+        None => None,
+    };
+    let credentials = Credentials {
+        password,
+        key_passphrase,
+    };
+    remote::connect(site, credentials, approved_key).await
+}
+
+/// A secret saved in the keyring, or `None` (logged) when it cannot be read.
+///
+/// # Arguments
+///
+/// * `entry` - The keyring entry's id
+/// * `label` - Its name in the keyring
+/// * `what` - What it is, for the log
+async fn saved_secret(entry: &str, label: &str, what: &str) -> Option<SecretString> {
+    secrets::load_password(entry, label)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!("cannot read the saved {what}: {error}");
+            None
+        })
 }
 
 /// Result of a finished export.
@@ -238,6 +286,7 @@ mod tests {
             user: String::from("me"),
             password_saved: false,
             ftp: crate::sites::FtpOptions::default(),
+            ssh: crate::sites::SshAuth::default(),
         };
         assert_eq!(keyring_label(&site), "ShuttleSCP: me@host");
     }

@@ -86,11 +86,31 @@ pub enum ConnectError {
         /// Why it is not trusted.
         reason: String,
     },
-    /// No password was typed or saved.
+    /// No password was typed or saved (and no key was tried).
     #[error("enter the password")]
     PasswordRequired,
-    /// The server rejected the user name or password.
-    #[error("login failed: wrong user name or password")]
+    /// The server accepted none of the keys tried, and there is no password to try.
+    #[error("the server did not accept the SSH key; enter the password, or check the key")]
+    KeysRejected,
+    /// The site's private key file is protected by a passphrase, and none was given
+    /// (`wrong` false) or the one given does not open it (`wrong` true).
+    #[error("the key file {} needs its passphrase", path.display())]
+    KeyPassphraseRequired {
+        /// The key file.
+        path: PathBuf,
+        /// A passphrase was tried and did not open the key.
+        wrong: bool,
+    },
+    /// The site's private key file cannot be read, or is not a supported key.
+    #[error("cannot use the key file {}: {reason}", path.display())]
+    KeyUnreadable {
+        /// The key file.
+        path: PathBuf,
+        /// What is wrong with it.
+        reason: String,
+    },
+    /// The server rejected the user name, key or password.
+    #[error("login failed: wrong user name, key or password")]
     AuthenticationFailed,
     /// The server does not offer SFTP, or it failed to start.
     #[error("the server's file transfer (SFTP) service failed: {0}")]
@@ -98,6 +118,15 @@ pub enum ConnectError {
     /// The FTP server refused something during login.
     #[error("FTP: {0}")]
     Ftp(String),
+}
+
+/// What to log in with, besides the site's key file and the SSH agent.
+#[derive(Debug, Default)]
+pub struct Credentials {
+    /// The password, typed or saved; tried after any keys.
+    pub password: Option<SecretString>,
+    /// The passphrase of the site's key file, typed or saved.
+    pub key_passphrase: Option<SecretString>,
 }
 
 /// What a listing or a lookup says about a file or folder on the server.
@@ -305,7 +334,7 @@ fn path_text(path: &Path) -> String {
 /// # Arguments
 ///
 /// * `site` - Server details
-/// * `password` - Password to log in with
+/// * `credentials` - Password (and, for SSH, the key file's passphrase) to log in with
 /// * `approved_key` - An SSH host key the user has just agreed to trust (after an
 ///   [`ConnectError::UnknownHostKey`]); it is added to `known_hosts`
 ///
@@ -314,16 +343,16 @@ fn path_text(path: &Path) -> String {
 /// Returns a [`ConnectError`] describing the step that failed
 pub async fn connect(
     site: &Site,
-    password: Option<SecretString>,
+    credentials: Credentials,
     approved_key: Option<HostKey>,
 ) -> Result<Remote, ConnectError> {
     let (backend, home) = match site.protocol {
         Protocol::Sftp | Protocol::Scp => {
-            let (sftp, home) = sftp::connect(site, password, approved_key).await?;
+            let (sftp, home) = sftp::connect(site, credentials, approved_key).await?;
             (Backend::Sftp(sftp), home)
         }
         Protocol::Ftp => {
-            let (ftp, home) = ftp::connect(site, password).await?;
+            let (ftp, home) = ftp::connect(site, credentials.password).await?;
             (Backend::Ftp(ftp), home)
         }
     };

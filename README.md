@@ -23,6 +23,8 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
 - SFTP and SCP over SSH, and FTP with plain, explicit or implicit TLS (FTPS), in
   passive or active mode.
+- SSH login with a password, a private key file (OpenSSH or PuTTY `.ppk`, with its
+  passphrase if protected) or the keys of the desktop's SSH agent.
 - Saved sites, with passwords kept in the desktop keyring (GNOME Keyring, KWallet...),
   never in a plain file.
 - Export and import of sites, with saved passwords encrypted under a passphrase you

@@ -148,6 +148,17 @@ pub fn run(
             }),
         ),
         (
+            "key-passphrase",
+            Box::new(|window| {
+                crate::key_passphrase_dialog::ask(
+                    window,
+                    std::path::Path::new("/home/me/.ssh/id_ed25519"),
+                    false,
+                    |_| {},
+                );
+            }),
+        ),
+        (
             "passphrase-import",
             Box::new(|window| {
                 passphrase_dialog::ask(window, PassphrasePurpose::Import, |_| {});

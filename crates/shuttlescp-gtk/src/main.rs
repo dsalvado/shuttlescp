@@ -8,6 +8,7 @@ mod desktop_entry;
 mod dialog;
 mod disk_picker;
 mod file_pane;
+mod key_passphrase_dialog;
 mod log_tail;
 mod login_dialog;
 mod name_dialog;
