@@ -35,6 +35,9 @@
     }
   }
   * { box-sizing: border-box; }
+  /* The script hides and shows parts with the hidden attribute; styles that set
+     display (such as .button) would otherwise override it. */
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     background: var(--bg);
@@ -98,17 +101,38 @@
   .notes h1, .notes h2, .notes h3 { font-size: 1rem; margin: 12px 0 6px; }
   .notes ul { padding-left: 20px; }
 
-  /* Screenshots: one per system, taking turns (script below), on a soft shadow. The
-     Windows one is the Linux picture, blurred, until there is a Windows version. */
-  .shots { margin: 32px 0 0; }
+  /* Screenshots: one per system, taking turns (script below), floating on a coloured
+     panel with a fine grid. Each picture casts its own shadow (drop-shadow follows its
+     outline, so the Mac window's rounded corners too). The Windows one is the Linux
+     picture, blurred, until there is a Windows version. */
+  .shots {
+    margin: 32px 0 0;
+    padding: clamp(20px, 5vw, 48px) clamp(16px, 5vw, 56px) 22px;
+    border-radius: 14px;
+    background:
+      linear-gradient(rgba(255, 255, 255, 0.13) 1px, transparent 1px) 0 0 / 28px 28px,
+      linear-gradient(90deg, rgba(255, 255, 255, 0.13) 1px, transparent 1px) 0 0 / 28px 28px,
+      radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.22), transparent 55%),
+      linear-gradient(135deg, #3a7bd5 0%, #5a63e0 50%, #9b5fd3 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    .shots {
+      background:
+        linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px) 0 0 / 28px 28px,
+        linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px) 0 0 / 28px 28px,
+        radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.1), transparent 55%),
+        linear-gradient(135deg, #1f3f73 0%, #2e2f78 50%, #4f2c6e 100%);
+    }
+  }
   .shot-frame {
     position: relative;
     aspect-ratio: 1200 / 798;
-    overflow: hidden;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--card);
-    box-shadow: var(--shadow);
+    animation: float 6s ease-in-out infinite;
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
   }
   .shot {
     position: absolute;
@@ -117,13 +141,19 @@
     height: 100%;
     object-fit: contain;
     opacity: 0;
-    transition: opacity 0.7s ease;
+    transition: opacity 0.5s ease;
+    filter: drop-shadow(0 26px 30px rgba(10, 16, 40, 0.42)) drop-shadow(0 6px 10px rgba(10, 16, 40, 0.25));
   }
   .shot.is-shown { opacity: 1; }
-  .shot-soon { display: grid; place-items: center; }
-  .shot-soon img {
+  .shot-soon { display: grid; place-items: center; filter: none; }
+  .shot-soon .blurred {
     position: absolute;
     inset: 0;
+    overflow: hidden;
+    border-radius: 6px;
+    filter: drop-shadow(0 26px 30px rgba(10, 16, 40, 0.42));
+  }
+  .shot-soon img {
     width: 100%;
     height: 100%;
     object-fit: contain;
@@ -140,24 +170,27 @@
     font-weight: 700;
     letter-spacing: 0.02em;
   }
-  .shot-tabs { display: flex; justify-content: center; gap: 8px; margin-top: 14px; }
+  .shot-tabs { display: flex; justify-content: center; gap: 8px; margin-top: 22px; }
   .shot-tabs button {
     font: inherit;
     font-size: 0.9rem;
-    color: var(--muted);
-    background: none;
-    border: 1px solid var(--line);
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.35);
     border-radius: 999px;
     padding: 3px 14px;
     cursor: pointer;
   }
+  .shot-tabs button:hover { background: rgba(255, 255, 255, 0.24); }
   .shot-tabs button[aria-selected="true"] {
-    color: var(--accent-text);
-    background: var(--accent);
-    border-color: var(--accent);
+    color: #27306b;
+    background: #fff;
+    border-color: #fff;
+    font-weight: 600;
   }
   @media (prefers-reduced-motion: reduce) {
     .shot { transition: none; }
+    .shot-frame { animation: none; }
   }
 
   .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
@@ -203,10 +236,10 @@
     <div class="shot-frame">
       <img class="shot is-shown" data-system="Linux" src="screenshot.png" width="1200" height="798"
            alt="ShuttleSCP on Linux with two connections open, each outlined in its own colour">
-      <img class="shot" data-system="macOS" src="screenshot-macos.png" width="1200" height="798"
+      <img class="shot" data-system="macOS" src="screenshot-macos.png" width="1200" height="746"
            alt="ShuttleSCP on macOS, with the Mac's window buttons, menus and file icons" loading="lazy">
       <div class="shot shot-soon" data-system="Windows" role="img" aria-label="ShuttleSCP for Windows: coming soon">
-        <img src="screenshot.png" width="1200" height="798" alt="">
+        <div class="blurred"><img src="screenshot.png" width="1200" height="798" alt=""></div>
         <span>Coming soon</span>
       </div>
     </div>
@@ -302,7 +335,7 @@ cargo run --release</code></pre>
     });
     const start = () => {
       if (timer || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-      timer = setInterval(() => show((current + 1) % shots.length), 5000);
+      timer = setInterval(() => show((current + 1) % shots.length), 3500);
     };
     const stop = () => { clearInterval(timer); timer = null; };
     let picked = false;
