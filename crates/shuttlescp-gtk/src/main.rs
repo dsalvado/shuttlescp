@@ -43,6 +43,7 @@ fn main() {
     let loaded = Config::load(&config_path);
     let level = loaded.as_ref().map(Config::log_level).unwrap_or_default();
     let logger = logging::init(level, &logging::default_log_path());
+    forward_toolkit_messages();
     for note in migrated {
         tracing::info!("moving over from GuiSCP: {note}");
     }
@@ -84,5 +85,32 @@ fn main() {
         config,
         config_path,
         logger,
+    });
+}
+
+/// Send the messages of GTK and the libraries under it (GLib, Pango, ...), such as
+/// "Gtk-WARNING: Failed to load icon", to the app's log instead of the terminal. Each
+/// line starts with the library's name. GLib hides its info and debug messages unless
+/// asked; here they become debug and trace lines.
+fn forward_toolkit_messages() {
+    use relm4::gtk::glib::{self, LogLevel, LogWriterOutput};
+
+    glib::log_set_writer_func(|level, fields| {
+        let field = |key: &str| {
+            fields
+                .iter()
+                .find(|field| field.key() == key)
+                .and_then(glib::LogField::value_str)
+        };
+        let domain = field("GLIB_DOMAIN").unwrap_or("GLib");
+        let message = field("MESSAGE").unwrap_or_default();
+        match level {
+            LogLevel::Error | LogLevel::Critical => tracing::error!("{domain}: {message}"),
+            LogLevel::Warning => tracing::warn!("{domain}: {message}"),
+            LogLevel::Message => tracing::info!("{domain}: {message}"),
+            LogLevel::Info => tracing::debug!("{domain}: {message}"),
+            LogLevel::Debug => tracing::trace!("{domain}: {message}"),
+        }
+        LogWriterOutput::Handled
     });
 }
