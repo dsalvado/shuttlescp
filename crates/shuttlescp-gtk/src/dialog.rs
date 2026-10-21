@@ -115,20 +115,42 @@ pub fn style_window(window: &gtk::Window, title: &str) {
     // Added rather than set with the builder: setting `css_classes` would replace the
     // window's built-in classes (such as "background"), leaving its text unstyled.
     window.add_css_class(DIALOG_CLASS);
-    window.set_titlebar(Some(&title_bar(Some(title), ":close")));
+    window.set_titlebar(Some(&title_bar(Some(title), DIALOG_BUTTONS)));
 }
 
-/// A compact title bar (see "Title bars" in style.css).
+// Window buttons in each system's place, as GTK decoration layouts ("start:end"). macOS
+// has close, minimise and zoom on the left and no app icon; other systems have the
+// buttons on the right, and the main window shows the app icon on the left.
+/// The main window's buttons.
+#[cfg(target_os = "macos")]
+pub const MAIN_WINDOW_BUTTONS: &str = "close,minimize,maximize:";
+/// The main window's buttons.
+#[cfg(not(target_os = "macos"))]
+pub const MAIN_WINDOW_BUTTONS: &str = "icon:minimize,maximize,close";
+/// A dialog's buttons.
+#[cfg(target_os = "macos")]
+pub const DIALOG_BUTTONS: &str = "close:";
+/// A dialog's buttons.
+#[cfg(not(target_os = "macos"))]
+pub const DIALOG_BUTTONS: &str = ":close";
+
+/// A compact title bar (see "Title bars" in style.css). On macOS its window buttons are
+/// the system's own (the coloured "traffic lights").
 ///
 /// # Arguments
 ///
 /// * `title` - Its text; `None` shows the window's own title
-/// * `layout` - Which window buttons it has, e.g. ":close" or
-///   ":minimize,maximize,close" (GTK's decoration layout)
+/// * `layout` - Which window buttons it has: [`MAIN_WINDOW_BUTTONS`] or
+///   [`DIALOG_BUTTONS`] (GTK's decoration layout)
 pub fn title_bar(title: Option<&str>, layout: &str) -> gtk::HeaderBar {
     let bar = gtk::HeaderBar::new();
     bar.add_css_class("compact-titlebar");
     bar.set_decoration_layout(Some(layout));
+    // Set by name: the typed setter needs the gtk4 crate's "v4_18" feature, which also
+    // changes other APIs this app uses. GTK before 4.18 lacks it and keeps GTK's buttons.
+    if cfg!(target_os = "macos") && bar.find_property("use-native-controls").is_some() {
+        bar.set_property("use-native-controls", true);
+    }
     if let Some(title) = title {
         let label = gtk::Label::builder()
             .label(title)

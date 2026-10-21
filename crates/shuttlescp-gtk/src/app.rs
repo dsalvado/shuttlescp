@@ -23,6 +23,7 @@ use shuttlescp_core::update::{self, Manifest};
 
 use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
+use crate::dialog;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
 use crate::resize_grips;
@@ -285,12 +286,8 @@ impl SimpleComponent for App {
                 set_child = &gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
 
-                    gtk::HeaderBar {
-                        // Slim, with small square window buttons (see style.css).
-                        add_css_class: "compact-titlebar",
-                        // "icon" shows the app icon in the top left corner.
-                        set_decoration_layout: Some("icon:minimize,maximize,close"),
-                    },
+                    // Slim, with the window buttons where the system puts them.
+                    append: &dialog::title_bar(None, dialog::MAIN_WINDOW_BUTTONS),
 
                     #[name = "menu_bar"]
                     gtk::PopoverMenuBar::from_model(Some(&menu_model)) {},
