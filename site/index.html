@@ -18,7 +18,13 @@
     --accent-text: #ffffff;
     --accent-soft: #e6effb;
     --code: #eef2f7;
-    --shadow: 0 22px 48px -18px rgba(15, 23, 42, 0.45), 0 6px 14px -6px rgba(15, 23, 42, 0.18);
+    --page: #edf1f7;
+    --grid: rgba(58, 123, 213, 0.08);
+    --glow-1: rgba(58, 123, 213, 0.16);
+    --glow-2: rgba(155, 95, 211, 0.12);
+    --panel: rgba(255, 255, 255, 0.92);
+    --panel-line: rgba(31, 41, 51, 0.08);
+    --lift: drop-shadow(0 34px 38px rgba(20, 32, 64, 0.28)) drop-shadow(0 10px 14px rgba(20, 32, 64, 0.16));
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -31,20 +37,45 @@
       --accent-text: #0d1117;
       --accent-soft: #1c2a3d;
       --code: #2a3038;
-      --shadow: 0 22px 48px -18px rgba(0, 0, 0, 0.85), 0 6px 14px -6px rgba(0, 0, 0, 0.6);
+      --page: #12151a;
+      --grid: rgba(255, 255, 255, 0.045);
+      --glow-1: rgba(91, 155, 240, 0.14);
+      --glow-2: rgba(155, 95, 211, 0.10);
+      --panel: rgba(31, 35, 40, 0.94);
+      --panel-line: rgba(255, 255, 255, 0.06);
+      --lift: drop-shadow(0 34px 38px rgba(0, 0, 0, 0.6)) drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45));
     }
   }
   * { box-sizing: border-box; }
   /* The script hides and shows parts with the hidden attribute; styles that set
      display (such as .button) would otherwise override it. */
   [hidden] { display: none !important; }
+  /* A slide waiting off to the right must not widen the page. */
+  html { overflow-x: clip; }
+  /* The page: a faint grid on a soft tint with two gentle colour glows. The text sits on
+     light panels; the screenshot sits on the grid itself, lifted off it by its shadow. */
   body {
     margin: 0;
-    background: var(--bg);
+    background:
+      linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 32px 32px,
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 32px 32px,
+      radial-gradient(60vw 50vh at 10% 0%, var(--glow-1), transparent 70%),
+      radial-gradient(50vw 50vh at 95% 35%, var(--glow-2), transparent 70%),
+      var(--page);
+    background-attachment: fixed;
+    min-height: 100vh;
     color: var(--text);
     font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Cantarell, Ubuntu, sans-serif;
   }
-  main { max-width: 960px; margin: 0 auto; padding: 32px 16px 48px; }
+  main { max-width: 1000px; margin: 0 auto; padding: 28px 16px 48px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: 12px;
+    padding: clamp(18px, 4vw, 32px);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  }
+  .panel > h2:first-child { margin-top: 0; }
   a { color: var(--accent); }
   code, pre { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 0.9em; }
   code { background: var(--code); padding: 1px 5px; border-radius: 3px; }
@@ -101,38 +132,18 @@
   .notes h1, .notes h2, .notes h3 { font-size: 1rem; margin: 12px 0 6px; }
   .notes ul { padding-left: 20px; }
 
-  /* Screenshots: one per system, taking turns (script below), floating on a coloured
-     panel with a fine grid. Each picture casts its own shadow (drop-shadow follows its
-     outline, so the Mac window's rounded corners too). The Windows one is the Linux
+  /* Screenshots: one per system, taking turns (script below), on the page's grid. Each
+     casts its own shadow (drop-shadow follows its outline, the Mac window's rounded
+     corners too), so it seems to float above the page. The next one slides in from
+     the right as the current one leaves to the left. The Windows one is the Linux
      picture, blurred, until there is a Windows version. */
-  .shots {
-    margin: 32px 0 0;
-    padding: clamp(20px, 5vw, 48px) clamp(16px, 5vw, 56px) 22px;
-    border-radius: 14px;
-    background:
-      linear-gradient(rgba(255, 255, 255, 0.13) 1px, transparent 1px) 0 0 / 28px 28px,
-      linear-gradient(90deg, rgba(255, 255, 255, 0.13) 1px, transparent 1px) 0 0 / 28px 28px,
-      radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.22), transparent 55%),
-      linear-gradient(135deg, #3a7bd5 0%, #5a63e0 50%, #9b5fd3 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-  }
-  @media (prefers-color-scheme: dark) {
-    .shots {
-      background:
-        linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px) 0 0 / 28px 28px,
-        linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px) 0 0 / 28px 28px,
-        radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.1), transparent 55%),
-        linear-gradient(135deg, #1f3f73 0%, #2e2f78 50%, #4f2c6e 100%);
-    }
-  }
+  .shots { margin: 36px 0 80px; }
   .shot-frame {
     position: relative;
     aspect-ratio: 1200 / 798;
-    animation: float 6s ease-in-out infinite;
-  }
-  @keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-10px); }
+    /* Slides that have moved off are hidden, but the clip stands well clear of the
+       pictures so their shadows are never cut. */
+    clip-path: inset(-70px);
   }
   .shot {
     position: absolute;
@@ -141,17 +152,19 @@
     height: 100%;
     object-fit: contain;
     opacity: 0;
-    transition: opacity 0.5s ease;
-    filter: drop-shadow(0 26px 30px rgba(10, 16, 40, 0.42)) drop-shadow(0 6px 10px rgba(10, 16, 40, 0.25));
+    transform: translateX(105%);
+    transition: transform 0.6s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.6s ease;
+    filter: var(--lift);
   }
-  .shot.is-shown { opacity: 1; }
+  .shot.is-shown { opacity: 1; transform: none; }
+  .shot.is-leaving { opacity: 0; transform: translateX(-105%); }
   .shot-soon { display: grid; place-items: center; filter: none; }
   .shot-soon .blurred {
     position: absolute;
     inset: 0;
     overflow: hidden;
     border-radius: 6px;
-    filter: drop-shadow(0 26px 30px rgba(10, 16, 40, 0.42));
+    filter: var(--lift);
   }
   .shot-soon img {
     width: 100%;
@@ -170,27 +183,26 @@
     font-weight: 700;
     letter-spacing: 0.02em;
   }
-  .shot-tabs { display: flex; justify-content: center; gap: 8px; margin-top: 22px; }
+  .shot-tabs { display: flex; justify-content: center; gap: 8px; margin-bottom: 20px; }
   .shot-tabs button {
     font: inherit;
     font-size: 0.9rem;
-    color: #fff;
-    background: rgba(255, 255, 255, 0.14);
-    border: 1px solid rgba(255, 255, 255, 0.35);
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--line);
     border-radius: 999px;
-    padding: 3px 14px;
+    padding: 4px 16px;
     cursor: pointer;
   }
-  .shot-tabs button:hover { background: rgba(255, 255, 255, 0.24); }
+  .shot-tabs button:hover { color: var(--text); }
   .shot-tabs button[aria-selected="true"] {
-    color: #27306b;
-    background: #fff;
-    border-color: #fff;
+    color: var(--accent-text);
+    background: var(--accent);
+    border-color: var(--accent);
     font-weight: 600;
   }
   @media (prefers-reduced-motion: reduce) {
-    .shot { transition: none; }
-    .shot-frame { animation: none; }
+    .shot, .shot.is-leaving { transition: none; transform: none; }
   }
 
   .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
@@ -199,11 +211,12 @@
   .feature p { margin: 0; color: var(--muted); font-size: 0.95rem; }
 
   ol li { margin-bottom: 6px; }
-  footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding-top: 16px; }
+  footer { margin-top: 40px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding-top: 16px; }
 </style>
 </head>
 <body>
 <main>
+ <div class="panel">
   <header>
     <svg viewBox="0 0 256 256" aria-hidden="true">
       <path d="M24 56c0-8.8 7.2-16 16-16h56l20 20h100c8.8 0 16 7.2 16 16v124c0 8.8-7.2 16-16 16H40c-8.8 0-16-7.2-16-16z" fill="#3a7bd5"/>
@@ -231,21 +244,23 @@
     <div class="notes" id="release-notes" hidden></div>
     <p class="meta" id="coming-soon">A Windows version is coming soon.</p>
   </section>
+ </div>
 
   <figure class="shots" id="shots" aria-label="Screenshots">
+    <div class="shot-tabs" role="tablist" aria-label="Show the screenshot for"></div>
     <div class="shot-frame">
       <img class="shot is-shown" data-system="Linux" src="screenshot.png" width="1200" height="798"
            alt="ShuttleSCP on Linux with two connections open, each outlined in its own colour">
-      <img class="shot" data-system="macOS" src="screenshot-macos.png" width="1200" height="746"
+      <img class="shot" data-system="macOS" src="screenshot-macos.png" width="1200" height="747"
            alt="ShuttleSCP on macOS, with the Mac's window buttons, menus and file icons" loading="lazy">
       <div class="shot shot-soon" data-system="Windows" role="img" aria-label="ShuttleSCP for Windows: coming soon">
         <div class="blurred"><img src="screenshot.png" width="1200" height="798" alt=""></div>
         <span>Coming soon</span>
       </div>
     </div>
-    <div class="shot-tabs" role="tablist" aria-label="Show the screenshot for"></div>
   </figure>
 
+ <div class="panel">
   <h2>Install</h2>
   <h3 class="platform">Linux</h3>
   <ol>
@@ -309,6 +324,7 @@ cargo run --release</code></pre>
     <a href="https://github.com/dsalvado/shuttlescp/blob/master/LICENSE">GNU GPL, version 3 or later</a>.
     Source code, issues and releases on <a href="https://github.com/dsalvado/shuttlescp">GitHub</a>.
   </footer>
+ </div>
 </main>
 
 <script>
@@ -321,8 +337,12 @@ cargo run --release</code></pre>
     let current = 0;
     let timer = null;
     const show = (index) => {
+      const leaving = current;
       current = index;
-      shots.forEach((shot, i) => shot.classList.toggle("is-shown", i === index));
+      shots.forEach((shot, i) => {
+        shot.classList.toggle("is-shown", i === index);
+        shot.classList.toggle("is-leaving", i === leaving && i !== index);
+      });
       [...tabs.children].forEach((tab, i) => tab.setAttribute("aria-selected", String(i === index)));
     };
     shots.forEach((shot, index) => {
