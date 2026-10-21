@@ -11,10 +11,13 @@ homepage.workspace = true
 
 [dependencies]
 shuttlescp-core = { path = "../shuttlescp-core" }
-glib-unix = "0.22"
 relm4 = "0.11"
 secrecy.workspace = true
 tracing.workspace = true
+
+# Linux and macOS: quit cleanly on SIGHUP/SIGINT/SIGTERM (see app.rs quit_on_signals).
+[target.'cfg(unix)'.dependencies]
+glib-unix = "0.22"
 
 # macOS: the icons Finder shows, asked from the system's NSWorkspace (see mac_icons.rs).
 # Only the parts used are switched on; the calls used are all safe Rust.

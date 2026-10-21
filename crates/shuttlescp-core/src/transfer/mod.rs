@@ -36,6 +36,7 @@ pub use meter::{RateMeter, fraction, percent};
 pub use ops::{check_name, check_same_side, create_folder, rename};
 
 use crate::format::format_size;
+use crate::path::{RemotePath, SidePath};
 use crate::remote::Remote;
 use endpoint::Endpoint;
 
@@ -81,25 +82,27 @@ pub enum JobKind {
 }
 
 /// One user request: copy, move or delete some files and folders.
+///
+/// Saved (see [`crate::pending`]) as a [`JobRecord`], in the same form as before paths
+/// knew their side.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "JobRecord", into = "JobRecord")]
 pub struct Job {
     /// What to do.
     pub kind: JobKind,
     /// Where the sources are.
     pub side: Side,
     /// Files and folders to act on (absolute paths on `side`).
-    pub sources: Vec<PathBuf>,
+    pub sources: Vec<SidePath>,
     /// Folder that copies go into, on the other side (or on the same side for a
     /// [`Job::same_side`] job); unused when deleting.
-    pub dest_dir: PathBuf,
+    pub dest_dir: SidePath,
     /// Copies go to another folder on the same side (e.g. a file dragged onto a folder
     /// in its own pane) instead of to the other side.
-    #[serde(default)]
     pub same_side: bool,
     /// Continue an earlier, interrupted run of this job: files already copied (same
     /// size and date at the destination) are not copied again or asked about, and
     /// sources already moved away are passed over.
-    #[serde(default)]
     pub resume: bool,
 }
 
@@ -109,12 +112,12 @@ impl Job {
     pub fn title(&self) -> String {
         let what = match self.sources.as_slice() {
             [single] => single.file_name().map_or_else(
-                || single.display().to_string(),
+                || single.to_string(),
                 |name| name.to_string_lossy().into_owned(),
             ),
             many => format!("{} items", many.len()),
         };
-        let dest = self.dest_dir.display();
+        let dest = &self.dest_dir;
         let on_server = match self.side {
             Side::Local => "",
             Side::Remote => " on the server",
@@ -137,22 +140,18 @@ impl Job {
         !(stays_local && self.side == Side::Local)
     }
 
-    /// The files and folders the job is changing, by side: what copies and moves
-    /// write at the destination, or what a delete removes. Everything inside a folder
+    /// The files and folders the job is changing: what copies and moves write at the
+    /// destination, or what a delete removes. Everything inside a folder
     /// listed here is in use too, and so is a file's partial copy (its name plus
     /// [`PARTIAL_SUFFIX`]).
-    pub fn paths_in_use(&self) -> Vec<(Side, PathBuf)> {
+    pub fn paths_in_use(&self) -> Vec<SidePath> {
         if self.kind == JobKind::Delete {
-            return self
-                .sources
-                .iter()
-                .map(|source| (self.side, source.clone()))
-                .collect();
+            return self.sources.clone();
         }
         self.sources
             .iter()
-            .filter_map(|source| source.file_name())
-            .map(|name| (self.dest_side(), self.dest_dir.join(name)))
+            .filter_map(SidePath::file_name)
+            .map(|name| self.dest_dir.join(name))
             .collect()
     }
 
@@ -162,6 +161,71 @@ impl Job {
             self.side
         } else {
             self.side.other()
+        }
+    }
+}
+
+/// A [`Job`] as saved: its paths as plain text, read back as local or server paths by
+/// the side they are on.
+#[derive(Serialize, Deserialize)]
+struct JobRecord {
+    kind: JobKind,
+    side: Side,
+    sources: Vec<PathBuf>,
+    dest_dir: PathBuf,
+    #[serde(default)]
+    same_side: bool,
+    #[serde(default)]
+    resume: bool,
+}
+
+impl JobRecord {
+    /// A saved path as a path on `side`.
+    fn path_on(side: Side, path: PathBuf) -> SidePath {
+        match side {
+            Side::Local => SidePath::Local(path),
+            Side::Remote => SidePath::Remote(RemotePath::new(path.to_string_lossy())),
+        }
+    }
+
+    /// A path as saved.
+    fn saved(path: SidePath) -> PathBuf {
+        match path {
+            SidePath::Local(path) => path,
+            SidePath::Remote(path) => PathBuf::from(String::from(path)),
+        }
+    }
+}
+
+impl From<JobRecord> for Job {
+    fn from(record: JobRecord) -> Self {
+        let mut job = Self {
+            kind: record.kind,
+            side: record.side,
+            sources: Vec::new(),
+            dest_dir: SidePath::Local(PathBuf::new()),
+            same_side: record.same_side,
+            resume: record.resume,
+        };
+        job.sources = record
+            .sources
+            .into_iter()
+            .map(|source| JobRecord::path_on(job.side, source))
+            .collect();
+        job.dest_dir = JobRecord::path_on(job.dest_side(), record.dest_dir);
+        job
+    }
+}
+
+impl From<Job> for JobRecord {
+    fn from(job: Job) -> Self {
+        Self {
+            kind: job.kind,
+            side: job.side,
+            sources: job.sources.into_iter().map(JobRecord::saved).collect(),
+            dest_dir: JobRecord::saved(job.dest_dir),
+            same_side: job.same_side,
+            resume: job.resume,
         }
     }
 }
@@ -213,9 +277,9 @@ pub struct PlanItem {
     /// Bytes: the file's size, or for a folder the total of the files inside it.
     pub size: u64,
     /// Where it is now.
-    pub source: PathBuf,
+    pub source: SidePath,
     /// Where it is copied to (unused when deleting).
-    pub dest: PathBuf,
+    pub dest: SidePath,
     /// A file already at `dest`, which copying would replace.
     pub existing: Option<FileInfo>,
     /// The source's modification time, given to the copy.

@@ -9,12 +9,11 @@
 //!
 //! The root `/` always comes first; on an FTP server it is often all there is.
 
-use std::path::{Path, PathBuf};
-
 use tokio::io::AsyncReadExt;
 
 use super::Remote;
 use crate::disks::Disk;
+use crate::path::{RemotePath, SidePath};
 
 /// Icon (a theme icon name, see [`Disk::new`]) of a disk.
 const DISK_ICON: &str = "drive-harddisk";
@@ -35,10 +34,10 @@ impl Remote {
     pub async fn drives(&self) -> Vec<Disk> {
         let mut drives = vec![Disk::new(
             String::from("/"),
-            PathBuf::from("/"),
+            SidePath::Remote(RemotePath::root()),
             String::from(DISK_ICON),
         )];
-        let found = match self.read_small_file(Path::new("/proc/mounts")).await {
+        let found = match self.read_small_file(&RemotePath::new("/proc/mounts")).await {
             Ok(table) => self.existing_dirs(mounted_drives(&table)).await,
             Err(_) => Vec::new(),
         };
@@ -58,7 +57,7 @@ impl Remote {
     }
 
     /// A small text file from the server, read whole.
-    async fn read_small_file(&self, path: &Path) -> Result<String, String> {
+    async fn read_small_file(&self, path: &RemotePath) -> Result<String, String> {
         let mut text = String::new();
         self.open_at(path, 0)
             .await?
@@ -73,7 +72,10 @@ impl Remote {
     async fn existing_dirs(&self, drives: Vec<Disk>) -> Vec<Disk> {
         let mut dirs = Vec::with_capacity(drives.len());
         for drive in drives {
-            if self.stat(drive.root()).await.is_ok_and(|meta| meta.is_dir) {
+            let Some(root) = drive.root().as_remote() else {
+                continue;
+            };
+            if self.stat(root).await.is_ok_and(|meta| meta.is_dir) {
                 dirs.push(drive);
             }
         }
@@ -82,14 +84,20 @@ impl Remote {
 
     /// macOS: the disks in /Volumes (the startup disk's entry there is a link to /).
     async fn mac_volumes(&self) -> Vec<Disk> {
-        let volumes = Path::new("/Volumes");
-        let Ok(entries) = self.read_dir_raw(volumes).await else {
+        let volumes = RemotePath::new("/Volumes");
+        let Ok(entries) = self.read_dir_raw(&volumes).await else {
             return Vec::new();
         };
         let mut drives: Vec<Disk> = entries
             .into_iter()
             .filter(|(_, meta)| meta.is_dir && !meta.is_symlink)
-            .map(|(name, _)| Disk::new(name.clone(), volumes.join(name), String::from(DISK_ICON)))
+            .map(|(name, _)| {
+                Disk::new(
+                    name.clone(),
+                    SidePath::Remote(volumes.join(&name)),
+                    String::from(DISK_ICON),
+                )
+            })
             .collect();
         drives.sort_by(|a, b| a.name().cmp(b.name()));
         drives
@@ -97,7 +105,7 @@ impl Remote {
 
     /// Windows: the drive letters the server lists in /.
     async fn windows_drives(&self) -> Vec<Disk> {
-        let Ok(entries) = self.read_dir_raw(Path::new("/")).await else {
+        let Ok(entries) = self.read_dir_raw(&RemotePath::root()).await else {
             return Vec::new();
         };
         let mut drives: Vec<Disk> = entries
@@ -107,7 +115,7 @@ impl Remote {
             .map(|name| {
                 Disk::new(
                     name.clone(),
-                    PathBuf::from(format!("/{name}")),
+                    SidePath::Remote(RemotePath::root().join(&name)),
                     String::from(DISK_ICON),
                 )
             })
@@ -149,7 +157,7 @@ fn mounted_drives(table: &str) -> Vec<Disk> {
         }
         drives.push(Disk::new(
             mount_point.clone(),
-            PathBuf::from(mount_point),
+            SidePath::Remote(RemotePath::new(mount_point)),
             String::from(icon),
         ));
     }

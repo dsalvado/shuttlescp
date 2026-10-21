@@ -81,6 +81,7 @@ impl PendingTransfers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::{RemotePath, SidePath};
     use crate::transfer::{JobKind, Side};
 
     fn pending(key: &str, site: &str) -> PendingJob {
@@ -90,8 +91,8 @@ mod tests {
             job: Job {
                 kind: JobKind::Copy,
                 side: Side::Local,
-                sources: vec![PathBuf::from("/data/a")],
-                dest_dir: PathBuf::from("/srv"),
+                sources: vec![SidePath::Local(PathBuf::from("/data/a"))],
+                dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
                 resume: false,
             },

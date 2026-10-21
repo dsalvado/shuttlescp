@@ -1,9 +1,9 @@
 //! Planning a job: walking its sources into a tree of items, and noting what already
 //! exists at the destination.
 
+use crate::path::SidePath;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 
 use super::endpoint::{Endpoint, Node};
 use super::{FileInfo, ItemKind, Job, JobKind, PARTIAL_SUFFIX, PlanItem};
@@ -49,11 +49,11 @@ pub(super) async fn plan(
     for source in &job.sources {
         let name = source
             .file_name()
-            .ok_or_else(|| format!("{} cannot be copied or deleted", source.display()))?;
+            .ok_or_else(|| format!("{} cannot be copied or deleted", source))?;
         let node = match src.stat(source, follow).await {
             Ok(node) => node,
             Err(error) if job.resume => {
-                tracing::info!("passing over {}: {error}", source.display());
+                tracing::info!("passing over {}: {error}", source);
                 continue;
             }
             Err(error) => return Err(error),
@@ -76,7 +76,7 @@ pub(super) async fn plan(
         if depth >= MAX_DEPTH {
             return Err(format!(
                 "{} is nested too deeply (a symbolic link loop?)",
-                items[folder].source.display()
+                items[folder].source
             ));
         }
         let (source, dest) = (items[folder].source.clone(), items[folder].dest.clone());
@@ -116,7 +116,7 @@ pub(super) async fn plan(
 }
 
 /// List a destination folder; a folder that does not exist (yet) holds nothing.
-async fn existing_in(dst: Option<&Endpoint>, dir: &Path) -> Existing {
+async fn existing_in(dst: Option<&Endpoint>, dir: &SidePath) -> Existing {
     let Some(dst) = dst else {
         return Existing::new();
     };
@@ -140,8 +140,8 @@ fn push_item(
     parent: Option<usize>,
     name: &std::ffi::OsStr,
     node: &Node,
-    source: PathBuf,
-    dest_dir: &Path,
+    source: SidePath,
+    dest_dir: &SidePath,
     existing: &Existing,
 ) -> usize {
     let id = items.len();

@@ -6,13 +6,13 @@
 //! password. The first one the server accepts wins.
 
 use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use russh::client;
 use russh::keys::agent::AgentIdentity;
-use russh::keys::agent::client::AgentClient;
+use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::known_hosts::learn_known_hosts;
 use russh::keys::{
     HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, check_known_hosts,
@@ -27,6 +27,7 @@ use super::{
     CONNECT_TIMEOUT, ConnectError, Credentials, HostKey, RemoteMeta, RemoteReader, RemoteWriter,
     path_text,
 };
+use crate::path::RemotePath;
 use crate::sites::Site;
 
 /// Most agent keys offered to one server. Servers stop a login after a few failed
@@ -99,7 +100,7 @@ pub(super) struct Sftp {
 }
 
 impl Sftp {
-    pub(super) async fn stat(&self, path: &Path) -> Result<RemoteMeta, String> {
+    pub(super) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         let text = path_text(path);
         self.session
             .metadata(text.clone())
@@ -108,7 +109,7 @@ impl Sftp {
             .map_err(|error| format!("cannot read {text}: {error}"))
     }
 
-    pub(super) async fn lstat(&self, path: &Path) -> Result<RemoteMeta, String> {
+    pub(super) async fn lstat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         let text = path_text(path);
         self.session
             .symlink_metadata(text.clone())
@@ -117,7 +118,10 @@ impl Sftp {
             .map_err(|error| format!("cannot read {text}: {error}"))
     }
 
-    pub(super) async fn read_dir(&self, dir: &Path) -> Result<Vec<(String, RemoteMeta)>, String> {
+    pub(super) async fn read_dir(
+        &self,
+        dir: &RemotePath,
+    ) -> Result<Vec<(String, RemoteMeta)>, String> {
         let text = path_text(dir);
         let listing = self
             .session
@@ -130,7 +134,11 @@ impl Sftp {
             .collect())
     }
 
-    pub(super) async fn open_at(&self, path: &Path, offset: u64) -> Result<RemoteReader, String> {
+    pub(super) async fn open_at(
+        &self,
+        path: &RemotePath,
+        offset: u64,
+    ) -> Result<RemoteReader, String> {
         let text = path_text(path);
         let mut file = self
             .session
@@ -147,7 +155,7 @@ impl Sftp {
 
     pub(super) async fn open_write_at(
         &self,
-        path: &Path,
+        path: &RemotePath,
         offset: u64,
     ) -> Result<RemoteWriter, String> {
         let text = path_text(path);
@@ -168,7 +176,7 @@ impl Sftp {
         Ok(Box::pin(file))
     }
 
-    pub(super) async fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
+    pub(super) async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), String> {
         let (from_text, to_text) = (path_text(from), path_text(to));
         self.session
             .rename(from_text.clone(), to_text.clone())
@@ -176,7 +184,7 @@ impl Sftp {
             .map_err(|error| format!("cannot rename {from_text} to {to_text}: {error}"))
     }
 
-    pub(super) async fn create_dir(&self, path: &Path) -> Result<(), String> {
+    pub(super) async fn create_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
         self.session
             .create_dir(text.clone())
@@ -184,7 +192,7 @@ impl Sftp {
             .map_err(|error| format!("cannot create folder {text}: {error}"))
     }
 
-    pub(super) async fn remove_file(&self, path: &Path) -> Result<(), String> {
+    pub(super) async fn remove_file(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
         self.session
             .remove_file(text.clone())
@@ -192,7 +200,7 @@ impl Sftp {
             .map_err(|error| format!("cannot delete {text}: {error}"))
     }
 
-    pub(super) async fn remove_dir(&self, path: &Path) -> Result<(), String> {
+    pub(super) async fn remove_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
         self.session
             .remove_dir(text.clone())
@@ -200,7 +208,11 @@ impl Sftp {
             .map_err(|error| format!("cannot delete folder {text}: {error}"))
     }
 
-    pub(super) async fn set_modified(&self, path: &Path, time: SystemTime) -> Result<(), String> {
+    pub(super) async fn set_modified(
+        &self,
+        path: &RemotePath,
+        time: SystemTime,
+    ) -> Result<(), String> {
         let text = path_text(path);
         let seconds = time
             .duration_since(UNIX_EPOCH)
@@ -260,7 +272,7 @@ pub(super) async fn connect(
     site: &Site,
     credentials: Credentials,
     approved_key: Option<HostKey>,
-) -> Result<(Sftp, PathBuf), ConnectError> {
+) -> Result<(Sftp, RemotePath), ConnectError> {
     let verdict = Arc::new(Mutex::new(None));
     let handler = HostKeyCheck {
         host: site.host.clone(),
@@ -322,7 +334,7 @@ pub(super) async fn connect(
             session: sftp,
             _ssh: ssh,
         },
-        PathBuf::from(home),
+        RemotePath::new(home),
     ))
 }
 
@@ -369,7 +381,7 @@ async fn authenticate(
 
     // 2. The SSH agent's keys (GNOME Keyring, ssh-agent, ...). No agent is fine.
     if site.ssh.use_agent {
-        match AgentClient::connect_env().await {
+        match connect_agent().await {
             Ok(mut agent) => {
                 let identities = agent.request_identities().await.unwrap_or_else(|error| {
                     tracing::warn!("cannot list the SSH agent's keys: {error}");
@@ -415,6 +427,36 @@ async fn authenticate(
     } else {
         Err(ConnectError::AuthenticationFailed)
     }
+}
+
+/// A connection to the SSH agent, whatever kind of stream reaches it.
+type Agent = AgentClient<Box<dyn AgentStream + Send + Unpin>>;
+
+/// Connect to the SSH agent named by `SSH_AUTH_SOCK` (GNOME Keyring, ssh-agent, ...).
+///
+/// # Errors
+///
+/// Returns an error if no agent is set or it cannot be reached
+#[cfg(unix)]
+async fn connect_agent() -> Result<Agent, russh::keys::Error> {
+    Ok(AgentClient::connect_env().await?.dynamic())
+}
+
+/// Connect to an SSH agent on Windows: the pipe named by `SSH_AUTH_SOCK` if set, else
+/// Windows' own OpenSSH agent service, else PuTTY's Pageant.
+///
+/// # Errors
+///
+/// Returns Pageant's error if no agent can be reached
+#[cfg(windows)]
+async fn connect_agent() -> Result<Agent, russh::keys::Error> {
+    const OPENSSH_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+    let pipe = std::env::var_os("SSH_AUTH_SOCK").unwrap_or_else(|| OPENSSH_PIPE.into());
+    match AgentClient::connect_named_pipe(&pipe).await {
+        Ok(agent) => return Ok(agent.dynamic()),
+        Err(error) => tracing::debug!("no SSH agent at {}: {error}", pipe.display()),
+    }
+    Ok(AgentClient::connect_pageant().await?.dynamic())
 }
 
 /// Read a private key file (OpenSSH, PKCS#8 or PuTTY `.ppk`), opening it with
@@ -472,6 +514,8 @@ fn is_protected(text: &str, error: &russh::keys::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use secrecy::SecretString;
 
     use super::*;

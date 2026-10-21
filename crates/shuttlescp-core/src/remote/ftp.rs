@@ -8,7 +8,6 @@
 
 use std::future::Future;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,6 +26,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::tls::{self, RejectedSlot};
 use super::{CONNECT_TIMEOUT, ConnectError, RemoteMeta, RemoteReader, RemoteWriter, path_text};
+use crate::path::RemotePath;
 use crate::sites::{FtpEncryption, Site};
 
 /// Most connections opened to one server at once. Enough for a few parallel transfers
@@ -107,7 +107,7 @@ impl Drop for Lease {
 pub(super) async fn connect(
     site: &Site,
     password: Option<SecretString>,
-) -> Result<(Ftp, PathBuf), ConnectError> {
+) -> Result<(Ftp, RemotePath), ConnectError> {
     // FTP servers commonly accept "anonymous" with any password (often an email address).
     let password = match password {
         Some(password) => password,
@@ -172,7 +172,7 @@ pub(super) async fn connect(
         idle: Mutex::new(vec![first]),
         slots: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
     });
-    Ok((Ftp { settings, pool }, PathBuf::from(home)))
+    Ok((Ftp { settings, pool }, RemotePath::new(home)))
 }
 
 /// Open and log in one connection.
@@ -352,7 +352,7 @@ impl Ftp {
         }
     }
 
-    pub(super) async fn stat(&self, path: &Path) -> Result<RemoteMeta, String> {
+    pub(super) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         let text = path_text(path);
         let mlst_path = text.clone();
         let found = self
@@ -376,18 +376,20 @@ impl Ftp {
                         modified: None,
                     });
                 };
-                let name = name.to_string_lossy();
-                self.read_dir(parent)
+                self.read_dir(&parent)
                     .await?
                     .into_iter()
-                    .find(|(entry, _)| *entry == name)
+                    .find(|(entry, _)| entry == name)
                     .map(|(_, meta)| meta)
                     .ok_or_else(|| format!("cannot read {text}: no such file or folder"))
             }
         }
     }
 
-    pub(super) async fn read_dir(&self, dir: &Path) -> Result<Vec<(String, RemoteMeta)>, String> {
+    pub(super) async fn read_dir(
+        &self,
+        dir: &RemotePath,
+    ) -> Result<Vec<(String, RemoteMeta)>, String> {
         let text = path_text(dir);
         let what = format!("cannot open {text}");
         let mlsd_path = text.clone();
@@ -426,7 +428,11 @@ impl Ftp {
             .collect())
     }
 
-    pub(super) async fn open_at(&self, path: &Path, offset: u64) -> Result<RemoteReader, String> {
+    pub(super) async fn open_at(
+        &self,
+        path: &RemotePath,
+        offset: u64,
+    ) -> Result<RemoteReader, String> {
         let text = path_text(path);
         let mut lease = self.lease().await?;
         let stream = match start_download(lease.connection(), text.clone(), offset).await {
@@ -449,7 +455,7 @@ impl Ftp {
 
     pub(super) async fn open_write_at(
         &self,
-        path: &Path,
+        path: &RemotePath,
         offset: u64,
     ) -> Result<RemoteWriter, String> {
         let text = path_text(path);
@@ -472,7 +478,7 @@ impl Ftp {
         }))
     }
 
-    pub(super) async fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
+    pub(super) async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), String> {
         let (from, to) = (path_text(from), path_text(to));
         let what = format!("cannot rename {from} to {to}");
         self.run(&what, &move |connection| {
@@ -482,7 +488,7 @@ impl Ftp {
         .await
     }
 
-    pub(super) async fn create_dir(&self, path: &Path) -> Result<(), String> {
+    pub(super) async fn create_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
         let what = format!("cannot create folder {text}");
         self.run(&what, &move |connection| {
@@ -492,7 +498,7 @@ impl Ftp {
         .await
     }
 
-    pub(super) async fn remove_file(&self, path: &Path) -> Result<(), String> {
+    pub(super) async fn remove_file(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
         let what = format!("cannot delete {text}");
         self.run(&what, &move |connection| {
@@ -502,7 +508,7 @@ impl Ftp {
         .await
     }
 
-    pub(super) async fn remove_dir(&self, path: &Path) -> Result<(), String> {
+    pub(super) async fn remove_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
         let what = format!("cannot delete folder {text}");
         self.run(&what, &move |connection| {
@@ -514,7 +520,11 @@ impl Ftp {
 
     /// Set the modification time with MFMT, a widespread extension (not every server
     /// has it).
-    pub(super) async fn set_modified(&self, path: &Path, time: SystemTime) -> Result<(), String> {
+    pub(super) async fn set_modified(
+        &self,
+        path: &RemotePath,
+        time: SystemTime,
+    ) -> Result<(), String> {
         let text = path_text(path);
         let stamp = DateTime::<Utc>::from(time)
             .format("%Y%m%d%H%M%S")

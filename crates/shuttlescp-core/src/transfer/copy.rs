@@ -1,7 +1,7 @@
 //! Carrying out a planned job: settling conflicts, copying (or moving) files and
 //! folders, and deleting.
 
-use std::path::Path;
+use crate::path::SidePath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -137,7 +137,7 @@ pub(super) async fn copy_items(
             let _slot = slot;
             let outcome = match action {
                 FileAction::AlreadyThere => {
-                    tracing::info!("already copied earlier: {}", item.dest.display());
+                    tracing::info!("already copied earlier: {}", item.dest);
                     finish_source(&item, &src, delete_source).await
                 }
                 FileAction::Copy | FileAction::Overwrite => {
@@ -199,7 +199,7 @@ async fn rename_into_place(
             tracing::debug!("{error}; copying instead");
             continue;
         }
-        tracing::info!("moved {} -> {}", item.source.display(), item.dest.display());
+        tracing::info!("moved {} -> {}", item.source, item.dest);
         let mut inside = vec![item.id];
         while let Some(id) = inside.pop() {
             moved.push(id);
@@ -266,11 +266,11 @@ async fn settle_conflicts(
         match choice {
             ConflictChoice::Overwrite => actions[item.id] = Some(FileAction::Overwrite),
             ConflictChoice::Skip => {
-                tracing::info!("not overwriting {}", item.dest.display());
+                tracing::info!("not overwriting {}", item.dest);
                 settled(item.id, ItemOutcome::Skipped);
             }
             ConflictChoice::CancelJob => {
-                tracing::info!("cancelled at the conflict over {}", item.dest.display());
+                tracing::info!("cancelled at the conflict over {}", item.dest);
                 cancel.cancel();
                 settled(item.id, ItemOutcome::Cancelled);
             }
@@ -397,17 +397,9 @@ async fn copy_file(
     let partial = partial_path(&item.dest);
     let offset = resume_offset(item, src, dst, &partial).await;
     if offset > 0 {
-        tracing::info!(
-            "resuming {} at {offset} of {} bytes",
-            item.dest.display(),
-            item.size
-        );
+        tracing::info!("resuming {} at {offset} of {} bytes", item.dest, item.size);
     } else {
-        tracing::debug!(
-            "copying {} to {}",
-            item.source.display(),
-            item.dest.display()
-        );
+        tracing::debug!("copying {} to {}", item.source, item.dest);
     }
     match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
         Ok(()) => {}
@@ -466,15 +458,15 @@ fn log_copied(item: &PlanItem, offset: u64, took: Duration, moved: bool) {
     tracing::info!(
         "{} {} -> {}: {} in {seconds:.1} s{speed}{resumed}",
         if moved { "moved" } else { "copied" },
-        item.source.display(),
-        item.dest.display(),
+        item.source,
+        item.dest,
         format_size(item.size),
     );
 }
 
 /// Where to continue an earlier partial copy: its size, if it is not longer than the
 /// source and its last bytes match the source's; otherwise 0 (start over).
-async fn resume_offset(item: &PlanItem, src: &Endpoint, dst: &Endpoint, partial: &Path) -> u64 {
+async fn resume_offset(item: &PlanItem, src: &Endpoint, dst: &Endpoint, partial: &SidePath) -> u64 {
     let offset = item.partial;
     if offset == 0 || offset > item.size {
         return 0;
@@ -489,10 +481,7 @@ async fn resume_offset(item: &PlanItem, src: &Endpoint, dst: &Endpoint, partial:
     ) {
         (Ok(source), Ok(copy)) if source == copy => offset,
         _ => {
-            tracing::info!(
-                "{} does not match its source; starting over",
-                partial.display()
-            );
+            tracing::info!("{} does not match its source; starting over", partial);
             0
         }
     }
@@ -508,7 +497,7 @@ async fn copy_contents(
     item: &PlanItem,
     src: &Endpoint,
     dst: &Endpoint,
-    partial: &Path,
+    partial: &SidePath,
     offset: u64,
     cancel: &CancelFlag,
     sink: &Sink,
@@ -530,14 +519,15 @@ async fn copy_contents(
             return Err(ItemOutcome::Cancelled);
         }
         let read = reader.read(&mut buffer).await.map_err(|error| {
-            ItemOutcome::Failed(format!("cannot read {}: {error}", item.source.display()))
+            ItemOutcome::Failed(format!("cannot read {}: {error}", item.source))
         })?;
         if read == 0 {
             break;
         }
-        writer.write_all(&buffer[..read]).await.map_err(|error| {
-            ItemOutcome::Failed(format!("cannot write {}: {error}", partial.display()))
-        })?;
+        writer
+            .write_all(&buffer[..read])
+            .await
+            .map_err(|error| ItemOutcome::Failed(format!("cannot write {}: {error}", partial)))?;
         done += read as u64;
         if reported.elapsed() >= PROGRESS_INTERVAL {
             sink(TransferEvent::Progress { id: item.id, done });
@@ -545,9 +535,10 @@ async fn copy_contents(
         }
     }
     // Waits for the last writes to be acknowledged and closes the file.
-    writer.shutdown().await.map_err(|error| {
-        ItemOutcome::Failed(format!("cannot finish {}: {error}", partial.display()))
-    })?;
+    writer
+        .shutdown()
+        .await
+        .map_err(|error| ItemOutcome::Failed(format!("cannot finish {}: {error}", partial)))?;
     sink(TransferEvent::Progress { id: item.id, done });
     Ok(())
 }
@@ -592,7 +583,7 @@ pub(super) async fn delete_items(
                 } else {
                     ""
                 },
-                item.source.display()
+                item.source
             ),
             ItemOutcome::Failed(error) => tracing::warn!("{error}"),
             ItemOutcome::Skipped | ItemOutcome::Cancelled => {}

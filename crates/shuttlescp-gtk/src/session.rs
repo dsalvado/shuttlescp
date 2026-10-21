@@ -10,7 +10,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use relm4::gtk::glib;
@@ -18,6 +18,7 @@ use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 
 use shuttlescp_core::format::shorten_middle;
+use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::Site;
 use shuttlescp_core::transfer::Side;
@@ -55,7 +56,7 @@ pub struct Connection {
     /// Server host name, for the tab title.
     host: String,
     /// Folder shown in the remote pane.
-    pub dir: PathBuf,
+    pub dir: RemotePath,
     /// The remote file pane; dropping it (and stopping the transfers, which hold the
     /// session too) closes the connection.
     pub pane: Controller<FilePane>,
@@ -84,7 +85,7 @@ pub struct Session {
     /// Transfers running.
     pub running: usize,
     /// Paths on the server that running transfers use, for a remote pane opened later.
-    remote_in_use: Vec<PathBuf>,
+    remote_in_use: Vec<SidePath>,
 }
 
 /// The tab label of a session.
@@ -125,7 +126,7 @@ impl Session {
         } = init;
         let local_pane = FilePane::builder()
             .launch(FilePaneInit {
-                start_dir: start_dir.clone(),
+                start_dir: SidePath::Local(start_dir.clone()),
                 last_dir_on_disk,
                 remote: None,
             })
@@ -222,10 +223,13 @@ impl Session {
     /// otherwise for this computer (`host`) and the local pane's folder.
     pub fn title(&self, host: &str) -> String {
         let (host, dir) = match &self.connection {
-            Some(connection) => (connection.host.as_str(), connection.dir.as_path()),
-            None => (host, self.local_dir.as_path()),
+            Some(connection) => (
+                connection.host.as_str(),
+                SidePath::Remote(connection.dir.clone()),
+            ),
+            None => (host, SidePath::Local(self.local_dir.clone())),
         };
-        format!("{host} - {}", folder_name(dir))
+        format!("{host} - {}", folder_name(&dir))
     }
 
     /// Connection text for the status bar.
@@ -246,11 +250,11 @@ impl Session {
     /// * `sender` - Receives the remote pane's messages
     pub fn connect(&mut self, site: &Site, remote: Remote, sender: &ComponentSender<App>) {
         self.disconnect();
-        let start_dir = remote.home().to_path_buf();
+        let start_dir = remote.home().clone();
         let id = self.id;
         let pane = FilePane::builder()
             .launch(FilePaneInit {
-                start_dir: start_dir.clone(),
+                start_dir: SidePath::Remote(start_dir.clone()),
                 last_dir_on_disk: BTreeMap::new(),
                 remote: Some(remote.clone()),
             })
@@ -293,7 +297,7 @@ impl Session {
     }
 
     /// Show which files and folders running transfers use, in each pane.
-    pub fn show_in_use(&mut self, local: Vec<PathBuf>, remote: Vec<PathBuf>) {
+    pub fn show_in_use(&mut self, local: Vec<SidePath>, remote: Vec<SidePath>) {
         self.local_pane.emit(FilePaneMsg::InUse(local));
         if let Some(connection) = &self.connection {
             connection.pane.emit(FilePaneMsg::InUse(remote.clone()));
@@ -487,13 +491,13 @@ impl TransferTabs {
 /// The message a session's file pane output becomes.
 fn pane_message(session: SessionId, side: Side, output: FilePaneOutput) -> AppMsg {
     match output {
-        FilePaneOutput::DirectoryChanged { dir, disk_root } => match side {
-            Side::Local => AppMsg::LocalDirChanged {
+        FilePaneOutput::DirectoryChanged { dir, disk_root } => match dir {
+            SidePath::Local(dir) => AppMsg::LocalDirChanged {
                 session,
                 dir,
                 disk_root,
             },
-            Side::Remote => AppMsg::RemoteDirChanged { session, dir },
+            SidePath::Remote(dir) => AppMsg::RemoteDirChanged { session, dir },
         },
         FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
             session,
@@ -545,9 +549,9 @@ fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
 }
 
 /// The name of a folder for a title; the root folder has none, so it is shown as "/".
-fn folder_name(dir: &Path) -> String {
+fn folder_name(dir: &SidePath) -> String {
     dir.file_name().map_or_else(
-        || dir.to_string_lossy().into_owned(),
+        || dir.to_string(),
         |name| name.to_string_lossy().into_owned(),
     )
 }
@@ -573,8 +577,10 @@ mod tests {
 
     #[test]
     fn folder_names_fall_back_to_the_root() {
-        assert_eq!(folder_name(Path::new("/home/me/Documents")), "Documents");
-        assert_eq!(folder_name(Path::new("/")), "/");
+        let local = |path: &str| SidePath::Local(PathBuf::from(path));
+        assert_eq!(folder_name(&local("/home/me/Documents")), "Documents");
+        assert_eq!(folder_name(&local("/")), "/");
+        assert_eq!(folder_name(&SidePath::Remote(RemotePath::root())), "/");
     }
 
     #[test]

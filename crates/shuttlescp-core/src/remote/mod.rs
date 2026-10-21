@@ -15,7 +15,7 @@ mod tls;
 
 use std::ffi::OsString;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -25,6 +25,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::entry::{EntryKind, FileEntry};
+use crate::path::RemotePath;
 use crate::sites::{Protocol, Site};
 
 /// A server's SSH host key. Re-exported so front ends can pass keys around (for
@@ -154,7 +155,7 @@ pub struct Remote(Arc<RemoteInner>);
 
 struct RemoteInner {
     host: String,
-    home: PathBuf,
+    home: RemotePath,
     backend: Backend,
 }
 
@@ -181,7 +182,7 @@ impl Remote {
     }
 
     /// The user's home folder on the server, where browsing starts.
-    pub fn home(&self) -> &Path {
+    pub fn home(&self) -> &RemotePath {
         &self.0.home
     }
 
@@ -195,7 +196,7 @@ impl Remote {
     /// # Errors
     ///
     /// Returns a readable message if the folder cannot be read
-    pub async fn list_dir(&self, dir: &Path) -> Result<Vec<FileEntry>, String> {
+    pub async fn list_dir(&self, dir: &RemotePath) -> Result<Vec<FileEntry>, String> {
         let mut entries = Vec::new();
         for (name, meta) in self.read_dir_raw(dir).await? {
             // Listings describe a link itself; ask for its target to know whether it
@@ -219,16 +220,12 @@ impl Remote {
             ));
         }
         entries.sort_unstable_by(FileEntry::listing_order);
-        tracing::trace!(
-            "read {} remote entries from {}",
-            entries.len(),
-            dir.display()
-        );
+        tracing::trace!("read {} remote entries from {}", entries.len(), dir);
         Ok(entries)
     }
 
     /// Details of `path`, following a symbolic link to what it points to.
-    pub(crate) async fn stat(&self, path: &Path) -> Result<RemoteMeta, String> {
+    pub(crate) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.stat(path).await,
             Backend::Ftp(ftp) => ftp.stat(path).await,
@@ -237,7 +234,7 @@ impl Remote {
 
     /// Details of `path` itself: a symbolic link is described as a link (where the
     /// protocol can tell).
-    pub(crate) async fn lstat(&self, path: &Path) -> Result<RemoteMeta, String> {
+    pub(crate) async fn lstat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.lstat(path).await,
             // FTP has no separate "describe the link itself" lookup.
@@ -249,7 +246,7 @@ impl Remote {
     /// symbolic links are not followed.
     pub(crate) async fn read_dir_raw(
         &self,
-        dir: &Path,
+        dir: &RemotePath,
     ) -> Result<Vec<(String, RemoteMeta)>, String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.read_dir(dir).await,
@@ -258,7 +255,11 @@ impl Remote {
     }
 
     /// Open a file for reading, starting `offset` bytes in.
-    pub(crate) async fn open_at(&self, path: &Path, offset: u64) -> Result<RemoteReader, String> {
+    pub(crate) async fn open_at(
+        &self,
+        path: &RemotePath,
+        offset: u64,
+    ) -> Result<RemoteReader, String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.open_at(path, offset).await,
             Backend::Ftp(ftp) => ftp.open_at(path, offset).await,
@@ -270,7 +271,7 @@ impl Remote {
     /// after them.
     pub(crate) async fn open_write_at(
         &self,
-        path: &Path,
+        path: &RemotePath,
         offset: u64,
     ) -> Result<RemoteWriter, String> {
         match &self.0.backend {
@@ -280,7 +281,7 @@ impl Remote {
     }
 
     /// Rename `from` to `to`. Most servers refuse if `to` exists.
-    pub(crate) async fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
+    pub(crate) async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.rename(from, to).await,
             Backend::Ftp(ftp) => ftp.rename(from, to).await,
@@ -288,7 +289,7 @@ impl Remote {
     }
 
     /// Create a folder; an existing folder is fine.
-    pub(crate) async fn create_dir(&self, path: &Path) -> Result<(), String> {
+    pub(crate) async fn create_dir(&self, path: &RemotePath) -> Result<(), String> {
         if self.stat(path).await.is_ok_and(|meta| meta.is_dir) {
             return Ok(());
         }
@@ -299,7 +300,7 @@ impl Remote {
     }
 
     /// Delete a file (or a symbolic link itself).
-    pub(crate) async fn remove_file(&self, path: &Path) -> Result<(), String> {
+    pub(crate) async fn remove_file(&self, path: &RemotePath) -> Result<(), String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.remove_file(path).await,
             Backend::Ftp(ftp) => ftp.remove_file(path).await,
@@ -307,7 +308,7 @@ impl Remote {
     }
 
     /// Delete an empty folder.
-    pub(crate) async fn remove_dir(&self, path: &Path) -> Result<(), String> {
+    pub(crate) async fn remove_dir(&self, path: &RemotePath) -> Result<(), String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.remove_dir(path).await,
             Backend::Ftp(ftp) => ftp.remove_dir(path).await,
@@ -316,7 +317,11 @@ impl Remote {
 
     /// Set a file's modification time. FTP servers that do not offer it (the MFMT
     /// command) report an error, which callers treat as harmless.
-    pub(crate) async fn set_modified(&self, path: &Path, time: SystemTime) -> Result<(), String> {
+    pub(crate) async fn set_modified(
+        &self,
+        path: &RemotePath,
+        time: SystemTime,
+    ) -> Result<(), String> {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.set_modified(path, time).await,
             Backend::Ftp(ftp) => ftp.set_modified(path, time).await,
@@ -325,8 +330,8 @@ impl Remote {
 }
 
 /// A server path as the text the protocols expect.
-fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+fn path_text(path: &RemotePath) -> String {
+    path.as_str().to_owned()
 }
 
 /// Connect to `site`, check its identity (SSH host key, or TLS certificate for FTPS),
@@ -361,7 +366,7 @@ pub async fn connect(
         "connected to {} as {}; home is {}",
         site.host,
         site.user,
-        home.display()
+        home
     );
     Ok(Remote(Arc::new(RemoteInner {
         host: site.host.clone(),

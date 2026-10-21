@@ -12,6 +12,7 @@
 //! * [`pending`] - unfinished transfers, kept so they can be resumed
 //! * [`session`] - the login, export and import workflows
 //! * [`entry`] / [`local_fs`] / [`disks`] - files, local folders and disks
+//! * [`path`] - paths on this computer and on the server (which always use `/`)
 //! * [`logging`] / [`log_reader`] - the log file and following it live
 //! * [`format`] - sizes, dates and shortened titles for display
 //! * [`about`] - the app's name, description and build details
@@ -24,6 +25,7 @@ pub mod format;
 pub mod local_fs;
 pub mod log_reader;
 pub mod logging;
+pub mod path;
 pub mod pending;
 pub mod remote;
 pub mod secrets;

@@ -15,6 +15,7 @@ use relm4::prelude::*;
 use shuttlescp_core::config::{Config, ThemeChoice, WindowSize};
 use shuttlescp_core::local_fs;
 use shuttlescp_core::logging::{LogLevel, Logger};
+use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::pending::PendingTransfers;
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteBook};
@@ -189,7 +190,7 @@ pub enum AppMsg {
         remote: Remote,
     },
     /// A session's remote pane moved to another folder.
-    RemoteDirChanged { session: SessionId, dir: PathBuf },
+    RemoteDirChanged { session: SessionId, dir: RemotePath },
     /// Another session tab was brought forward: its transfer lists follow.
     SessionSwitched,
     /// Another bottom panel tab was brought forward: its session follows.
@@ -209,7 +210,7 @@ pub enum AppMsg {
         /// What to do.
         kind: JobKind,
         /// The selected items.
-        paths: Vec<PathBuf>,
+        paths: Vec<SidePath>,
     },
     /// Items were dropped on a file pane and the user chose to copy or move them.
     PaneDrop {
@@ -219,12 +220,12 @@ pub enum AppMsg {
         /// Copy or move.
         kind: JobKind,
         /// The dropped items.
-        paths: Vec<PathBuf>,
+        paths: Vec<SidePath>,
         /// They were dragged within that pane (so they stay on its side), not from the
         /// other pane.
         from_this_pane: bool,
         /// The folder they go into, on `side`.
-        dest_dir: PathBuf,
+        dest_dir: SidePath,
     },
     /// Run a job in a session (a delete, once confirmed).
     StartJob { session: SessionId, job: Job },
@@ -232,9 +233,9 @@ pub enum AppMsg {
     PathsInUse {
         session: SessionId,
         /// On this computer.
-        local: Vec<PathBuf>,
+        local: Vec<SidePath>,
         /// On the server.
-        remote: Vec<PathBuf>,
+        remote: Vec<SidePath>,
     },
     /// A session's transfer wrote something new on one side: refresh that pane.
     TargetChanged { session: SessionId, side: Side },
@@ -467,6 +468,7 @@ impl SimpleComponent for App {
             relm4::main_application().set_menubar(Some(&menu_model));
         }
         let theme_list = ThemeList::new(themes, config.theme());
+        #[cfg(unix)]
         quit_on_signals(&sender);
 
         let start_dir = config
@@ -630,7 +632,7 @@ impl SimpleComponent for App {
                     .session_mut(session)
                     .and_then(|session| session.connection.as_mut())
                 {
-                    tracing::debug!("remote pane now shows {}", dir.display());
+                    tracing::debug!("remote pane now shows {dir}");
                     connection.dir = dir;
                 }
             }
@@ -649,8 +651,13 @@ impl SimpleComponent for App {
                 if let Some(first) = self.sessions.first_mut() {
                     first.show_counts(2, 1, 0);
                     // Two items of its local folder in use, to picture them in red.
-                    let mut in_use: Vec<PathBuf> = std::fs::read_dir(&first.local_dir)
-                        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+                    let mut in_use: Vec<SidePath> = std::fs::read_dir(&first.local_dir)
+                        .map(|entries| {
+                            entries
+                                .flatten()
+                                .map(|entry| SidePath::Local(entry.path()))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     in_use.sort();
                     in_use.truncate(2);
@@ -1158,16 +1165,16 @@ impl App {
         session: SessionId,
         side: Side,
         kind: JobKind,
-        paths: Vec<PathBuf>,
+        paths: Vec<SidePath>,
         sender: &ComponentSender<Self>,
     ) {
         let Some(current) = self.session(session) else {
             return;
         };
         let dest_dir = match side.other() {
-            Side::Local => current.local_dir.clone(),
+            Side::Local => SidePath::Local(current.local_dir.clone()),
             Side::Remote => match &current.connection {
-                Some(connection) => connection.dir.clone(),
+                Some(connection) => SidePath::Remote(connection.dir.clone()),
                 None => return,
             },
         };
@@ -1486,10 +1493,13 @@ fn bottom_panel(log_path: Option<PathBuf>) -> gtk::Notebook {
 
 /// Close the app gracefully on SIGHUP, SIGINT (Ctrl+C) and SIGTERM, so settings are saved
 /// and the log gets its session-end banner. SIGKILL cannot be caught by any program.
+/// Unix only: Windows has no such signals, and a GUI app there is closed through its
+/// window.
 ///
 /// # Arguments
 ///
 /// * `sender` - Sender used to ask [`App::update`] to quit
+#[cfg(unix)]
 fn quit_on_signals(sender: &ComponentSender<App>) {
     for (signal, reason) in QUIT_SIGNALS {
         let sender = sender.clone();

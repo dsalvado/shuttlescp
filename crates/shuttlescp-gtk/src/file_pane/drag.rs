@@ -6,13 +6,17 @@
 //! Either way the drop is handed to the pane, which asks whether to copy or move.
 
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 use relm4::gtk::prelude::*;
 use relm4::gtk::{self, gdk, glib, graphene};
 
 use shuttlescp_core::entry::EntryKind;
+use shuttlescp_core::path::{RemotePath, SidePath};
 
 use super::{ACTION_GROUP, Dropped, Row};
 
@@ -22,8 +26,8 @@ pub(super) const DROP_ACTION: &str = "drop";
 const DROP_ROW_CLASS: &str = "drop-row";
 
 /// A drop as passed through [`DROP_ACTION`]: (sources, dragged from this pane,
-/// destination folder, x, y in the file list). Paths travel as bytes, since they need
-/// not be valid UTF-8.
+/// destination folder, x, y in the file list). Paths travel as bytes (see
+/// [`side_path_bytes`]), since local ones need not be valid UTF-8.
 pub(super) type DropVariant = (Vec<Vec<u8>>, bool, Vec<u8>, f64, f64);
 
 /// What is being dragged; carried by the drag inside a `glib::BoxedAnyObject`, so only
@@ -34,7 +38,7 @@ struct DragPayload {
     /// into the other.
     view: glib::WeakRef<gtk::ColumnView>,
     /// The dragged files and folders.
-    paths: Vec<PathBuf>,
+    paths: Vec<SidePath>,
 }
 
 /// Make dragging a cell drag the selected rows (or just the cell's row, if it is not
@@ -61,7 +65,7 @@ pub(super) fn attach_drag_source(cell: &impl IsA<gtk::Widget>, item: &gtk::ListI
         if !selection.is_selected(item.position()) {
             selection.select_item(item.position(), true);
         }
-        let paths: Vec<PathBuf> = (0..selection.n_items())
+        let paths: Vec<SidePath> = (0..selection.n_items())
             .filter(|&position| selection.is_selected(position))
             .filter_map(|position| selection.item(position))
             .filter_map(|object| entry_path(&object))
@@ -149,9 +153,9 @@ pub(super) fn attach_folder_drop(cell: &impl IsA<gtk::Widget>, item: &gtk::ListI
             .compute_point(&view, &graphene::Point::new(x as f32, y as f32))
             .unwrap_or_else(|| graphene::Point::new(x as f32, y as f32));
         let parameter: DropVariant = (
-            payload.paths.iter().map(|path| path_bytes(path)).collect(),
+            payload.paths.iter().map(side_path_bytes).collect(),
             from_this_pane,
-            path_bytes(&folder),
+            side_path_bytes(&folder),
             f64::from(point.x()),
             f64::from(point.y()),
         );
@@ -198,9 +202,12 @@ pub(super) fn attach_list_drop(view: &gtk::ColumnView, on_drop: impl Fn(Dropped)
 pub(super) fn dropped_from(parameter: &glib::Variant) -> Option<Dropped> {
     let (sources, from_this_pane, dest_dir, x, y) = parameter.get::<DropVariant>()?;
     Some(Dropped {
-        sources: sources.into_iter().map(bytes_path).collect(),
+        sources: sources
+            .into_iter()
+            .map(bytes_side_path)
+            .collect::<Option<_>>()?,
         from_this_pane,
-        dest_dir: Some(bytes_path(dest_dir)),
+        dest_dir: Some(bytes_side_path(dest_dir)?),
         x,
         y,
     })
@@ -232,7 +239,7 @@ fn with_row<R>(item: &gtk::ListItem, f: impl FnOnce(&Row) -> R) -> Option<R> {
 }
 
 /// Full path of a list model item, if it is a file or folder (not "..").
-fn entry_path(object: &glib::Object) -> Option<PathBuf> {
+fn entry_path(object: &glib::Object) -> Option<SidePath> {
     let boxed = object.downcast_ref::<glib::BoxedAnyObject>()?;
     let row = boxed.try_borrow::<Row>().ok()?;
     match &*row {
@@ -243,7 +250,7 @@ fn entry_path(object: &glib::Object) -> Option<PathBuf> {
 
 /// The folder a drop on this row goes into: the row's own folder, or the parent folder
 /// for ".."; `None` for a file.
-fn folder_of(row: &Row) -> Option<PathBuf> {
+fn folder_of(row: &Row) -> Option<SidePath> {
     match row {
         Row::Parent { path } => Some(path.clone()),
         Row::Entry { entry, path, .. } => match entry.kind() {
@@ -263,24 +270,97 @@ fn row_widget(cell: &gtk::Widget) -> Option<gtk::Widget> {
     cell.parent()?.parent()
 }
 
+/// Tag byte of a local path in [`side_path_bytes`].
+const LOCAL_TAG: u8 = 0;
+/// Tag byte of a server path in [`side_path_bytes`].
+const REMOTE_TAG: u8 = 1;
+
+/// A path on either side as bytes, for a variant: a tag byte for the side, then the
+/// path (a server path as UTF-8, a local one as [`path_bytes`] makes it).
+fn side_path_bytes(path: &SidePath) -> Vec<u8> {
+    let (tag, bytes) = match path {
+        SidePath::Local(path) => (LOCAL_TAG, path_bytes(path)),
+        SidePath::Remote(path) => (REMOTE_TAG, path.as_str().as_bytes().to_vec()),
+    };
+    let mut tagged = Vec::with_capacity(bytes.len() + 1);
+    tagged.push(tag);
+    tagged.extend(bytes);
+    tagged
+}
+
+/// A path from [`side_path_bytes`]'s bytes; `None` if they are not such bytes.
+fn bytes_side_path(bytes: Vec<u8>) -> Option<SidePath> {
+    let (&tag, rest) = bytes.split_first()?;
+    match tag {
+        LOCAL_TAG => Some(SidePath::Local(bytes_path(rest.to_vec()))),
+        REMOTE_TAG => Some(SidePath::Remote(RemotePath::new(
+            String::from_utf8(rest.to_vec()).ok()?,
+        ))),
+        _ => None,
+    }
+}
+
 /// A path as bytes, for a variant.
+#[cfg(unix)]
 fn path_bytes(path: &Path) -> Vec<u8> {
     path.as_os_str().as_bytes().to_vec()
 }
 
+/// A path as bytes, for a variant: each 16-bit unit of the Windows path as two
+/// little-endian bytes, so paths that are not valid UTF-16 survive too.
+#[cfg(windows)]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
 /// A path from [`path_bytes`]'s bytes.
+#[cfg(unix)]
 fn bytes_path(bytes: Vec<u8>) -> PathBuf {
     PathBuf::from(OsString::from_vec(bytes))
+}
+
+/// A path from [`path_bytes`]'s bytes.
+#[cfg(windows)]
+fn bytes_path(bytes: Vec<u8>) -> PathBuf {
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
+    PathBuf::from(OsString::from_wide(&units))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn paths_survive_the_trip_through_bytes() {
         let odd = PathBuf::from(OsString::from_vec(b"/data/caf\xe9 \xff.txt".to_vec()));
 
         assert_eq!(bytes_path(path_bytes(&odd)), odd);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn paths_survive_the_trip_through_bytes() {
+        // A lone surrogate (0xD800) is not valid UTF-16, but Windows allows it in names.
+        let mut units: Vec<u16> = r"C:\data\café ".encode_utf16().collect();
+        units.push(0xD800);
+        units.extend(".txt".encode_utf16());
+        let odd = PathBuf::from(OsString::from_wide(&units));
+
+        assert_eq!(bytes_path(path_bytes(&odd)), odd);
+    }
+
+    #[test]
+    fn paths_keep_their_side_through_bytes() {
+        let local = SidePath::Local(PathBuf::from("/srv/a"));
+        let server = SidePath::Remote(RemotePath::new("/srv/a"));
+
+        assert_eq!(bytes_side_path(side_path_bytes(&local)), Some(local));
+        assert_eq!(bytes_side_path(side_path_bytes(&server)), Some(server));
+        assert_eq!(bytes_side_path(Vec::new()), None);
     }
 }

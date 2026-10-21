@@ -8,6 +8,7 @@ use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 
 use shuttlescp_core::disks::{self, Disk};
+use shuttlescp_core::path::SidePath;
 
 /// Display name of the root filesystem entry: its path, as Linux users know it.
 const ROOT_DISK_NAME: &str = "/";
@@ -122,7 +123,7 @@ impl DiskPicker {
     /// # Arguments
     ///
     /// * `dir` - Directory now shown in the pane
-    pub fn show_dir(&self, dir: &Path) {
+    pub fn show_dir(&self, dir: &SidePath) {
         let position = disks::disk_index(&self.disks, dir)
             .and_then(|index| u32::try_from(index).ok())
             .unwrap_or(gtk::INVALID_LIST_POSITION);
@@ -166,7 +167,7 @@ fn disk_row_factory() -> gtk::SignalListItemFactory {
         }
         if let Some(label) = row.last_child().and_downcast::<gtk::Label>() {
             label.set_label(disk.name());
-            label.set_tooltip_text(Some(&disk.root().to_string_lossy()));
+            label.set_tooltip_text(Some(&disk.root().to_string()));
         }
     });
     factory
@@ -189,7 +190,7 @@ fn list_disks(monitor: &gio::VolumeMonitor) -> Vec<Disk> {
     let mut found = Vec::with_capacity(mounts.len() + 1);
     found.push(Disk::new(
         ROOT_DISK_NAME.to_owned(),
-        root.to_path_buf(),
+        SidePath::Local(root.to_path_buf()),
         ROOT_DISK_ICON.to_owned(),
     ));
     found.extend(mounts.iter().filter_map(|mount| {
@@ -198,7 +199,7 @@ fn list_disks(monitor: &gio::VolumeMonitor) -> Vec<Disk> {
         // The icon is kept as GIO's text form, so the core crate needs no GIO types.
         let icon = IconExt::to_string(&mount.icon())
             .map_or_else(|| ROOT_DISK_ICON.to_owned(), |text| text.to_string());
-        (path != root).then(|| Disk::new(mount.name().into(), path, icon))
+        (path != root).then(|| Disk::new(mount.name().into(), SidePath::Local(path), icon))
     }));
     found
 }

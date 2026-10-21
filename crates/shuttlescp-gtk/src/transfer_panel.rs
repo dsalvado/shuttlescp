@@ -21,6 +21,7 @@ use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
 use shuttlescp_core::format::format_size;
+use shuttlescp_core::path::SidePath;
 use shuttlescp_core::pending::{PendingJob, PendingTransfers};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::new_site_id;
@@ -197,9 +198,9 @@ pub enum TransferPanelOutput {
     /// The files and folders running jobs use changed: the panes show them as busy.
     InUse {
         /// On this computer.
-        local: Vec<PathBuf>,
+        local: Vec<SidePath>,
         /// On the server.
-        remote: Vec<PathBuf>,
+        remote: Vec<SidePath>,
     },
     /// The number of jobs in the lists changed.
     Counts {
@@ -222,7 +223,7 @@ struct RowKey {
 /// One file or folder of a job.
 struct ItemState {
     name: String,
-    source: PathBuf,
+    source: SidePath,
     kind: ItemKind,
     parent: Option<usize>,
     depth: i32,
@@ -327,7 +328,7 @@ pub struct TransferPanel {
     /// Counts last reported to the main window: running, completed, failed.
     counts: (usize, usize, usize),
     /// Paths in use last reported to the main window: local, remote.
-    in_use: (Vec<PathBuf>, Vec<PathBuf>),
+    in_use: (Vec<SidePath>, Vec<SidePath>),
     /// When the panes were last asked to refresh for a job's progress.
     last_target_refresh: Option<Instant>,
     /// Counter giving each shelved job its place in time.
@@ -822,7 +823,7 @@ impl TransferPanel {
             let Some(job) = shared.jobs.get_mut(&id) else {
                 return;
             };
-            let dest = job.job.dest_dir.display().to_string();
+            let dest = job.job.dest_dir.to_string();
             let Some(state) = job.items.get_mut(item) else {
                 return;
             };
@@ -1055,13 +1056,13 @@ impl TransferPanel {
         let in_use = {
             let shared = self.shared.borrow();
             let mut in_use = (Vec::new(), Vec::new());
-            for (side, path) in shared
+            for path in shared
                 .jobs
                 .values()
                 .filter(|job| job.is_running())
                 .flat_map(|job| job.job.paths_in_use())
             {
-                match side {
+                match path.side() {
                     Side::Local => in_use.0.push(path),
                     Side::Remote => in_use.1.push(path),
                 }
@@ -1524,7 +1525,7 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             ItemKind::File => "text-x-generic",
         },
         name: item.name.clone(),
-        tooltip: item.source.display().to_string(),
+        tooltip: item.source.to_string(),
         heading: false,
         fraction: (!deleting).then(|| match item.outcome {
             Some(ItemOutcome::Done) => 1.0,
@@ -1726,6 +1727,7 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shuttlescp_core::path::RemotePath;
 
     fn pending(key: &str) -> PendingJob {
         PendingJob {
@@ -1734,8 +1736,8 @@ mod tests {
             job: Job {
                 kind: JobKind::Copy,
                 side: Side::Local,
-                sources: vec![PathBuf::from("/data/a")],
-                dest_dir: PathBuf::from("/srv"),
+                sources: vec![SidePath::Local(PathBuf::from("/data/a"))],
+                dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
                 resume: false,
             },

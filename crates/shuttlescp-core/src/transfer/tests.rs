@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::*;
+use crate::path::{RemotePath, SidePath};
 
 /// Build a source tree: `a/one.txt`, `a/sub/two.txt`, `top.txt` (600 kB).
 fn make_tree(root: &Path) {
@@ -29,12 +30,23 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (temp, src, dst)
 }
 
+/// A local path.
+fn local(path: &Path) -> SidePath {
+    SidePath::Local(path.to_path_buf())
+}
+
+/// A path on the server.
+fn remote(path: &str) -> SidePath {
+    SidePath::Remote(RemotePath::new(path))
+}
+
+/// A job whose sources and destination are all local folders, as the engine tests run.
 fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
     Job {
         kind,
         side: Side::Local,
-        sources,
-        dest_dir: dest_dir.to_path_buf(),
+        sources: sources.into_iter().map(SidePath::Local).collect(),
+        dest_dir: local(dest_dir),
         same_side: false,
         resume: false,
     }
@@ -369,21 +381,24 @@ async fn cancelled_job_copies_nothing() {
 async fn create_folder_and_rename_refuse_taken_names() {
     let (_temp, src, _dst) = setup();
 
-    let made = create_folder(None, &src, "new").await.expect("create");
-    assert!(made.is_dir());
+    let made = create_folder(None, &local(&src), "new")
+        .await
+        .expect("create");
+    assert_eq!(made, local(&src.join("new")));
+    assert!(src.join("new").is_dir());
     assert!(
-        create_folder(None, &src, "new").await.is_err(),
+        create_folder(None, &local(&src), "new").await.is_err(),
         "already exists"
     );
 
-    let renamed = rename(None, &src.join("top.txt"), "renamed.txt")
+    let renamed = rename(None, &local(&src.join("top.txt")), "renamed.txt")
         .await
         .expect("rename");
-    assert_eq!(renamed, src.join("renamed.txt"));
-    assert!(renamed.exists() && !src.join("top.txt").exists());
+    assert_eq!(renamed, local(&src.join("renamed.txt")));
+    assert!(src.join("renamed.txt").exists() && !src.join("top.txt").exists());
     let refused = rename(None, &renamed, "a").await;
     assert!(refused.is_err(), "never replaces an existing item");
-    assert!(renamed.exists());
+    assert!(src.join("renamed.txt").exists());
 }
 
 #[test]
@@ -405,8 +420,8 @@ fn job_titles_name_the_direction() {
     let many = Job {
         kind: JobKind::Delete,
         side: Side::Remote,
-        sources: vec![PathBuf::from("/a"), PathBuf::from("/b")],
-        dest_dir: PathBuf::new(),
+        sources: vec![remote("/a"), remote("/b")],
+        dest_dir: local(Path::new("")),
         same_side: false,
         resume: false,
     };
@@ -450,20 +465,20 @@ fn jobs_saved_before_same_side_existed_still_load() {
 
 #[test]
 fn check_same_side_refuses_pointless_and_impossible_drops() {
-    let sources = [PathBuf::from("/data/a")];
+    let sources = [local(Path::new("/data/a"))];
 
-    assert!(check_same_side(&sources, Path::new("/data/b")).is_ok());
-    assert!(check_same_side(&sources, Path::new("/")).is_ok());
+    assert!(check_same_side(&sources, &local(Path::new("/data/b"))).is_ok());
+    assert!(check_same_side(&sources, &local(Path::new("/"))).is_ok());
     assert_eq!(
-        check_same_side(&sources, Path::new("/data")),
+        check_same_side(&sources, &local(Path::new("/data"))),
         Err(String::from("a is already in /data"))
     );
     assert_eq!(
-        check_same_side(&sources, Path::new("/data/a")),
+        check_same_side(&sources, &local(Path::new("/data/a"))),
         Err(String::from("a cannot go inside itself"))
     );
     assert_eq!(
-        check_same_side(&sources, Path::new("/data/a/deeper")),
+        check_same_side(&sources, &local(Path::new("/data/a/deeper"))),
         Err(String::from("a cannot go inside itself"))
     );
 }
@@ -569,11 +584,11 @@ async fn same_side_job_into_itself_does_not_start() {
 
 #[test]
 fn jobs_round_trip_through_json() {
-    let original = job(
-        JobKind::Move,
-        vec![PathBuf::from("/x/y")],
-        Path::new("/dest"),
-    );
+    // An upload: local sources, a destination on the server.
+    let original = Job {
+        dest_dir: remote("/dest"),
+        ..job(JobKind::Move, vec![PathBuf::from("/x/y")], Path::new(""))
+    };
     let text = serde_json::to_string(&original).expect("serialize");
     let back: Job = serde_json::from_str(&text).expect("deserialize");
     assert_eq!(back, original);
@@ -602,17 +617,17 @@ fn file_info_same_as_compares_size_and_whole_seconds() {
 
 #[test]
 fn paths_in_use_are_the_targets() {
-    let upload = job(
-        JobKind::Copy,
-        vec![PathBuf::from("/home/me/a"), PathBuf::from("/home/me/b.txt")],
-        Path::new("/srv"),
-    );
+    let upload = Job {
+        dest_dir: remote("/srv"),
+        ..job(
+            JobKind::Copy,
+            vec![PathBuf::from("/home/me/a"), PathBuf::from("/home/me/b.txt")],
+            Path::new(""),
+        )
+    };
     assert_eq!(
         upload.paths_in_use(),
-        [
-            (Side::Remote, PathBuf::from("/srv/a")),
-            (Side::Remote, PathBuf::from("/srv/b.txt")),
-        ]
+        [remote("/srv/a"), remote("/srv/b.txt")]
     );
 
     // A delete has no destination: what it removes is in use.
@@ -623,8 +638,8 @@ fn paths_in_use_are_the_targets() {
     assert_eq!(
         delete.paths_in_use(),
         [
-            (Side::Local, PathBuf::from("/home/me/a")),
-            (Side::Local, PathBuf::from("/home/me/b.txt")),
+            local(Path::new("/home/me/a")),
+            local(Path::new("/home/me/b.txt")),
         ]
     );
 }

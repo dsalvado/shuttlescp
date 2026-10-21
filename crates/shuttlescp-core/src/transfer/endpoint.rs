@@ -2,12 +2,13 @@
 
 use std::ffi::OsString;
 use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::time::SystemTime;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite};
 
+use crate::path::{RemotePath, SidePath};
 use crate::remote::{Remote, RemoteMeta};
 
 /// What a walk needs to know about a file or folder.
@@ -25,6 +26,12 @@ pub(super) enum Endpoint {
     Remote(Remote),
 }
 
+/// A path together with the access it needs (see [`Endpoint::target`]).
+enum Target<'a> {
+    Local(&'a Path),
+    Remote(&'a Remote, &'a RemotePath),
+}
+
 /// A file being read, local or remote.
 pub(super) type Reader = Pin<Box<dyn AsyncRead + Send>>;
 /// A file being written, local or remote.
@@ -36,11 +43,25 @@ impl Endpoint {
         remote.map_or(Self::Local, |remote| Self::Remote(remote.clone()))
     }
 
+    /// Pair `path` with this endpoint's access to its side.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `path` is on the other side (a mistake in the caller)
+    fn target<'a>(&'a self, path: &'a SidePath) -> Result<Target<'a>, String> {
+        match (self, path) {
+            (Self::Local, SidePath::Local(path)) => Ok(Target::Local(path)),
+            (Self::Remote(remote), SidePath::Remote(path)) => Ok(Target::Remote(remote, path)),
+            (Self::Local, SidePath::Remote(_)) => Err(format!("{path} is not on this computer")),
+            (Self::Remote(_), SidePath::Local(_)) => Err(format!("{path} is not on the server")),
+        }
+    }
+
     /// Details of `path`; `follow` describes what a symbolic link points to instead of
     /// the link itself.
-    pub(super) async fn stat(&self, path: &Path, follow: bool) -> Result<Node, String> {
-        match self {
-            Self::Local => {
+    pub(super) async fn stat(&self, path: &SidePath, follow: bool) -> Result<Node, String> {
+        match self.target(path)? {
+            Target::Local(path) => {
                 let metadata = if follow {
                     tokio::fs::metadata(path).await
                 } else {
@@ -53,7 +74,7 @@ impl Endpoint {
                     modified: metadata.modified().ok(),
                 })
             }
-            Self::Remote(remote) => {
+            Target::Remote(remote, path) => {
                 let metadata = if follow {
                     remote.stat(path).await?
                 } else {
@@ -65,7 +86,7 @@ impl Endpoint {
     }
 
     /// Whether anything (even a broken symbolic link) is at `path`.
-    pub(super) async fn exists(&self, path: &Path) -> bool {
+    pub(super) async fn exists(&self, path: &SidePath) -> bool {
         self.stat(path, false).await.is_ok()
     }
 
@@ -73,16 +94,16 @@ impl Endpoint {
     /// be followed (e.g. broken) is listed as itself.
     pub(super) async fn children(
         &self,
-        dir: &Path,
+        dir: &SidePath,
         follow: bool,
     ) -> Result<Vec<(OsString, Node)>, String> {
         let mut children = Vec::new();
-        match self {
-            Self::Local => {
-                let unreadable = |error| format!("cannot open {}: {error}", dir.display());
-                let mut entries = tokio::fs::read_dir(dir).await.map_err(unreadable)?;
+        match self.target(dir)? {
+            Target::Local(local_dir) => {
+                let unreadable = |error| format!("cannot open {}: {error}", local_dir.display());
+                let mut entries = tokio::fs::read_dir(local_dir).await.map_err(unreadable)?;
                 while let Some(entry) = entries.next_entry().await.map_err(unreadable)? {
-                    let path = entry.path();
+                    let path = SidePath::Local(entry.path());
                     let mut node = self.stat(&path, false).await?;
                     if follow && entry.file_type().await.is_ok_and(|kind| kind.is_symlink()) {
                         node = self.stat(&path, true).await.unwrap_or(node);
@@ -90,8 +111,8 @@ impl Endpoint {
                     children.push((entry.file_name(), node));
                 }
             }
-            Self::Remote(remote) => {
-                for (name, metadata) in remote.read_dir_raw(dir).await? {
+            Target::Remote(remote, remote_dir) => {
+                for (name, metadata) in remote.read_dir_raw(remote_dir).await? {
                     let mut node = remote_node(&metadata);
                     if follow && metadata.is_symlink {
                         node = self.stat(&dir.join(&name), true).await.unwrap_or(node);
@@ -104,10 +125,10 @@ impl Endpoint {
     }
 
     /// Open a file for reading, starting `offset` bytes in.
-    pub(super) async fn open_at(&self, path: &Path, offset: u64) -> Result<Reader, String> {
-        let seek_failed = |error| format!("cannot read {}: {error}", path.display());
-        Ok(match self {
-            Self::Local => {
+    pub(super) async fn open_at(&self, path: &SidePath, offset: u64) -> Result<Reader, String> {
+        let seek_failed = |error| format!("cannot read {path}: {error}");
+        Ok(match self.target(path)? {
+            Target::Local(path) => {
                 let mut file = tokio::fs::File::open(path)
                     .await
                     .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
@@ -118,16 +139,20 @@ impl Endpoint {
                 }
                 Box::pin(file)
             }
-            Self::Remote(remote) => remote.open_at(path, offset).await?,
+            Target::Remote(remote, path) => remote.open_at(path, offset).await?,
         })
     }
 
     /// Open a file for writing from `offset` on: 0 creates it (or empties it); more
     /// keeps its first `offset` bytes and continues after them.
-    pub(super) async fn open_write_at(&self, path: &Path, offset: u64) -> Result<Writer, String> {
-        let failed = |error| format!("cannot write {}: {error}", path.display());
-        Ok(match self {
-            Self::Local => {
+    pub(super) async fn open_write_at(
+        &self,
+        path: &SidePath,
+        offset: u64,
+    ) -> Result<Writer, String> {
+        let failed = |error| format!("cannot write {path}: {error}");
+        Ok(match self.target(path)? {
+            Target::Local(path) => {
                 let mut file = tokio::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
@@ -142,14 +167,14 @@ impl Endpoint {
                 }
                 Box::pin(file)
             }
-            Self::Remote(remote) => remote.open_write_at(path, offset).await?,
+            Target::Remote(remote, path) => remote.open_write_at(path, offset).await?,
         })
     }
 
     /// Read `len` bytes starting at `offset`.
     pub(super) async fn read_range(
         &self,
-        path: &Path,
+        path: &SidePath,
         offset: u64,
         len: usize,
     ) -> Result<Vec<u8>, String> {
@@ -158,14 +183,14 @@ impl Endpoint {
         reader
             .read_exact(&mut bytes)
             .await
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            .map_err(|error| format!("cannot read {path}: {error}"))?;
         Ok(bytes)
     }
 
     /// Create a folder; an existing folder is fine.
-    pub(super) async fn create_dir(&self, path: &Path) -> Result<(), String> {
-        match self {
-            Self::Local => match tokio::fs::create_dir(path).await {
+    pub(super) async fn create_dir(&self, path: &SidePath) -> Result<(), String> {
+        match self.target(path)? {
+            Target::Local(path) => match tokio::fs::create_dir(path).await {
                 Err(error)
                     if !tokio::fs::metadata(path)
                         .await
@@ -175,49 +200,59 @@ impl Endpoint {
                 }
                 _ => Ok(()),
             },
-            Self::Remote(remote) => remote.create_dir(path).await,
+            Target::Remote(remote, path) => remote.create_dir(path).await,
         }
     }
 
     /// Delete a file (or a symbolic link itself).
-    pub(super) async fn remove_file(&self, path: &Path) -> Result<(), String> {
-        match self {
-            Self::Local => tokio::fs::remove_file(path)
+    pub(super) async fn remove_file(&self, path: &SidePath) -> Result<(), String> {
+        match self.target(path)? {
+            Target::Local(path) => tokio::fs::remove_file(path)
                 .await
                 .map_err(|error| format!("cannot delete {}: {error}", path.display())),
-            Self::Remote(remote) => remote.remove_file(path).await,
+            Target::Remote(remote, path) => remote.remove_file(path).await,
         }
     }
 
     /// Delete an empty folder.
-    pub(super) async fn remove_dir(&self, path: &Path) -> Result<(), String> {
-        match self {
-            Self::Local => tokio::fs::remove_dir(path)
+    pub(super) async fn remove_dir(&self, path: &SidePath) -> Result<(), String> {
+        match self.target(path)? {
+            Target::Local(path) => tokio::fs::remove_dir(path)
                 .await
                 .map_err(|error| format!("cannot delete folder {}: {error}", path.display())),
-            Self::Remote(remote) => remote.remove_dir(path).await,
+            Target::Remote(remote, path) => remote.remove_dir(path).await,
         }
     }
 
     /// Rename (or move within the same side) `from` to `to`. Callers make sure `to`
     /// does not exist: servers differ on whether renaming onto a file replaces it.
-    pub(super) async fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
-        match self {
-            Self::Local => tokio::fs::rename(from, to).await.map_err(|error| {
-                format!(
-                    "cannot rename {} to {}: {error}",
-                    from.display(),
-                    to.display()
-                )
-            }),
-            Self::Remote(remote) => remote.rename(from, to).await,
+    pub(super) async fn rename(&self, from: &SidePath, to: &SidePath) -> Result<(), String> {
+        match (self.target(from)?, self.target(to)?) {
+            (Target::Local(from), Target::Local(to)) => {
+                tokio::fs::rename(from, to).await.map_err(|error| {
+                    format!(
+                        "cannot rename {} to {}: {error}",
+                        from.display(),
+                        to.display()
+                    )
+                })
+            }
+            (Target::Remote(remote, from), Target::Remote(_, to)) => remote.rename(from, to).await,
+            // `target` gives both the same side, since both are on this endpoint's.
+            _ => Err(format!(
+                "cannot rename {from} to {to}: not on the same side"
+            )),
         }
     }
 
     /// Set a file's modification time.
-    pub(super) async fn set_modified(&self, path: &Path, time: SystemTime) -> Result<(), String> {
-        match self {
-            Self::Local => {
+    pub(super) async fn set_modified(
+        &self,
+        path: &SidePath,
+        time: SystemTime,
+    ) -> Result<(), String> {
+        match self.target(path)? {
+            Target::Local(path) => {
                 let path = path.to_path_buf();
                 tokio::task::spawn_blocking(move || {
                     std::fs::File::options()
@@ -231,13 +266,13 @@ impl Endpoint {
                 .await
                 .map_err(|error| error.to_string())?
             }
-            Self::Remote(remote) => remote.set_modified(path, time).await,
+            Target::Remote(remote, path) => remote.set_modified(path, time).await,
         }
     }
 }
 
 /// Where a file is written while being copied: its name plus [`super::PARTIAL_SUFFIX`].
-pub(super) fn partial_path(dest: &Path) -> PathBuf {
+pub(super) fn partial_path(dest: &SidePath) -> SidePath {
     let mut name = dest.file_name().map(OsString::from).unwrap_or_default();
     name.push(super::PARTIAL_SUFFIX);
     dest.with_file_name(name)

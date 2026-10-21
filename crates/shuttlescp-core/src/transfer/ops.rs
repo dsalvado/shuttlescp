@@ -1,7 +1,7 @@
 //! Single quick operations on one side: creating a folder and renaming; and the check
 //! that a copy within one side makes sense.
 
-use std::path::{Path, PathBuf};
+use crate::path::SidePath;
 
 use super::endpoint::Endpoint;
 use crate::remote::Remote;
@@ -43,9 +43,9 @@ pub fn check_name(name: &str) -> Result<(), String> {
 /// created
 pub async fn create_folder(
     remote: Option<&Remote>,
-    parent: &Path,
+    parent: &SidePath,
     name: &str,
-) -> Result<PathBuf, String> {
+) -> Result<SidePath, String> {
     check_name(name)?;
     let endpoint = Endpoint::of(remote);
     let path = parent.join(name);
@@ -53,7 +53,7 @@ pub async fn create_folder(
         return Err(format!("{name} already exists"));
     }
     endpoint.create_dir(&path).await?;
-    tracing::info!("created folder {}", path.display());
+    tracing::info!("created folder {}", path);
     Ok(path)
 }
 
@@ -75,20 +75,20 @@ pub async fn create_folder(
 /// is ever replaced.
 pub async fn rename(
     remote: Option<&Remote>,
-    path: &Path,
+    path: &SidePath,
     new_name: &str,
-) -> Result<PathBuf, String> {
+) -> Result<SidePath, String> {
     check_name(new_name)?;
     let endpoint = Endpoint::of(remote);
     let target = path.with_file_name(new_name);
-    if target == path {
+    if &target == path {
         return Ok(target);
     }
     if endpoint.exists(&target).await {
         return Err(format!("{new_name} already exists"));
     }
     endpoint.rename(path, &target).await?;
-    tracing::info!("renamed {} to {}", path.display(), target.display());
+    tracing::info!("renamed {} to {}", path, target);
     Ok(target)
 }
 
@@ -103,16 +103,17 @@ pub async fn rename(
 /// # Errors
 ///
 /// Returns a message saying why the copy cannot be done
-pub fn check_same_side(sources: &[PathBuf], dest_dir: &Path) -> Result<(), String> {
+pub fn check_same_side(sources: &[SidePath], dest_dir: &SidePath) -> Result<(), String> {
     for source in sources {
-        let name = source
-            .file_name()
-            .map_or_else(|| source.to_string_lossy(), |name| name.to_string_lossy());
+        let name = source.file_name().map_or_else(
+            || source.to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         if dest_dir.starts_with(source) {
             return Err(format!("{name} cannot go inside itself"));
         }
-        if source.parent() == Some(dest_dir) {
-            return Err(format!("{name} is already in {}", dest_dir.display()));
+        if source.parent().as_ref() == Some(dest_dir) {
+            return Err(format!("{name} is already in {}", dest_dir));
         }
     }
     Ok(())

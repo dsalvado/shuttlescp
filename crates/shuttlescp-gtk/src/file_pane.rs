@@ -24,6 +24,7 @@ use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::entry::{EntryKind, FileEntry};
 use shuttlescp_core::format::{format_modified, format_size};
 use shuttlescp_core::local_fs;
+use shuttlescp_core::path::SidePath;
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
@@ -117,7 +118,7 @@ pub enum FilePaneMsg {
     /// Rename an item.
     RenameTo {
         /// The item.
-        path: PathBuf,
+        path: SidePath,
         /// Its new name.
         name: String,
     },
@@ -128,18 +129,18 @@ pub enum FilePaneMsg {
     DropChosen(Option<JobKind>),
     /// These files and folders (and everything inside them) are used by running
     /// transfers: show them as busy until the next update.
-    InUse(Vec<PathBuf>),
+    InUse(Vec<SidePath>),
 }
 
 /// Files and folders dropped on a pane.
 #[derive(Debug)]
 pub struct Dropped {
     /// The dragged files and folders.
-    sources: Vec<PathBuf>,
+    sources: Vec<SidePath>,
     /// They were dragged from this pane, not from the other one.
     from_this_pane: bool,
     /// The folder they were dropped on; `None` for the folder the pane shows.
-    dest_dir: Option<PathBuf>,
+    dest_dir: Option<SidePath>,
     /// Drop position in the column view, where the menu opens.
     x: f64,
     /// Drop position in the column view.
@@ -149,16 +150,16 @@ pub struct Dropped {
 /// A drop waiting for the drop menu's answer.
 #[derive(Debug)]
 struct PendingDrop {
-    sources: Vec<PathBuf>,
+    sources: Vec<SidePath>,
     from_this_pane: bool,
-    dest_dir: PathBuf,
+    dest_dir: SidePath,
 }
 
 /// What a [`FilePane`] starts with.
 #[derive(Debug)]
 pub struct FilePaneInit {
     /// Directory shown first.
-    pub start_dir: PathBuf,
+    pub start_dir: SidePath,
     /// Last directory shown on each disk in earlier sessions, keyed by mount point.
     pub last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
     /// Browse this server instead of the local disks.
@@ -172,7 +173,7 @@ pub enum FilePaneOutput {
     /// (`None` if no known disk holds it).
     DirectoryChanged {
         /// Directory now shown.
-        dir: PathBuf,
+        dir: SidePath,
         /// Mount point of the disk holding `dir`.
         disk_root: Option<PathBuf>,
     },
@@ -181,19 +182,19 @@ pub enum FilePaneOutput {
         /// What to do.
         kind: JobKind,
         /// The selected files and folders.
-        paths: Vec<PathBuf>,
+        paths: Vec<SidePath>,
     },
     /// Items were dropped on this pane, and the user chose to copy or move them.
     Dropped {
         /// Copy or move.
         kind: JobKind,
         /// The dropped files and folders (full paths).
-        paths: Vec<PathBuf>,
+        paths: Vec<SidePath>,
         /// They come from this pane, so they stay on its side; otherwise they come
         /// from the other pane.
         from_this_pane: bool,
         /// The folder of this pane they go into.
-        dest_dir: PathBuf,
+        dest_dir: SidePath,
     },
 }
 
@@ -211,7 +212,7 @@ pub enum PaneCommand {
 /// Result of a background directory listing.
 #[derive(Debug)]
 pub struct Listing {
-    dir: PathBuf,
+    dir: SidePath,
     /// The entries, or a message for the status line.
     result: Result<Vec<FileEntry>, String>,
 }
@@ -221,20 +222,20 @@ pub struct Listing {
 #[derive(Default)]
 struct InUseMarks {
     /// Paths in use; everything inside them is in use too.
-    paths: RefCell<Vec<PathBuf>>,
+    paths: RefCell<Vec<SidePath>>,
     /// The text labels of the cells on screen and the path each shows, by label.
-    labels: RefCell<HashMap<usize, (glib::WeakRef<gtk::Label>, PathBuf)>>,
+    labels: RefCell<HashMap<usize, (glib::WeakRef<gtk::Label>, SidePath)>>,
 }
 
 impl InUseMarks {
     /// Whether a transfer uses `path` (or `path` is the partial copy of one in use).
-    fn is_in_use(&self, path: &Path) -> bool {
+    fn is_in_use(&self, path: &SidePath) -> bool {
         let copy = path
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(|name| name.strip_suffix(PARTIAL_SUFFIX))
             .map(|name| path.with_file_name(name));
-        let path = copy.as_deref().unwrap_or(path);
+        let path = copy.as_ref().unwrap_or(path);
         self.paths
             .borrow()
             .iter()
@@ -243,14 +244,14 @@ impl InUseMarks {
 
     /// A cell's label now shows `path` (`None` for the ".." row): style it, and restyle
     /// it when the paths in use change.
-    fn bind(&self, label: &gtk::Label, path: Option<&Path>) {
+    fn bind(&self, label: &gtk::Label, path: Option<&SidePath>) {
         let key = label.as_ptr() as usize;
         match path {
             Some(path) => {
                 self.style(label, path);
                 self.labels
                     .borrow_mut()
-                    .insert(key, (label.downgrade(), path.to_path_buf()));
+                    .insert(key, (label.downgrade(), path.clone()));
             }
             None => {
                 label.remove_css_class(IN_USE_CLASS);
@@ -260,7 +261,7 @@ impl InUseMarks {
     }
 
     /// Replace the paths in use and restyle the cells on screen.
-    fn set(&self, paths: Vec<PathBuf>) {
+    fn set(&self, paths: Vec<SidePath>) {
         self.paths.replace(paths);
         self.labels
             .borrow_mut()
@@ -273,7 +274,7 @@ impl InUseMarks {
             });
     }
 
-    fn style(&self, label: &gtk::Label, path: &Path) {
+    fn style(&self, label: &gtk::Label, path: &SidePath) {
         if self.is_in_use(path) {
             label.add_css_class(IN_USE_CLASS);
         } else {
@@ -297,13 +298,13 @@ enum Row {
     /// The ".." line that goes up one folder; always shown first.
     Parent {
         /// The folder it goes up to.
-        path: PathBuf,
+        path: SidePath,
     },
     /// A file or folder inside the current directory.
     Entry {
         entry: FileEntry,
         /// Its full path.
-        path: PathBuf,
+        path: SidePath,
         /// What running transfers use, to draw this row in red while it is in use.
         in_use: Rc<InUseMarks>,
         /// Theme icon for special folders such as Documents; `None` for everything else.
@@ -314,9 +315,9 @@ enum Row {
 /// File explorer component, for the local disks or a remote server.
 pub struct FilePane {
     /// Directory whose contents are currently displayed.
-    current_dir: PathBuf,
+    current_dir: SidePath,
     /// Most recently requested directory; listings for anything else are stale.
-    requested_dir: PathBuf,
+    requested_dir: SidePath,
     entries: TypedColumnView<Row, gtk::MultiSelection>,
     status: String,
     disk_picker: DiskPicker,
@@ -357,25 +358,33 @@ impl FilePane {
     ///
     /// * `dir` - Directory to list
     /// * `sender` - Component sender used to spawn the work and receive its result
-    fn request_listing(&mut self, dir: PathBuf, sender: &ComponentSender<Self>) {
-        tracing::debug!("listing {}", dir.display());
+    fn request_listing(&mut self, dir: SidePath, sender: &ComponentSender<Self>) {
+        tracing::debug!("listing {dir}");
         self.requested_dir = dir.clone();
         self.status = String::from("Loading...");
-        match self.remote.clone() {
-            Some(remote) => sender.oneshot_command(async move {
-                PaneCommand::Listing(Listing {
-                    result: remote.list_dir(&dir).await,
-                    dir,
-                })
-            }),
+        match (&dir, self.remote.clone()) {
+            (SidePath::Remote(remote_dir), Some(remote)) => {
+                let remote_dir = remote_dir.clone();
+                sender.oneshot_command(async move {
+                    PaneCommand::Listing(Listing {
+                        result: remote.list_dir(&remote_dir).await,
+                        dir,
+                    })
+                });
+            }
             // `move` transfers ownership of `dir` into the closure, which runs on another
             // thread.
-            None => sender.spawn_oneshot_command(move || {
-                PaneCommand::Listing(Listing {
-                    result: local_fs::list_dir(&dir).map_err(|error| error.to_string()),
-                    dir,
-                })
-            }),
+            (SidePath::Local(local_dir), None) => {
+                let local_dir = local_dir.clone();
+                sender.spawn_oneshot_command(move || {
+                    PaneCommand::Listing(Listing {
+                        result: local_fs::list_dir(&local_dir).map_err(|error| error.to_string()),
+                        dir,
+                    })
+                });
+            }
+            // A pane only ever browses its own side.
+            _ => tracing::error!("{dir} is not on this pane's side"),
         }
     }
 
@@ -408,7 +417,7 @@ impl FilePane {
     }
 
     /// Full paths of the selected files and folders ("..", if selected, is left out).
-    fn selected_paths(&self) -> Vec<PathBuf> {
+    fn selected_paths(&self) -> Vec<SidePath> {
         let selection = &self.entries.selection_model;
         (0..selection.n_items())
             .filter(|&position| selection.is_selected(position))
@@ -426,18 +435,12 @@ impl FilePane {
     ///
     /// * `dir` - Directory the entries belong to
     /// * `entries` - Its contents, as returned by [`local_fs::list_dir`]
-    fn show_entries(&mut self, dir: &Path, entries: Vec<FileEntry>) {
+    fn show_entries(&mut self, dir: &SidePath, entries: Vec<FileEntry>) {
         // Special folder icons describe this computer's folders, not the server's.
-        let special_folders = if self.remote.is_some() {
-            Vec::new()
-        } else {
-            special_folder_icons(dir)
-        };
+        let special_folders = dir.as_local().map(special_folder_icons).unwrap_or_default();
         self.entries.clear();
         if let Some(parent) = dir.parent() {
-            self.entries.append(Row::Parent {
-                path: parent.to_path_buf(),
-            });
+            self.entries.append(Row::Parent { path: parent });
         }
         self.entries
             .extend_from_iter(entries.into_iter().map(|entry| {
@@ -458,7 +461,7 @@ impl FilePane {
     }
 
     /// Select the rows showing these paths again (after the list was rebuilt).
-    fn reselect(&self, paths: &[PathBuf]) {
+    fn reselect(&self, paths: &[SidePath]) {
         if paths.is_empty() {
             return;
         }
@@ -533,9 +536,9 @@ impl Component for FilePane {
                     add_css_class: "path-label",
                     // `#[watch]` re-evaluates the property after every update.
                     #[watch]
-                    set_label: &model.current_dir.to_string_lossy(),
+                    set_label: &model.current_dir.to_string(),
                     #[watch]
-                    set_tooltip_text: Some(&model.current_dir.to_string_lossy()),
+                    set_tooltip_text: Some(&model.current_dir.to_string()),
                 },
             },
 
@@ -681,27 +684,23 @@ impl Component for FilePane {
                 let Some(root) = usize::try_from(position)
                     .ok()
                     .and_then(|index| self.disk_picker.disks().get(index))
-                    .map(|disk| disk.root().to_path_buf())
+                    .map(|disk| disk.root().clone())
                 else {
                     return;
                 };
                 // Resume at the last folder seen on this disk if it (or a parent on the
                 // same disk) still exists, otherwise start at the disk's top. A server's
                 // drive opens at its top.
-                let target = if self.remote.is_some() {
-                    root.clone()
-                } else {
-                    self.last_dir_on_disk
-                        .get(&root)
+                let target = match &root {
+                    SidePath::Remote(_) => root.clone(),
+                    SidePath::Local(local_root) => self
+                        .last_dir_on_disk
+                        .get(local_root)
                         .and_then(|dir| local_fs::nearest_listable_dir(dir))
-                        .filter(|dir| dir.starts_with(&root))
-                        .map_or(root.clone(), Path::to_path_buf)
+                        .filter(|dir| dir.starts_with(local_root))
+                        .map_or(root.clone(), |dir| SidePath::Local(dir.to_path_buf())),
                 };
-                tracing::info!(
-                    "switching to disk {} at {}",
-                    root.display(),
-                    target.display()
-                );
+                tracing::info!("switching to disk {root} at {target}");
                 self.request_listing(target, &sender);
             }
             FilePaneMsg::ContextMenu { position, x, y } => {
@@ -738,11 +737,7 @@ impl Component for FilePane {
                     self.status = error;
                     return;
                 }
-                tracing::debug!(
-                    "{} items dropped on {}",
-                    dropped.sources.len(),
-                    dest_dir.display()
-                );
+                tracing::debug!("{} items dropped on {dest_dir}", dropped.sources.len());
                 self.pending_drop = Some(PendingDrop {
                     sources: dropped.sources,
                     from_this_pane: dropped.from_this_pane,
@@ -780,7 +775,7 @@ impl Component for FilePane {
                 root,
                 NamePrompt {
                     title: "New Folder",
-                    prompt: &format!("Create a folder in {}:", self.current_dir.display()),
+                    prompt: &format!("Create a folder in {}:", self.current_dir),
                     initial: NEW_FOLDER_NAME,
                     confirm_label: "Create",
                 },
@@ -838,15 +833,16 @@ impl Component for FilePane {
                 self.disk_picker.show_dir(&self.current_dir);
                 // If the disk being shown was removed, fall back to the nearest folder that
                 // still exists (ultimately "/").
-                if let Some(fallback) = local_fs::nearest_listable_dir(&self.current_dir)
+                let fallback = self
+                    .current_dir
+                    .as_local()
+                    .and_then(local_fs::nearest_listable_dir)
+                    .map(|dir| SidePath::Local(dir.to_path_buf()));
+                if let Some(fallback) = fallback
                     && fallback != self.current_dir
                 {
-                    tracing::info!(
-                        "{} is gone; showing {}",
-                        self.current_dir.display(),
-                        fallback.display()
-                    );
-                    self.request_listing(fallback.to_path_buf(), &sender);
+                    tracing::info!("{} is gone; showing {fallback}", self.current_dir);
+                    self.request_listing(fallback, &sender);
                 }
             }
         }
@@ -878,7 +874,7 @@ impl Component for FilePane {
         };
         // A newer navigation superseded this listing before it finished.
         if listing.dir != self.requested_dir {
-            tracing::trace!("dropping stale listing of {}", listing.dir.display());
+            tracing::trace!("dropping stale listing of {}", listing.dir);
             return;
         }
         match listing.result {
@@ -907,16 +903,13 @@ impl Component for FilePane {
                         glib::idle_add_local_once(move || scroll.set_value(value));
                     }
                 }
-                let disk_root = if self.remote.is_some() {
-                    None
-                } else {
-                    disks::disk_index(self.disk_picker.disks(), &listing.dir)
-                        .and_then(|index| self.disk_picker.disks().get(index))
-                        .map(|disk| disk.root().to_path_buf())
-                };
-                if let Some(root) = &disk_root {
-                    self.last_dir_on_disk
-                        .insert(root.clone(), listing.dir.clone());
+                // Only local disks remember their last folder.
+                let disk_root = disks::disk_index(self.disk_picker.disks(), &listing.dir)
+                    .and_then(|index| self.disk_picker.disks().get(index))
+                    .and_then(|disk| disk.root().as_local())
+                    .map(Path::to_path_buf);
+                if let (Some(root), SidePath::Local(dir)) = (&disk_root, &listing.dir) {
+                    self.last_dir_on_disk.insert(root.clone(), dir.clone());
                 }
                 // Sending fails only when the parent is already gone, so there is no one
                 // left to notify; `let _ =` explicitly discards that result.
@@ -1338,14 +1331,16 @@ fn file_icon(entry: &FileEntry) -> gio::Icon {
 fn show_entry_icon(
     icon: &gtk::Image,
     entry: &FileEntry,
-    path: &Path,
+    path: &SidePath,
     special_icon: Option<&'static str>,
 ) {
     #[cfg(target_os = "macos")]
     {
         use crate::mac_icons;
         let finder = match entry.kind() {
-            EntryKind::Directory if special_icon.is_some() => mac_icons::local_folder(path),
+            EntryKind::Directory if special_icon.is_some() => {
+                path.as_local().and_then(mac_icons::local_folder)
+            }
             EntryKind::Directory => mac_icons::folder(),
             EntryKind::File => mac_icons::file(entry.name()),
         };
@@ -1538,6 +1533,7 @@ impl RelmColumn for ModifiedColumn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shuttlescp_core::path::RemotePath;
 
     #[test]
     fn compare_rows_puts_parent_first() {
@@ -1549,12 +1545,12 @@ mod tests {
             .remove(0);
         let row = Row::Entry {
             in_use: Rc::default(),
-            path: temp.path().join("a.txt"),
+            path: SidePath::Local(temp.path().join("a.txt")),
             entry,
             special_icon: None,
         };
         let parent = || Row::Parent {
-            path: PathBuf::from("/"),
+            path: SidePath::Local(PathBuf::from("/")),
         };
 
         // Act + Assert
@@ -1574,20 +1570,22 @@ mod tests {
 
     #[test]
     fn items_inside_a_folder_in_use_are_in_use() {
+        let server = |path: &str| SidePath::Remote(RemotePath::new(path));
         let marks = InUseMarks::default();
-        marks.set(vec![
-            PathBuf::from("/srv/photos"),
-            PathBuf::from("/srv/a.txt"),
-        ]);
+        marks.set(vec![server("/srv/photos"), server("/srv/a.txt")]);
 
-        assert!(marks.is_in_use(Path::new("/srv/photos")));
-        assert!(marks.is_in_use(Path::new("/srv/photos/2026/beach.jpg")));
-        assert!(marks.is_in_use(Path::new("/srv/a.txt")));
-        assert!(!marks.is_in_use(Path::new("/srv/a.txt.bak")));
-        assert!(!marks.is_in_use(Path::new("/srv")));
+        assert!(marks.is_in_use(&server("/srv/photos")));
+        assert!(marks.is_in_use(&server("/srv/photos/2026/beach.jpg")));
+        assert!(marks.is_in_use(&server("/srv/a.txt")));
+        assert!(!marks.is_in_use(&server("/srv/a.txt.bak")));
+        assert!(!marks.is_in_use(&server("/srv")));
         assert!(
-            marks.is_in_use(Path::new("/srv/a.txt.filepart")),
+            marks.is_in_use(&server("/srv/a.txt.filepart")),
             "a partial copy is in use"
+        );
+        assert!(
+            !marks.is_in_use(&SidePath::Local(PathBuf::from("/srv/a.txt"))),
+            "the same path on this computer is another file"
         );
     }
 }
