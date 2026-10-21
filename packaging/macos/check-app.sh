@@ -66,7 +66,11 @@ codesign --verify --deep --strict "$APP" 2> /dev/null || problem "the signature 
 if [[ -z "${SKIP_RUN:-}" && $problems -eq 0 ]]; then
     scratch=$(mktemp -d)
     log="$scratch/Library/Application Support/shuttlescp/logs/shuttlescp.log"
-    HOME="$scratch" "$CONTENTS/MacOS/ShuttleSCP" > "$scratch/output.txt" 2>&1 &
+    # GSK_RENDERER=cairo: GTK's plain software renderer. GitHub's Macs are virtual
+    # machines without a GPU, where the first frame with GTK's usual (OpenGL) renderer
+    # takes minutes of shader building in software, so the app could not even see the
+    # request to quit. This test is about the bundle's files, not the graphics.
+    GSK_RENDERER=cairo HOME="$scratch" "$CONTENTS/MacOS/ShuttleSCP" > "$scratch/output.txt" 2>&1 &
     pid=$!
     for _ in $(seq 30); do
         grep -q "Started" "$log" 2> /dev/null && break
