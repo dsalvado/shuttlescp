@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use relm4::actions::{AccelsPlus, RelmAction, RelmActionGroup};
+use relm4::actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup};
 use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
@@ -85,6 +85,65 @@ relm4::new_stateful_action!(AutoUpdateAction, WindowActions, "auto-update", (), 
 relm4::new_stateful_action!(ThemeAction, WindowActions, "theme", String, String);
 // Target and state are both a `LogLevel::as_str()` string.
 relm4::new_stateful_action!(LogLevelAction, WindowActions, "log-level", String, String);
+
+/// Where the menus are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuBar {
+    /// GTK's menu bar inside the window, under the title bar.
+    InWindow,
+    /// The macOS menu bar at the top of the screen. GTK adds the app menu in front of
+    /// it (About, Hide, Quit, ...), which calls the "app.about" and "app.quit" actions.
+    System,
+}
+
+impl MenuBar {
+    /// The menu bar of the system the app runs on.
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::System
+        } else {
+            Self::InWindow
+        }
+    }
+
+    /// The action group its items name. The system menu bar only reaches a window's
+    /// actions while that window is the active one, so there the window's actions are
+    /// also added to the application (see [`register_actions`]).
+    fn group(self) -> &'static str {
+        match self {
+            Self::InWindow => WindowActions::NAME,
+            Self::System => "app",
+        }
+    }
+
+    /// A menu item for an action.
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - The item's text
+    fn item<A: ActionName>(self, label: &str) -> gio::MenuItem {
+        gio::MenuItem::new(Some(label), Some(&format!("{}.{}", self.group(), A::NAME)))
+    }
+
+    /// A radio item: an action's item that sends `target` (see [`ThemeAction`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - The item's text
+    /// * `target` - The value the item stands for
+    fn radio_item<A: ActionName<Target = String>>(
+        self,
+        label: &str,
+        target: &str,
+    ) -> gio::MenuItem {
+        let item = self.item::<A>(label);
+        item.set_action_and_target_value(
+            Some(&format!("{}.{}", self.group(), A::NAME)),
+            Some(&target.to_variant()),
+        );
+        item
+    }
+}
 
 /// Everything `main` prepares before the window is built.
 pub struct AppInit {
@@ -290,7 +349,9 @@ impl SimpleComponent for App {
                     append: &dialog::title_bar(None, dialog::MAIN_WINDOW_BUTTONS),
 
                     #[name = "menu_bar"]
-                    gtk::PopoverMenuBar::from_model(Some(&menu_model)) {},
+                    gtk::PopoverMenuBar::from_model(Some(&menu_model)) {
+                        set_visible: MenuBar::current() == MenuBar::InWindow,
+                    },
 
                     // Sessions on top, the tabbed bottom panel (log, ...) below; the
                     // divider can be dragged.
@@ -371,7 +432,13 @@ impl SimpleComponent for App {
             tracing::warn!("saved theme {name} is no longer installed; using system theme");
             config.set_theme(ThemeChoice::System);
         }
-        theme::apply(config.theme());
+        // On macOS the app follows the system's Light/Dark appearance instead, and has
+        // no theme menu; a theme saved on Linux stays in the settings untouched.
+        if cfg!(target_os = "macos") {
+            theme::apply(&ThemeChoice::System);
+        } else {
+            theme::apply(config.theme());
+        }
         theme::ensure_cursor_theme();
 
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
@@ -394,7 +461,11 @@ impl SimpleComponent for App {
             });
         }
         let bottom_panel = bottom_panel(logger.file_path().map(Path::to_path_buf));
-        let menu_model = build_menu();
+        let bar = MenuBar::current();
+        let menu_model = build_menu(bar);
+        if bar == MenuBar::System {
+            relm4::main_application().set_menubar(Some(&menu_model));
+        }
         let theme_list = ThemeList::new(themes, config.theme());
         quit_on_signals(&sender);
 
@@ -452,10 +523,14 @@ impl SimpleComponent for App {
         // `#[local_ref]` in the view takes a reference.
         let session_notebook = &session_notebook;
         let widgets = view_output!();
-        widgets
-            .menu_bar
-            .add_child(model.theme_list.widget(), THEME_LIST_ID);
+        if bar == MenuBar::InWindow {
+            widgets
+                .menu_bar
+                .add_child(model.theme_list.widget(), THEME_LIST_ID);
+        }
         resize_grips::add_corner_grips(&root, &widgets.overlay);
+        #[cfg(target_os = "macos")]
+        theme::follow_system_appearance(&root);
         track_window_size(&root, &sender);
         let about_click = gtk::GestureClick::new();
         let about_window = root.clone();
@@ -1245,10 +1320,26 @@ fn register_actions(
     group.add_action(auto_update);
     group.add_action(theme_action);
     group.add_action(level_action);
-    group.register_for_widget(window);
+    let group = group.into_action_group();
+    window.insert_action_group(WindowActions::NAME, Some(&group));
     let app = relm4::main_application();
-    app.set_accelerators_for_action::<LoginAction>(&["<primary>l"]);
-    app.set_accelerators_for_action::<QuitAction>(&["<primary>q"]);
+    let bar = MenuBar::current();
+    if bar == MenuBar::System {
+        // The same action objects, so a state (the theme, the log level) is shared.
+        // "quit" and "about" become the "app.quit" and "app.about" that the macOS app
+        // menu and the Dock's Quit call.
+        for name in group.list_actions() {
+            if let Some(action) = group.lookup_action(&name) {
+                app.add_action(&action);
+            }
+        }
+    }
+    let group = bar.group();
+    app.set_accels_for_action(&format!("{group}.{}", LoginAction::NAME), &["<primary>l"]);
+    // On macOS GTK already gives "app.quit" Cmd+Q.
+    if bar == MenuBar::InWindow {
+        app.set_accels_for_action(&format!("{group}.{}", QuitAction::NAME), &["<primary>q"]);
+    }
     disconnect
 }
 
@@ -1412,18 +1503,31 @@ fn quit_on_signals(sender: &ComponentSender<App>) {
 /// popup. The theme section holds one placeholder item that the [`ThemeList`] widget
 /// replaces (see [`THEME_LIST_ID`]).
 ///
+/// The macOS menu bar follows the Mac's layout: Quit and About sit in the app menu GTK
+/// adds, and Edit and Window menus are added (GTK's own, which it shows only when the
+/// app has no menu bar). It has no View menu: there the app follows the system's
+/// Light/Dark appearance (see [`theme::follow_system_appearance`]), and the menu bar
+/// could not show the theme list widget anyway.
+///
+/// # Arguments
+///
+/// * `bar` - Which menu bar the model is for
+///
 /// # Returns
 ///
-/// The menu model for a [`gtk::PopoverMenuBar`]
-fn build_menu() -> gio::Menu {
+/// The menu model for a [`gtk::PopoverMenuBar`] or the application's menu bar
+fn build_menu(bar: MenuBar) -> gio::Menu {
+    let in_window = bar == MenuBar::InWindow;
     let file_menu = gio::Menu::new();
     let session_section = gio::Menu::new();
-    session_section.append_item(&RelmAction::<LoginAction>::to_menu_item("_Login…"));
-    session_section.append_item(&RelmAction::<DisconnectAction>::to_menu_item("_Disconnect"));
-    let quit_section = gio::Menu::new();
-    quit_section.append_item(&RelmAction::<QuitAction>::to_menu_item("_Quit"));
+    session_section.append_item(&bar.item::<LoginAction>("_Login…"));
+    session_section.append_item(&bar.item::<DisconnectAction>("_Disconnect"));
     file_menu.append_section(None, &session_section);
-    file_menu.append_section(None, &quit_section);
+    if in_window {
+        let quit_section = gio::Menu::new();
+        quit_section.append_item(&bar.item::<QuitAction>("_Quit"));
+        file_menu.append_section(None, &quit_section);
+    }
 
     let theme_section = gio::Menu::new();
     let theme_list_item = gio::MenuItem::new(None, None);
@@ -1434,36 +1538,66 @@ fn build_menu() -> gio::Menu {
 
     let level_section = gio::Menu::new();
     for level in LogLevel::ALL {
-        level_section.append_item(
-            &RelmAction::<LogLevelAction>::to_menu_item_with_target_value(
-                level.label(),
-                &level.as_str().to_owned(),
-            ),
-        );
+        level_section.append_item(&bar.radio_item::<LogLevelAction>(level.label(), level.as_str()));
     }
     let log_file_section = gio::Menu::new();
-    log_file_section.append_item(&RelmAction::<OpenLogAction>::to_menu_item("_Open Log File"));
+    log_file_section.append_item(&bar.item::<OpenLogAction>("_Open Log File"));
     let tools_menu = gio::Menu::new();
     tools_menu.append_section(Some("Log Level"), &level_section);
     tools_menu.append_section(None, &log_file_section);
 
     let update_section = gio::Menu::new();
-    update_section.append_item(&RelmAction::<CheckUpdatesAction>::to_menu_item(
-        "Check for _Updates…",
-    ));
-    update_section.append_item(&RelmAction::<AutoUpdateAction>::to_menu_item(
-        "Check for Updates at _Startup",
-    ));
+    update_section.append_item(&bar.item::<CheckUpdatesAction>("Check for _Updates…"));
+    update_section.append_item(&bar.item::<AutoUpdateAction>("Check for Updates at _Startup"));
     let help_menu = gio::Menu::new();
     help_menu.append_section(None, &update_section);
-    help_menu.append_item(&RelmAction::<AboutAction>::to_menu_item(
-        "_About ShuttleSCP",
-    ));
+    if in_window {
+        help_menu.append_item(&bar.item::<AboutAction>("_About ShuttleSCP"));
+    }
 
     let menu_bar = gio::Menu::new();
     menu_bar.append_submenu(Some("_File"), &file_menu);
-    menu_bar.append_submenu(Some("_View"), &view_menu);
+    if !in_window {
+        menu_bar.append_submenu(Some("_Edit"), &edit_menu());
+    }
+    if in_window {
+        menu_bar.append_submenu(Some("_View"), &view_menu);
+    }
     menu_bar.append_submenu(Some("_Tools"), &tools_menu);
+    if !in_window {
+        // GTK fills it with the system's window items (Minimize, Zoom, the open windows).
+        let window_menu = gio::MenuItem::new_submenu(Some("_Window"), &gio::Menu::new());
+        window_menu.set_attribute_value("gtk-macos-special", Some(&"window-submenu".to_variant()));
+        menu_bar.append_item(&window_menu);
+    }
     menu_bar.append_submenu(Some("_Help"), &help_menu);
     menu_bar
+}
+
+/// The macOS Edit menu: GTK's standard items, which act on the focused text field
+/// (also in the system's own windows, such as the file chooser).
+fn edit_menu() -> gio::Menu {
+    let section = |items: &[(&str, &str)]| {
+        let section = gio::Menu::new();
+        for (label, action) in items {
+            section.append(Some(label), Some(action));
+        }
+        section
+    };
+    let menu = gio::Menu::new();
+    menu.append_section(
+        None,
+        &section(&[("Undo", "text.undo"), ("Redo", "text.redo")]),
+    );
+    menu.append_section(
+        None,
+        &section(&[
+            ("Cut", "clipboard.cut"),
+            ("Copy", "clipboard.copy"),
+            ("Paste", "clipboard.paste"),
+            ("Delete", "selection.delete"),
+            ("Select All", "selection.select-all"),
+        ]),
+    );
+    menu
 }

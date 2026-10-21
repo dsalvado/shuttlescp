@@ -224,6 +224,46 @@ pub fn apply(choice: &ThemeChoice) {
     }
 }
 
+/// macOS: use GTK's dark style while the system appearance is Dark (System Settings >
+/// Appearance), which GTK does not follow there by itself. Checked now and each time
+/// the window comes back to the front, as the appearance may have changed meanwhile.
+///
+/// # Arguments
+///
+/// * `window` - The main window
+#[cfg(target_os = "macos")]
+pub fn follow_system_appearance(window: &gtk::ApplicationWindow) {
+    use relm4::gtk::prelude::*;
+
+    let update = || {
+        let Some(settings) = gtk::Settings::default() else {
+            return;
+        };
+        let dark = macos_appearance_is_dark();
+        if settings.is_gtk_application_prefer_dark_theme() != dark {
+            tracing::debug!("system appearance: {}", if dark { "dark" } else { "light" });
+            settings.set_gtk_application_prefer_dark_theme(dark);
+        }
+    };
+    update();
+    window.connect_is_active_notify(move |window| {
+        if window.is_active() {
+            update();
+        }
+    });
+}
+
+/// macOS: whether the system appearance is Dark. Read with the `defaults` tool (a few
+/// milliseconds), which keeps the app free of unsafe system calls; the setting is
+/// missing in Light mode.
+#[cfg(target_os = "macos")]
+fn macos_appearance_is_dark() -> bool {
+    std::process::Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .is_ok_and(|output| output.status.success() && output.stdout.starts_with(b"Dark"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
