@@ -68,7 +68,14 @@ fn main() {
     #[cfg(not(debug_assertions))]
     let app_id = APP_ID;
     let app = RelmApp::new(app_id);
-    // `include_str!` embeds the file's contents into the binary at compile time.
+    // `include_str!` embeds the file's contents into the binary at compile time. On
+    // macOS the Mac's sizes follow, overriding the Linux ones (see style-macos.css).
+    #[cfg(target_os = "macos")]
+    relm4::set_global_css(concat!(
+        include_str!("style.css"),
+        include_str!("style-macos.css")
+    ));
+    #[cfg(not(target_os = "macos"))]
     relm4::set_global_css(include_str!("style.css"));
     desktop_entry::install(APP_ID);
     app.run::<App>(AppInit {

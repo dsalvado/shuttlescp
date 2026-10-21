@@ -1,0 +1,28 @@
+/* macOS additions to style.css, loaded after it (only on macOS).
+
+   GTK on macOS counts 72 dots per inch, so a point is one pixel there; on Linux it
+   counts 96, and 9pt is 12px. The sizes in style.css would be a quarter smaller on a
+   Mac, so here they are set in pixels, at the sizes of Apple's guidelines: 13px for
+   text and controls, 11px for small text. The font itself is already the system's
+   (San Francisco). */
+
+window {
+    font-size: 13px;
+}
+
+/* Right-click menus of the file panes: the size of the Mac's own menus. */
+popover.menu.pane-menu {
+    font-size: 13px;
+}
+
+label.about-name {
+    font-size: 17px;
+}
+
+/* Fixed-width text: the Mac's own monospaced fonts. */
+label.about-details,
+textview.log-tail,
+textview.log-tail > text {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 11px;
+}
