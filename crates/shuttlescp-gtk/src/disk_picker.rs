@@ -188,11 +188,14 @@ fn list_disks(monitor: &gio::VolumeMonitor) -> Vec<Disk> {
     let mounts = monitor.mounts();
     // `with_capacity` reserves room for every disk up front, avoiding regrowth.
     let mut found = Vec::with_capacity(mounts.len() + 1);
-    found.push(Disk::new(
-        ROOT_DISK_NAME.to_owned(),
-        SidePath::Local(root.to_path_buf()),
-        ROOT_DISK_ICON.to_owned(),
-    ));
+    // Windows has no single root: GIO lists every drive (C:, D:, ...) itself.
+    if cfg!(unix) {
+        found.push(Disk::new(
+            ROOT_DISK_NAME.to_owned(),
+            SidePath::Local(root.to_path_buf()),
+            ROOT_DISK_ICON.to_owned(),
+        ));
+    }
     found.extend(mounts.iter().filter_map(|mount| {
         // `?` on an `Option` returns `None` from the closure when there is no local path.
         let path = mount.root().path()?;
