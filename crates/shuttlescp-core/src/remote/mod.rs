@@ -8,6 +8,7 @@
 //!
 //! Front ends see one [`Remote`] type whichever protocol is in use.
 
+mod drives;
 mod ftp;
 mod sftp;
 mod tls;

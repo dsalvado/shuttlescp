@@ -20,7 +20,7 @@ use relm4::prelude::*;
 use relm4::typed_view::OrdFn;
 use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 
-use shuttlescp_core::disks;
+use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::entry::{EntryKind, FileEntry};
 use shuttlescp_core::format::{format_modified, format_size};
 use shuttlescp_core::local_fs;
@@ -204,6 +204,8 @@ pub enum PaneCommand {
     Listing(Listing),
     /// A folder was created or an item renamed: what happened, or what went wrong.
     Operation(Result<String, String>),
+    /// The server's drives, for the drive drop-down.
+    Drives(Vec<Disk>),
 }
 
 /// Result of a background directory listing.
@@ -521,10 +523,7 @@ impl Component for FilePane {
                 },
                 // `#[local_ref]` embeds a widget created in `init` instead of building a new one.
                 #[local_ref]
-                disk_dropdown -> gtk::DropDown {
-                    // Local disks mean nothing when browsing a server.
-                    set_visible: model.remote.is_none(),
-                },
+                disk_dropdown -> gtk::DropDown {},
                 // Current directory. A plain label: it cannot be clicked, focused or edited.
                 gtk::Label {
                     set_hexpand: true,
@@ -587,12 +586,21 @@ impl Component for FilePane {
 
         // Each callback owns its own sender clone, since both outlive this function.
         let select_sender = sender.clone();
-        let mounts_sender = sender.clone();
-        let disk_picker = DiskPicker::new(
-            move |position| select_sender.input(FilePaneMsg::DiskSelected(position)),
-            move || mounts_sender.input(FilePaneMsg::DisksChanged),
-        );
+        let on_select = move |position| select_sender.input(FilePaneMsg::DiskSelected(position));
+        let disk_picker = match &remote {
+            // A server's drives arrive once it has been asked (see below).
+            Some(_) => DiskPicker::for_server(on_select),
+            None => {
+                let mounts_sender = sender.clone();
+                DiskPicker::new(on_select, move || {
+                    mounts_sender.input(FilePaneMsg::DisksChanged);
+                })
+            }
+        };
         disk_picker.show_dir(&start_dir);
+        if let Some(remote) = remote.clone() {
+            sender.oneshot_command(async move { PaneCommand::Drives(remote.drives().await) });
+        }
 
         let side = if remote.is_some() {
             Side::Remote
@@ -678,13 +686,17 @@ impl Component for FilePane {
                     return;
                 };
                 // Resume at the last folder seen on this disk if it (or a parent on the
-                // same disk) still exists, otherwise start at the disk's top.
-                let target = self
-                    .last_dir_on_disk
-                    .get(&root)
-                    .and_then(|dir| local_fs::nearest_listable_dir(dir))
-                    .filter(|dir| dir.starts_with(&root))
-                    .map_or(root.clone(), Path::to_path_buf);
+                // same disk) still exists, otherwise start at the disk's top. A server's
+                // drive opens at its top.
+                let target = if self.remote.is_some() {
+                    root.clone()
+                } else {
+                    self.last_dir_on_disk
+                        .get(&root)
+                        .and_then(|dir| local_fs::nearest_listable_dir(dir))
+                        .filter(|dir| dir.starts_with(&root))
+                        .map_or(root.clone(), Path::to_path_buf)
+                };
                 tracing::info!(
                     "switching to disk {} at {}",
                     root.display(),
@@ -856,6 +868,11 @@ impl Component for FilePane {
             PaneCommand::Operation(Err(error)) => {
                 tracing::warn!("{error}");
                 self.status = error;
+                return;
+            }
+            PaneCommand::Drives(drives) => {
+                self.disk_picker.set_disks(drives);
+                self.disk_picker.show_dir(&self.current_dir);
                 return;
             }
         };

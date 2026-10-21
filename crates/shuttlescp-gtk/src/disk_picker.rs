@@ -1,4 +1,5 @@
-//! Drop-down listing the machine's disks, kept up to date as drives are (un)mounted.
+//! Drop-down listing the disks: this machine's, kept up to date as drives are
+//! (un)mounted, or a server's, given by the pane once it has asked the server.
 
 use std::path::Path;
 
@@ -23,8 +24,9 @@ pub struct DiskPicker {
     /// The "selected" handler; blocked while the selection is changed from code, so only
     /// real user choices reach `on_select`.
     selected_handler: glib::SignalHandlerId,
-    /// Source of mount events; kept alive so its signal handlers stay connected.
-    monitor: gio::VolumeMonitor,
+    /// Source of mount events for this machine's disks; kept alive so its signal
+    /// handlers stay connected. `None` for a server's disks.
+    monitor: Option<gio::VolumeMonitor>,
 }
 
 impl DiskPicker {
@@ -42,13 +44,7 @@ impl DiskPicker {
         on_select: impl Fn(u32) + 'static,
         on_mounts_changed: impl Fn() + Clone + 'static,
     ) -> Self {
-        let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let dropdown = gtk::DropDown::new(Some(store.clone()), None::<gtk::Expression>);
-        dropdown.set_factory(Some(&disk_row_factory()));
-        dropdown.set_tooltip_text(Some("Disk"));
-        let selected_handler =
-            dropdown.connect_selected_notify(move |dropdown| on_select(dropdown.selected()));
-
+        let mut picker = Self::for_server(on_select);
         let monitor = gio::VolumeMonitor::get();
         // Each signal needs its own copy of the callback, hence the `Clone` bound.
         let on_added = on_mounts_changed.clone();
@@ -56,16 +52,31 @@ impl DiskPicker {
         let on_changed = on_mounts_changed.clone();
         monitor.connect_mount_changed(move |_, _| on_changed());
         monitor.connect_mount_removed(move |_, _| on_mounts_changed());
+        picker.monitor = Some(monitor);
+        picker.reload();
+        picker
+    }
 
-        let mut picker = Self {
+    /// Build an empty picker for a server's disks; fill it with
+    /// [`DiskPicker::set_disks`].
+    ///
+    /// # Arguments
+    ///
+    /// * `on_select` - Called with the row position when the user picks a disk
+    pub fn for_server(on_select: impl Fn(u32) + 'static) -> Self {
+        let store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let dropdown = gtk::DropDown::new(Some(store.clone()), None::<gtk::Expression>);
+        dropdown.set_factory(Some(&disk_row_factory()));
+        dropdown.set_tooltip_text(Some("Disk"));
+        let selected_handler =
+            dropdown.connect_selected_notify(move |dropdown| on_select(dropdown.selected()));
+        Self {
             dropdown,
             store,
             disks: Vec::new(),
             selected_handler,
-            monitor,
-        };
-        picker.reload();
-        picker
+            monitor: None,
+        }
     }
 
     /// The drop-down widget, for placing in a layout.
@@ -78,11 +89,24 @@ impl DiskPicker {
         &self.disks
     }
 
-    /// Re-read the list of mounted disks. Leaves nothing selected; follow with
-    /// [`DiskPicker::show_dir`].
+    /// Re-read the list of this machine's mounted disks (nothing for a server's).
+    /// Leaves nothing selected; follow with [`DiskPicker::show_dir`].
     pub fn reload(&mut self) {
-        self.disks = list_disks(&self.monitor);
-        tracing::debug!("found {} disks", self.disks.len());
+        let Some(monitor) = &self.monitor else {
+            return;
+        };
+        let disks = list_disks(monitor);
+        tracing::debug!("found {} disks", disks.len());
+        self.set_disks(disks);
+    }
+
+    /// Show these disks. Leaves nothing selected; follow with [`DiskPicker::show_dir`].
+    ///
+    /// # Arguments
+    ///
+    /// * `disks` - Disks in display order
+    pub fn set_disks(&mut self, disks: Vec<Disk>) {
+        self.disks = disks;
         let rows: Vec<glib::BoxedAnyObject> = self
             .disks
             .iter()
