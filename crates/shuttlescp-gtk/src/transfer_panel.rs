@@ -153,6 +153,8 @@ pub struct PanelConnection {
     pub site_id: String,
     /// The open session.
     pub remote: Remote,
+    /// In a site-to-site session, the left pane's server (`remote` is the right pane's).
+    pub left: Option<Remote>,
 }
 
 /// Messages handled by the transfers panel.
@@ -222,9 +224,9 @@ pub enum TransferPanelOutput {
     TargetChanged(Side),
     /// The files and folders running jobs use changed: the panes show them as busy.
     InUse {
-        /// On this computer.
+        /// In the left pane: on this computer (site to site, on the left server).
         local: Vec<SidePath>,
-        /// On the server.
+        /// In the right pane: on the server.
         remote: Vec<SidePath>,
     },
     /// The number of jobs in the lists changed.
@@ -662,12 +664,25 @@ impl TransferPanel {
     fn start(&mut self, job: Job, pending_key: Option<String>, sender: &ComponentSender<Self>) {
         let id = self.next_id;
         self.next_id += 1;
-        let remote = self
+        // The server the sources are on and, site to site, the one copies go to.
+        let (remote, dest_remote) = match &self.connection {
+            Some(connection) => {
+                let (left, right) = (connection.left.clone(), Some(connection.remote.clone()));
+                if job.left_server {
+                    (left, job.between_servers.then_some(right).flatten())
+                } else {
+                    (right, job.between_servers.then_some(left).flatten())
+                }
+            }
+            None => (None, None),
+        };
+        // Record jobs that use the server, so they can be resumed if interrupted. Not yet
+        // site to site: a record names one site.
+        let site_to_site = self
             .connection
             .as_ref()
-            .map(|connection| connection.remote.clone());
-        // Record jobs that use the server, so they can be resumed if interrupted.
-        let pending_key = match (&self.connection, job.uses_server()) {
+            .is_some_and(|connection| connection.left.is_some());
+        let pending_key = match (&self.connection, job.uses_server() && !site_to_site) {
             (Some(connection), true) => {
                 let key = pending_key.unwrap_or_else(new_site_id);
                 self.pending.add(PendingJob {
@@ -716,7 +731,7 @@ impl TransferPanel {
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {
-                    transfer::run(job, remote, None, cancel, move |event| {
+                    transfer::run(job, remote, dest_remote, cancel, move |event| {
                         // Fails only once the panel is gone, when nobody needs the event.
                         let _ = out.send((id, event));
                     })
@@ -756,7 +771,7 @@ impl TransferPanel {
             if !new {
                 return;
             }
-            job.job.dest_side()
+            job.job.dest_pane()
         };
         if self
             .last_target_refresh
@@ -1183,16 +1198,18 @@ impl TransferPanel {
         self.clear_buttons[1].set_sensitive(counts.2 > 0);
         let in_use = {
             let shared = self.shared.borrow();
+            // By pane: site to site, both panes hold server paths.
             let mut in_use = (Vec::new(), Vec::new());
-            for path in shared
-                .jobs
-                .values()
-                .filter(|job| job.is_running())
-                .flat_map(|job| job.job.paths_in_use())
-            {
-                match path.side() {
-                    Side::Local => in_use.0.push(path),
-                    Side::Remote => in_use.1.push(path),
+            for job in shared.jobs.values().filter(|job| job.is_running()) {
+                let pane = if job.job.kind == JobKind::Delete {
+                    job.job.source_pane()
+                } else {
+                    job.job.dest_pane()
+                };
+                let paths = job.job.paths_in_use();
+                match pane {
+                    Side::Local => in_use.0.extend(paths),
+                    Side::Remote => in_use.1.extend(paths),
                 }
             }
             in_use
@@ -1975,6 +1992,7 @@ mod tests {
                 dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
                 between_servers: false,
+                left_server: false,
                 resume: false,
             },
         }

@@ -49,6 +49,7 @@ fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
         dest_dir: local(dest_dir),
         same_side: false,
         between_servers: false,
+        left_server: false,
         resume: false,
     }
 }
@@ -59,6 +60,7 @@ fn same_side_job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
     Job {
         same_side: true,
         between_servers: false,
+        left_server: false,
         ..job(kind, sources, dest_dir)
     }
 }
@@ -573,6 +575,7 @@ fn site_to_site_jobs_go_to_the_server_and_say_so() {
         dest_dir: remote("/home/b"),
         same_side: false,
         between_servers: true,
+        left_server: false,
         resume: false,
     };
     assert_eq!(job.dest_side(), Side::Remote);
@@ -605,6 +608,7 @@ async fn a_site_to_site_job_without_its_destination_does_not_start() {
         dest_dir: remote("/home/b"),
         same_side: false,
         between_servers: true,
+        left_server: false,
         resume: false,
     };
     let summary = run(job, None, None, CancelFlag::default(), |_| {}).await;
@@ -738,6 +742,7 @@ fn job_titles_name_the_direction() {
         dest_dir: local(Path::new("")),
         same_side: false,
         between_servers: false,
+        left_server: false,
         resume: false,
     };
     assert_eq!(many.title(), "Delete 2 items from the server");

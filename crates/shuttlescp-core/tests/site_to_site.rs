@@ -118,6 +118,7 @@ fn job(kind: JobKind, side: Side, sources: Vec<SidePath>, dest_dir: SidePath) ->
         between_servers: kind != JobKind::Delete
             && side == Side::Remote
             && dest_dir.side() == Side::Remote,
+        left_server: false,
         kind,
         side,
         sources,

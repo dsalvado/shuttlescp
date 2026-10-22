@@ -2,6 +2,10 @@
 //! remote pane of its connection (if any) on the right, plus its own transfer lists
 //! (Queue, Completed, Failed) in the bottom panel.
 //!
+//! A site-to-site session has a server in each pane instead: the left pane shows the
+//! left server, and between the panes a picture of this computer, which the copied data
+//! passes through, with two lights that blink while transfers run.
+//!
 //! Each session is drawn in its own colour: an outline around its tab and panes, and
 //! around its transfer tabs (which sit side by side) and their lists, with a light tint
 //! of the colour over the theme's background, so it is clear which lists belong to
@@ -21,7 +25,7 @@ use shuttlescp_core::format::shorten_middle;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::Site;
-use shuttlescp_core::transfer::Side;
+use shuttlescp_core::transfer::{Job, JobKind, Side};
 
 use crate::app::{App, AppMsg, NOT_CONNECTED};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput};
@@ -62,6 +66,18 @@ pub struct Connection {
     pub pane: Controller<FilePane>,
 }
 
+/// The left pane's server in a site-to-site session.
+pub struct LeftServer {
+    /// "user@host" of the site, for the status bar.
+    pub name: String,
+    /// Server host name, for the tab title.
+    host: String,
+    /// Folder shown in the left pane.
+    pub dir: RemotePath,
+    /// The open connection (the left pane holds it too).
+    remote: Remote,
+}
+
 /// A session tab and everything that belongs to it.
 pub struct Session {
     pub id: SessionId,
@@ -86,6 +102,13 @@ pub struct Session {
     pub running: usize,
     /// Paths on the server that running transfers use, for a remote pane opened later.
     remote_in_use: Vec<SidePath>,
+    /// Site to site: the left pane's server.
+    pub left_server: Option<LeftServer>,
+    /// Site to site: the right half, holding the picture of this computer and then the
+    /// right pane (or the "Not connected" placeholder).
+    right_half: Option<gtk::Box>,
+    /// Site to site: the picture of this computer between the panes.
+    relay: Option<RelayPicture>,
 }
 
 /// The tab label of a session.
@@ -108,6 +131,9 @@ pub struct SessionInit<'a> {
     pub pending: Rc<PendingStore>,
     /// Initial position of the left/right divider, in pixels.
     pub split_position: i32,
+    /// Site to site: the left pane's site and its open connection (the right one comes
+    /// through [`Session::connect`]).
+    pub left: Option<(Site, Remote)>,
     pub sender: &'a ComponentSender<App>,
 }
 
@@ -122,19 +148,38 @@ impl Session {
             last_dir_on_disk,
             pending,
             split_position,
+            left,
             sender,
         } = init;
-        let local_pane = FilePane::builder()
-            .launch(FilePaneInit {
+        // The left pane shows this computer, or site to site the left server.
+        let left_init = match &left {
+            Some((_, remote)) => FilePaneInit {
+                start_dir: SidePath::Remote(remote.home().clone()),
+                last_dir_on_disk: BTreeMap::new(),
+                remote: Some(remote.clone()),
+            },
+            None => FilePaneInit {
                 start_dir: SidePath::Local(start_dir.clone()),
                 last_dir_on_disk,
                 remote: None,
-            })
+            },
+        };
+        let local_pane = FilePane::builder()
+            .launch(left_init)
             .forward(sender.input_sender(), move |output| {
                 pane_message(id, Side::Local, output)
             });
         let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
         placeholder.add_css_class("dim-label");
+        placeholder.set_hexpand(true);
+        // Site to site, the right half starts with the picture of this computer.
+        let relay = left.as_ref().map(|_| RelayPicture::new());
+        let right_half = relay.as_ref().map(|relay| {
+            let half = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            half.append(&relay.root);
+            half.append(&placeholder);
+            half
+        });
         let split = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .position(split_position)
@@ -142,8 +187,11 @@ impl Session {
             .shrink_start_child(false)
             .shrink_end_child(false)
             .start_child(local_pane.widget())
-            .end_child(&placeholder)
             .build();
+        match &right_half {
+            Some(half) => split.set_end_child(Some(half)),
+            None => split.set_end_child(Some(&placeholder)),
+        }
         // Gives the divider a visible, hoverable handle (see style.css).
         split.add_css_class("pane-split");
         let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -202,6 +250,56 @@ impl Session {
             transfer_tabs,
             running: 0,
             remote_in_use: Vec::new(),
+            left_server: left.map(|(site, remote)| LeftServer {
+                name: site.display_name(),
+                host: remote.host().to_owned(),
+                dir: remote.home().clone(),
+                remote,
+            }),
+            right_half,
+            relay,
+        }
+    }
+
+    /// Show `widget` (the right pane or the placeholder) in the right half.
+    fn set_right(&self, widget: &impl IsA<gtk::Widget>) {
+        match &self.right_half {
+            Some(half) => {
+                // The picture of this computer stays first; the pane after it changes.
+                if let Some(old) = half.last_child()
+                    && self.relay.as_ref().is_none_or(|relay| old != relay.root)
+                {
+                    half.remove(&old);
+                }
+                half.append(widget);
+            }
+            None => self.split.set_end_child(Some(widget)),
+        }
+    }
+
+    /// The folder a pane shows (left is [`Side::Local`]), if the pane is connected.
+    pub fn pane_dir(&self, pane: Side) -> Option<SidePath> {
+        match pane {
+            Side::Local => Some(match &self.left_server {
+                Some(left) => SidePath::Remote(left.dir.clone()),
+                None => SidePath::Local(self.local_dir.clone()),
+            }),
+            Side::Remote => self
+                .connection
+                .as_ref()
+                .map(|connection| SidePath::Remote(connection.dir.clone())),
+        }
+    }
+
+    /// Turn a job made in pane terms (`side` is the pane its sources are in) into one
+    /// the engine runs. Site to site, both panes are servers: the sources are server
+    /// paths, [`Job::left_server`] says which server, and a copy or move between the panes
+    /// goes from one server to the other. Elsewhere the job is already right.
+    pub fn engine_job(&self, job: Job) -> Job {
+        if self.left_server.is_some() {
+            site_to_site_job(job)
+        } else {
+            job
         }
     }
 
@@ -222,6 +320,14 @@ impl Session {
     /// Full tab title: `<server> - <folder>`, for the server while connected,
     /// otherwise for this computer (`host`) and the local pane's folder.
     pub fn title(&self, host: &str) -> String {
+        // Site to site: both servers, "left ⇄ right".
+        if let Some(left) = &self.left_server {
+            let right = self
+                .connection
+                .as_ref()
+                .map_or(NOT_CONNECTED, |connection| connection.host.as_str());
+            return format!("{} \u{21c4} {right}", left.host);
+        }
         let (host, dir) = match &self.connection {
             Some(connection) => (
                 connection.host.as_str(),
@@ -234,6 +340,9 @@ impl Session {
 
     /// Connection text for the status bar.
     pub fn status(&self) -> String {
+        if let (Some(left), Some(right)) = (&self.left_server, &self.connection) {
+            return format!("Connected to {} and {}", left.name, right.name);
+        }
         self.connection.as_ref().map_or_else(
             || String::from(NOT_CONNECTED),
             |connection| format!("Connected to {}", connection.name),
@@ -262,13 +371,14 @@ impl Session {
                 pane_message(id, Side::Remote, output)
             });
         pane.emit(FilePaneMsg::InUse(self.remote_in_use.clone()));
-        self.split.set_end_child(Some(pane.widget()));
+        self.set_right(pane.widget());
         self.transfer_tabs
             .show_connection(Some(&site.display_name()));
         self.transfers
             .emit(TransferPanelMsg::Connection(Some(PanelConnection {
                 site_id: site.id.clone(),
                 remote: remote.clone(),
+                left: self.left_server.as_ref().map(|left| left.remote.clone()),
             })));
         self.local_pane.emit(FilePaneMsg::PeerAvailable(true));
         tracing::info!("session {id}: connected to {}", site.display_name());
@@ -285,7 +395,7 @@ impl Session {
     pub fn disconnect(&mut self) {
         if let Some(connection) = self.connection.take() {
             tracing::info!("session {}: disconnected from {}", self.id, connection.name);
-            self.split.set_end_child(Some(&self.placeholder));
+            self.set_right(&self.placeholder);
             self.transfer_tabs.show_connection(None);
             // Transfers hold their own handle on the session; the panel stops them so
             // the connection really closes.
@@ -325,6 +435,9 @@ impl Session {
     /// Show the job counts on the transfer tabs.
     pub fn show_counts(&mut self, running: usize, completed: usize, failed: usize) {
         self.running = running;
+        if let Some(relay) = &self.relay {
+            relay.set_active(running > 0);
+        }
         self.transfer_tabs.show_counts(running, completed, failed);
     }
 
@@ -409,6 +522,52 @@ impl SessionTab {
     }
 }
 
+/// The picture between a site-to-site session's panes: this computer, which files copied
+/// between the two servers pass through, with two lights like a disk's that blink while
+/// transfers run: green for receiving, amber for sending.
+struct RelayPicture {
+    root: gtk::Box,
+    lights: gtk::Box,
+}
+
+impl RelayPicture {
+    fn new() -> Self {
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .css_classes(["relay"])
+            .tooltip_text("Files copied between the two servers pass through this computer")
+            .build();
+        let computer = gtk::Image::from_icon_name("computer-symbolic");
+        computer.set_pixel_size(32);
+        root.append(&computer);
+        let lights = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::Center)
+            .css_classes(["relay-lights"])
+            .build();
+        for (class, tooltip) in [
+            ("receive", "Receiving from the server copies come from"),
+            ("send", "Sending to the server copies go to"),
+        ] {
+            let light = gtk::Box::builder()
+                .css_classes(["relay-light", class])
+                .tooltip_text(tooltip)
+                .build();
+            lights.append(&light);
+        }
+        root.append(&lights);
+        Self { root, lights }
+    }
+
+    /// Blink the lights while transfers run.
+    fn set_active(&self, active: bool) {
+        set_class(&self.lights, "active", active);
+    }
+}
+
 /// The titles of a session's transfer tabs (Queue, Completed, Failed).
 struct TransferTabs {
     queue_tab: gtk::Box,
@@ -488,16 +647,28 @@ impl TransferTabs {
     }
 }
 
+/// A job made in pane terms in a site-to-site session, as the engine runs it: the
+/// sources are on the server of the pane they came from, and a copy or move between the
+/// panes goes from that server to the other one.
+fn site_to_site_job(mut job: Job) -> Job {
+    job.left_server = job.side == Side::Local;
+    job.side = Side::Remote;
+    job.between_servers = !job.same_side && job.kind != JobKind::Delete;
+    job
+}
+
 /// The message a session's file pane output becomes.
 fn pane_message(session: SessionId, side: Side, output: FilePaneOutput) -> AppMsg {
     match output {
-        FilePaneOutput::DirectoryChanged { dir, disk_root } => match dir {
-            SidePath::Local(dir) => AppMsg::LocalDirChanged {
+        FilePaneOutput::DirectoryChanged { dir, disk_root } => match (dir, side) {
+            (SidePath::Local(dir), _) => AppMsg::LocalDirChanged {
                 session,
                 dir,
                 disk_root,
             },
-            SidePath::Remote(dir) => AppMsg::RemoteDirChanged { session, dir },
+            // Site to site, the left pane is a server too.
+            (SidePath::Remote(dir), Side::Local) => AppMsg::LeftDirChanged { session, dir },
+            (SidePath::Remote(dir), Side::Remote) => AppMsg::RemoteDirChanged { session, dir },
         },
         FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
             session,
@@ -581,6 +752,50 @@ mod tests {
         assert_eq!(folder_name(&local("/home/me/Documents")), "Documents");
         assert_eq!(folder_name(&local("/")), "/");
         assert_eq!(folder_name(&SidePath::Remote(RemotePath::root())), "/");
+    }
+
+    /// A job as a pane makes it: `pane` holds the sources.
+    fn pane_job(kind: JobKind, pane: Side, same_side: bool) -> Job {
+        Job {
+            kind,
+            side: pane,
+            sources: vec![SidePath::Remote(RemotePath::new("/a/file"))],
+            dest_dir: SidePath::Remote(RemotePath::new("/b")),
+            same_side,
+            between_servers: false,
+            left_server: false,
+            resume: false,
+        }
+    }
+
+    #[test]
+    fn site_to_site_jobs_name_their_server_and_go_between_panes() {
+        // Left pane to right pane: from the left server to the other one.
+        let job = site_to_site_job(pane_job(JobKind::Copy, Side::Local, false));
+        assert_eq!(job.side, Side::Remote);
+        assert!(job.left_server && job.between_servers);
+        assert_eq!(
+            (job.source_pane(), job.dest_pane()),
+            (Side::Local, Side::Remote)
+        );
+
+        // Right pane to left pane.
+        let job = site_to_site_job(pane_job(JobKind::Move, Side::Remote, false));
+        assert!(!job.left_server && job.between_servers);
+        assert_eq!(
+            (job.source_pane(), job.dest_pane()),
+            (Side::Remote, Side::Local)
+        );
+
+        // A delete on the left server stays there.
+        let job = site_to_site_job(pane_job(JobKind::Delete, Side::Local, false));
+        assert!(job.left_server && !job.between_servers);
+        assert_eq!(job.dest_pane(), Side::Local);
+
+        // Dropped onto a folder in its own pane: stays on that server.
+        let job = site_to_site_job(pane_job(JobKind::Copy, Side::Remote, true));
+        assert!(!job.left_server && !job.between_servers);
+        assert_eq!(job.dest_pane(), Side::Remote);
     }
 
     #[test]

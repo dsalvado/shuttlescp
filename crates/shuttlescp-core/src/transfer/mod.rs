@@ -107,6 +107,10 @@ pub struct Job {
     /// (`side` is [`Side::Remote`] and so is `dest_dir`). The data passes through this
     /// computer, as with `scp -3`; [`run`] gets both connections.
     pub between_servers: bool,
+    /// In a site-to-site session (two servers, one per pane), the server the job's
+    /// sources are on is the left pane's; otherwise the right pane's, the only server of
+    /// an ordinary session.
+    pub left_server: bool,
     /// Continue an earlier, interrupted run of this job: files already copied (same
     /// size and date at the destination) are not copied again or asked about, and
     /// sources already moved away are passed over.
@@ -144,6 +148,27 @@ impl Job {
             (JobKind::Move, Side::Remote) => format!("Move {what} to this computer, {dest}"),
             (JobKind::Delete, Side::Local) => format!("Delete {what} from this computer"),
             (JobKind::Delete, Side::Remote) => format!("Delete {what} from the server"),
+        }
+    }
+
+    /// The pane the sources are in (left is [`Side::Local`], right [`Side::Remote`]). In
+    /// an ordinary session that is `side`; site to site, both panes are servers and
+    /// [`Job::left_server`] says which.
+    pub fn source_pane(&self) -> Side {
+        if self.left_server {
+            Side::Local
+        } else {
+            self.side
+        }
+    }
+
+    /// The pane copies go to (left is [`Side::Local`], right [`Side::Remote`]): the
+    /// other pane, or the same one for a [`Job::same_side`] job or a delete.
+    pub fn dest_pane(&self) -> Side {
+        if self.kind == JobKind::Delete || self.same_side {
+            self.source_pane()
+        } else {
+            self.source_pane().other()
         }
     }
 
@@ -192,6 +217,8 @@ struct JobRecord {
     #[serde(default)]
     between_servers: bool,
     #[serde(default)]
+    left_server: bool,
+    #[serde(default)]
     resume: bool,
 }
 
@@ -222,6 +249,7 @@ impl From<JobRecord> for Job {
             dest_dir: SidePath::Local(PathBuf::new()),
             same_side: record.same_side,
             between_servers: record.between_servers,
+            left_server: record.left_server,
             resume: record.resume,
         };
         job.sources = record
@@ -243,6 +271,7 @@ impl From<Job> for JobRecord {
             dest_dir: JobRecord::saved(job.dest_dir),
             same_side: job.same_side,
             between_servers: job.between_servers,
+            left_server: job.left_server,
             resume: job.resume,
         }
     }

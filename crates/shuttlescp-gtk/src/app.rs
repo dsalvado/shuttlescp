@@ -201,6 +201,8 @@ pub enum AppMsg {
     },
     /// A session's remote pane moved to another folder.
     RemoteDirChanged { session: SessionId, dir: RemotePath },
+    /// A site-to-site session's left pane (a server) moved to another folder.
+    LeftDirChanged { session: SessionId, dir: RemotePath },
     /// Another session tab was brought forward: its transfer lists follow.
     SessionSwitched,
     /// Another bottom panel tab was brought forward: its session follows.
@@ -598,7 +600,7 @@ impl SimpleComponent for App {
         new_tab.append(&gtk::Label::new(Some("New Connection")));
         new_tab.set_tooltip_text(Some("Connect to another server in a new tab"));
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
-        model.add_session(start_dir, window_size.width / 2, &sender);
+        model.add_session(start_dir, window_size.width / 2, None, &sender);
         // `#[local_ref]` in the view takes a reference.
         let session_notebook = &session_notebook;
         let widgets = view_output!();
@@ -757,15 +759,7 @@ impl SimpleComponent for App {
             }
             AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
             AppMsg::Connected { site, remote } => self.connect(&site, remote, &sender),
-            AppMsg::ConnectedPair { left, right } => {
-                // The two-server session comes in the next step; until then the
-                // connections are closed again.
-                tracing::warn!(
-                    "connected to {} and {} site to site, but site-to-site sessions are not built yet",
-                    left.0.display_name(),
-                    right.0.display_name()
-                );
-            }
+            AppMsg::ConnectedPair { left, right } => self.connect_pair(left, right, &sender),
             AppMsg::RemoteDirChanged { session, dir } => {
                 if let Some(connection) = self
                     .session_mut(session)
@@ -773,6 +767,15 @@ impl SimpleComponent for App {
                 {
                     tracing::debug!("remote pane now shows {dir}");
                     connection.dir = dir;
+                }
+            }
+            AppMsg::LeftDirChanged { session, dir } => {
+                if let Some(left) = self
+                    .session_mut(session)
+                    .and_then(|session| session.left_server.as_mut())
+                {
+                    tracing::debug!("left pane now shows {dir}");
+                    left.dir = dir;
                 }
             }
             AppMsg::SessionSwitched => {
@@ -803,14 +806,20 @@ impl SimpleComponent for App {
                     first.show_in_use(in_use, Vec::new());
                 }
                 let start = self.sessions[0].local_dir.clone();
-                self.add_session(start, self.session_notebook.width() / 2, &sender);
+                self.add_session(start, self.session_notebook.width() / 2, None, &sender);
                 self.update_notice = Some(UpdateNotice::Available(Box::new(
                     crate::ui_gallery::sample_manifest(),
                 )));
             }
             AppMsg::Disconnect => {
                 if let Some(index) = self.current_index() {
-                    self.sessions[index].disconnect();
+                    // A site-to-site session is its two servers: disconnecting closes it.
+                    if self.sessions[index].left_server.is_some() {
+                        let id = self.sessions[index].id;
+                        sender.input(AppMsg::CloseSession(id));
+                    } else {
+                        self.sessions[index].disconnect();
+                    }
                 }
             }
             AppMsg::CloseSession(id) => {
@@ -880,6 +889,7 @@ impl SimpleComponent for App {
                         dest_dir,
                         same_side: from_this_pane,
                         between_servers: false,
+                        left_server: false,
                         resume: false,
                     },
                 );
@@ -994,6 +1004,7 @@ impl App {
         &mut self,
         start_dir: PathBuf,
         split_position: i32,
+        left: Option<(Site, Remote)>,
         sender: &ComponentSender<Self>,
     ) -> usize {
         let id = self.next_session;
@@ -1013,6 +1024,7 @@ impl App {
             last_dir_on_disk: self.config.last_dir_on_disk().clone(),
             pending: Rc::clone(&self.pending),
             split_position,
+            left,
             sender,
         });
         // A session's transfer lists follow the log and the earlier sessions' lists.
@@ -1055,10 +1067,29 @@ impl App {
                         (session.local_dir.clone(), self.session_notebook.width() / 2)
                     },
                 );
-                self.add_session(start_dir, split, sender)
+                self.add_session(start_dir, split, None, sender)
             }
         };
         self.sessions[index].connect(site, remote, sender);
+        self.session_notebook
+            .set_current_page(u32::try_from(index).ok());
+    }
+
+    /// Open a site-to-site session in a new tab: `left` in the left pane, `right` in the
+    /// right one.
+    fn connect_pair(
+        &mut self,
+        left: (Site, Remote),
+        right: (Site, Remote),
+        sender: &ComponentSender<Self>,
+    ) {
+        let start_dir = self
+            .current()
+            .map_or_else(|| PathBuf::from("/"), |session| session.local_dir.clone());
+        let split = self.session_notebook.width() / 2;
+        let index = self.add_session(start_dir, split, Some(left), sender);
+        let (site, remote) = right;
+        self.sessions[index].connect(&site, remote, sender);
         self.session_notebook
             .set_current_page(u32::try_from(index).ok());
     }
@@ -1398,17 +1429,13 @@ impl App {
         };
         // A delete has no destination: it stays on the pane's side, so deleting local
         // files works without a connection.
-        let dest_side = if kind == JobKind::Delete {
+        let dest_pane = if kind == JobKind::Delete {
             side
         } else {
             side.other()
         };
-        let dest_dir = match dest_side {
-            Side::Local => SidePath::Local(current.local_dir.clone()),
-            Side::Remote => match &current.connection {
-                Some(connection) => SidePath::Remote(connection.dir.clone()),
-                None => return,
-            },
+        let Some(dest_dir) = current.pane_dir(dest_pane) else {
+            return;
         };
         let job = Job {
             kind,
@@ -1417,13 +1444,14 @@ impl App {
             dest_dir,
             same_side: false,
             between_servers: false,
+            left_server: false,
             resume: false,
         };
         if kind != JobKind::Delete {
             self.start_job(session, job);
             return;
         }
-        let question = format!("{}?", job.title());
+        let question = format!("{}?", current.engine_job(job.clone()).title());
         let sender = sender.clone();
         confirm_dialog::ask(
             self.window.upcast_ref(),
@@ -1449,6 +1477,8 @@ impl App {
         let Some(index) = self.sessions.iter().position(|s| s.id == session) else {
             return;
         };
+        // Site to site, the job's sides become servers (see `Session::engine_job`).
+        let job = self.sessions[index].engine_job(job);
         tracing::info!("session {session}: starting: {}", job.title());
         self.show_transfers(index);
         self.sessions[index]

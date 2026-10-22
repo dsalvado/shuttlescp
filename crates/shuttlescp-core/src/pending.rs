@@ -95,6 +95,7 @@ mod tests {
                 dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
                 between_servers: false,
+                left_server: false,
                 resume: false,
             },
         }

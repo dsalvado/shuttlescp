@@ -769,3 +769,32 @@ label.in-transfer {
     border: 1px solid alpha(@theme_selected_bg_color, 0.7);
     border-radius: 2px;
 }
+
+/* Site to site: the picture of this computer between the two server panes (session.rs,
+   RelayPicture), with two lights like a disk's. Dim at rest; while transfers run the
+   green one (receiving) and the amber one (sending) blink, half a beat apart. GTK skips
+   the blinking when the desktop turns animations off. */
+.relay {
+    padding: 0 8px;
+}
+.relay image {
+    color: alpha(currentColor, 0.7);
+}
+.relay-light {
+    min-width: 7px;
+    min-height: 7px;
+    border-radius: 50%;
+    background-color: alpha(currentColor, 0.18);
+}
+.relay-lights.active .relay-light.receive {
+    background-color: #33c56b;
+    animation: relay-blink 0.7s ease-in-out infinite alternate;
+}
+.relay-lights.active .relay-light.send {
+    background-color: #f0a020;
+    animation: relay-blink 0.7s ease-in-out 0.35s infinite alternate;
+}
+@keyframes relay-blink {
+    from { opacity: 1; }
+    to { opacity: 0.25; }
+}
