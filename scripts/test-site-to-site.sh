@@ -37,14 +37,24 @@ docker run -d --name "$NAME-ftp" -p "$FTP_PORT:21" -p 21000-21010:21000-21010 \
 # so the user sees the real paths (its home is /ftp/test).
 docker exec "$NAME-ftp" sh -c 'mkdir -p /ftp/test/files/other && chown -R test /ftp/test/files'
 
-# Wait until both answer.
-for port in "$SFTP_PORT" "$FTP_PORT"; do
-    for _ in $(seq 1 30); do
-        (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break
+# Wait until each server greets (an open port alone is not enough: Docker can accept
+# connections before the server inside is listening).
+greets() {
+    local banner
+    banner=$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1 && head -c 3 <&3" 2>/dev/null)
+    [[ "$banner" == "$2"* ]]
+}
+wait_for() {
+    for _ in $(seq 1 60); do
+        greets "$1" "$2" && return 0
         sleep 1
     done
-done
-sleep 2
+    echo "error: the server on port $1 did not answer; its log:" >&2
+    docker logs "$3" >&2 || true
+    exit 1
+}
+wait_for "$SFTP_PORT" SSH "$NAME-sftp"
+wait_for "$FTP_PORT" 220 "$NAME-ftp"
 
 echo "==> Running the site-to-site tests"
 cd "$ROOT"
