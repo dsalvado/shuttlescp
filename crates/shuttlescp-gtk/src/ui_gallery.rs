@@ -136,6 +136,12 @@ pub fn run(
             }),
         ),
         (
+            "update-restart",
+            Box::new(|window| {
+                update_dialog::ask_restart(window, "1.0.0", 2, |_| {});
+            }),
+        ),
+        (
             "update-error",
             Box::new(|window| {
                 update_dialog::report_error(window, "this build cannot check for updates");

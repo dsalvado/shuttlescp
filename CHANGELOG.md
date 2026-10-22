@@ -15,6 +15,10 @@ becomes its release notes on GitHub.
   installed or the notice is closed, so it is not missed while another dialog is open.
   Clicking it offers the update again; once the update is in place it reads "Restart
   to finish updating".
+- An update that finishes downloading while transfers run can wait for them: "When
+  Transfers Finish" restarts ShuttleSCP into the new version by itself once the last
+  transfer is done (the status bar says "Update waits for transfers" meanwhile).
+  "Restart Now" stops them as before, and "Later" leaves the restart to the status bar.
 
 ## [0.11.0] - 2026-10-21
 

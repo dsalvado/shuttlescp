@@ -30,6 +30,75 @@ enum Download {
     Done(Result<PathBuf, String>),
 }
 
+/// What to do with an installed update while transfers run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartChoice {
+    /// Restart now, stopping the transfers (they can be resumed later).
+    Now,
+    /// Restart by itself once the transfers have finished.
+    WhenTransfersFinish,
+    /// Not now: restart from the status bar's notice later.
+    Later,
+}
+
+/// Ask when to restart into an installed update while transfers run. `on_choice` is
+/// called once a button is pressed; closing the prompt otherwise (Escape, its title
+/// bar) leaves things as they were.
+///
+/// # Arguments
+///
+/// * `parent` - Window the prompt stays above
+/// * `version` - The new version
+/// * `running` - How many transfers run
+/// * `on_choice` - Receives the decision
+pub fn ask_restart(
+    parent: &gtk::Window,
+    version: &str,
+    running: usize,
+    on_choice: impl Fn(RestartChoice) + 'static,
+) {
+    let dialog = Dialog::new(parent, "Restart");
+    dialog.content.append(&dialog::text(
+        &format!("Restart into ShuttleSCP {version}?"),
+        &["heading"],
+    ));
+    let running = match running {
+        1 => String::from("A transfer is still running."),
+        count => format!("{count} transfers are still running."),
+    };
+    dialog.content.append(&dialog::text(
+        &format!(
+            "{running} ShuttleSCP can restart by itself once they finish, or now: they \
+             stop, and can be resumed the next time you connect to the server."
+        ),
+        &[],
+    ));
+    // Set by a button, read when the window closes, so `on_choice` runs at most once.
+    let choice = Rc::new(Cell::new(None));
+    let choose = |label: &str, kind: ButtonKind, picked: RestartChoice| {
+        let (choice, window) = (Rc::clone(&choice), dialog.window.clone());
+        dialog.add_button(label, kind, move || {
+            choice.set(Some(picked));
+            window.close();
+        })
+    };
+    choose("Later", ButtonKind::Normal, RestartChoice::Later);
+    choose("Restart Now", ButtonKind::Destructive, RestartChoice::Now);
+    let when_finished = choose(
+        "When Transfers Finish",
+        ButtonKind::Suggested,
+        RestartChoice::WhenTransfersFinish,
+    );
+    dialog.window.connect_close_request(move |_| {
+        if let Some(choice) = choice.get() {
+            on_choice(choice);
+        }
+        glib::Propagation::Proceed
+    });
+    dialog.window.present();
+    when_finished.grab_focus();
+}
+
 /// Say that the running version is the latest.
 pub fn report_up_to_date(parent: &gtk::Window) {
     let dialog = Dialog::new(parent, "Check for Updates");

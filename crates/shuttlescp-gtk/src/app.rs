@@ -32,7 +32,7 @@ use crate::session::{self, Session, SessionId, SessionInit};
 use crate::theme;
 use crate::theme_list::ThemeList;
 use crate::transfer_panel::{PendingStore, TransferPanelMsg};
-use crate::update_dialog;
+use crate::update_dialog::{self, RestartChoice};
 
 /// Window size the first time the app opens; after that, the size it was closed at.
 const FIRST_WINDOW_SIZE: WindowSize = WindowSize {
@@ -61,6 +61,9 @@ const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// Wait this long after startup before looking for a newer release, so it never slows
 /// the start down.
 const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long the transfers must have stopped before an update waiting for them restarts
+/// the app.
+const IDLE_RESTART_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 /// Icon of the "New Connection" tab, which opens the Login dialog for another connection.
 const NEW_TAB_ICON: &str = "tab-new-symbolic";
 /// Initial height of the session area above the bottom panel, in pixels.
@@ -276,6 +279,13 @@ pub enum AppMsg {
         /// The new version, for the status bar until the restart.
         version: String,
     },
+    /// Restart into the installed update once no transfer runs.
+    RestartWhenIdle,
+    /// Do not restart into the installed update by itself (it waits for a click on the
+    /// status bar's notice).
+    RestartLater,
+    /// The transfers may have finished: restart into the update if they have.
+    RestartIfIdle,
     /// The status bar's update notice was clicked: offer the update again, or restart
     /// into the installed one.
     ShowUpdate,
@@ -345,6 +355,8 @@ enum UpdateNotice {
         version: String,
         /// The program to start after quitting.
         program: PathBuf,
+        /// Restart by itself once the running transfers have finished.
+        when_idle: bool,
     },
 }
 
@@ -657,28 +669,64 @@ impl SimpleComponent for App {
                 self.save_config();
             }
             AppMsg::RestartIntoUpdate { program, version } => {
-                // Kept in the status bar in case the restart is put off.
+                let running = self.running_transfers.get();
+                if running == 0 {
+                    self.restart_into(program);
+                    return;
+                }
+                // Kept in the status bar while the restart waits.
+                let when_idle = matches!(
+                    self.update_notice,
+                    Some(UpdateNotice::Installed {
+                        when_idle: true,
+                        ..
+                    })
+                );
                 self.update_notice = Some(UpdateNotice::Installed {
-                    version,
+                    version: version.clone(),
                     program: program.clone(),
+                    when_idle,
                 });
-                if self.running_transfers.get() > 0 {
-                    self.confirm_stopping_transfers(
-                        self.running_transfers.get(),
-                        "Restart",
-                        "Restart into the new version?",
-                        "Restart",
-                        &sender,
-                        move || AppMsg::RestartNow(program.clone()),
-                    );
-                } else {
+                let sender = sender.clone();
+                update_dialog::ask_restart(
+                    self.window.upcast_ref(),
+                    &version,
+                    running,
+                    move |choice| {
+                        sender.input(match choice {
+                            RestartChoice::Now => AppMsg::RestartNow(program.clone()),
+                            RestartChoice::WhenTransfersFinish => AppMsg::RestartWhenIdle,
+                            RestartChoice::Later => AppMsg::RestartLater,
+                        });
+                    },
+                );
+            }
+            AppMsg::RestartNow(program) => self.restart_into(program),
+            AppMsg::RestartWhenIdle | AppMsg::RestartLater => {
+                let wait = matches!(message, AppMsg::RestartWhenIdle);
+                if let Some(UpdateNotice::Installed { when_idle, .. }) = &mut self.update_notice {
+                    *when_idle = wait;
+                    tracing::info!("restart into the update when transfers finish: {wait}");
+                }
+            }
+            AppMsg::RestartIfIdle => {
+                if self.running_transfers.get() == 0
+                    && self.restart_with.is_none()
+                    && let Some(UpdateNotice::Installed {
+                        program,
+                        when_idle: true,
+                        ..
+                    }) = self.update_notice.clone()
+                {
+                    tracing::info!("transfers finished: restarting into the update");
                     self.restart_into(program);
                 }
             }
-            AppMsg::RestartNow(program) => self.restart_into(program),
             AppMsg::ShowUpdate => match self.update_notice.clone() {
                 Some(UpdateNotice::Available(manifest)) => self.offer_update(*manifest, &sender),
-                Some(UpdateNotice::Installed { version, program }) => {
+                Some(UpdateNotice::Installed {
+                    version, program, ..
+                }) => {
                     sender.input(AppMsg::RestartIntoUpdate { program, version });
                 }
                 None => {}
@@ -872,6 +920,9 @@ impl SimpleComponent for App {
             }
         }
         self.refresh_sessions();
+        // Whatever stopped the last transfer (it finished, its session closed, ...), an
+        // update waiting for it can go ahead.
+        self.restart_if_idle_soon(&sender);
     }
 
     /// Runs when the application quits (window closed, File > Quit or a quit signal).
@@ -1132,6 +1183,26 @@ impl App {
         });
     }
 
+    /// While an installed update waits for the transfers, check again shortly whether
+    /// they have finished. The pause lets a transfer that starts right after another
+    /// ends (a queue of drops, say) count as running.
+    fn restart_if_idle_soon(&self, sender: &ComponentSender<Self>) {
+        if self.running_transfers.get() == 0
+            && matches!(
+                self.update_notice,
+                Some(UpdateNotice::Installed {
+                    when_idle: true,
+                    ..
+                })
+            )
+        {
+            let sender = sender.clone();
+            glib::timeout_add_local_once(IDLE_RESTART_DELAY, move || {
+                sender.input(AppMsg::RestartIfIdle);
+            });
+        }
+    }
+
     /// Quit, then start `program`: the new AppImage, or on Windows the installer.
     fn restart_into(&mut self, program: PathBuf) {
         self.restart_with = Some(program);
@@ -1144,6 +1215,9 @@ impl App {
             Some(UpdateNotice::Available(manifest)) => {
                 format!("Update available: {}", manifest.version)
             }
+            Some(UpdateNotice::Installed {
+                when_idle: true, ..
+            }) => String::from("Update waits for transfers"),
             Some(UpdateNotice::Installed { .. }) => String::from("Restart to finish updating"),
             None => String::new(),
         }
@@ -1156,6 +1230,14 @@ impl App {
                 "ShuttleSCP {} is available (you have {}). Click to see it.",
                 manifest.version,
                 env!("CARGO_PKG_VERSION")
+            ),
+            Some(UpdateNotice::Installed {
+                version,
+                when_idle: true,
+                ..
+            }) => format!(
+                "ShuttleSCP restarts into {version} once the running transfers finish. \
+                 Click to restart now or later instead."
             ),
             Some(UpdateNotice::Installed { version, .. }) => {
                 format!("ShuttleSCP {version} is ready. Click to restart into it.")
