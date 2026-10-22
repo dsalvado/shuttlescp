@@ -1,4 +1,9 @@
-//! ShuttleSCP: a graphical SFTP/SCP client for Linux, inspired by WinSCP.
+//! ShuttleSCP: a graphical SFTP/SCP client for Linux, macOS and Windows, inspired by
+//! WinSCP.
+
+// Windows: a release build is a GUI program, so starting it opens no console window
+// (its messages go to the log). Debug builds keep the console, for `cargo run`.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
 mod build_info;

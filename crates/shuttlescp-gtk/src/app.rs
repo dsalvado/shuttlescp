@@ -1464,8 +1464,9 @@ fn restart_after_exit(program: &Path) {
 }
 
 /// Windows: run `installer` (the downloaded update) once this process has exited, so it
-/// can replace the app's files. PowerShell waits for this process, then starts the
-/// installer silently: it shows only its progress, and starts the new version when done.
+/// can replace the app's files, then start the new version. PowerShell waits for this
+/// process, runs the installer silently (it shows only its progress) and waits for it,
+/// then starts the program from where this one ran.
 #[cfg(windows)]
 fn restart_after_exit(installer: &Path) {
     use std::os::windows::process::CommandExt;
@@ -1473,11 +1474,21 @@ fn restart_after_exit(installer: &Path) {
     /// Process creation flag: no console window for PowerShell.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     // PowerShell takes text in single quotes, with any quote inside doubled.
-    let quoted = installer.display().to_string().replace('\'', "''");
+    let quoted = |path: &Path| path.display().to_string().replace('\'', "''");
+    let program = match std::env::current_exe() {
+        Ok(program) => program,
+        Err(error) => {
+            tracing::error!("cannot find this program to restart it: {error}");
+            return;
+        }
+    };
     let script = format!(
         "Wait-Process -Id {} -ErrorAction SilentlyContinue; \
-         Start-Process -FilePath '{quoted}' -ArgumentList '/SILENT','/NORESTART'",
-        std::process::id()
+         Start-Process -Wait -FilePath '{}' -ArgumentList '/SILENT','/NORESTART'; \
+         Start-Process -FilePath '{}'",
+        std::process::id(),
+        quoted(installer),
+        quoted(&program)
     );
     let spawned = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
