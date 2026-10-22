@@ -88,6 +88,14 @@ jobs:
       - name: Check the AppImage
         run: packaging/linux/check-appimage.sh dist/ShuttleSCP-*-x86_64.AppImage
 
+      # Started on older systems than it was built on (it carries their missing glibc): the
+      # window must appear on Ubuntu 22.04 and Debian 12, with nothing installed but a
+      # virtual display. See the script.
+      - name: Start it on Ubuntu 22.04 and Debian 12
+        run: |
+          packaging/linux/test-old-distro.sh dist/ShuttleSCP-*-x86_64.AppImage ubuntu:22.04
+          packaging/linux/test-old-distro.sh dist/ShuttleSCP-*-x86_64.AppImage debian:12
+
       - name: Keep it as an artifact
         uses: actions/upload-artifact@v7
         with:

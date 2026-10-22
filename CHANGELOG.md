@@ -7,6 +7,14 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- The Linux AppImage now also runs on older systems: Ubuntu 20.04 and 22.04, Debian 12,
+  Linux Mint 20 and 21 and the like, where it used to need a system from 2024 or later.
+  It carries the C library and the few other libraries those systems have in older
+  versions, and uses them only there; newer systems run it exactly as before. Every
+  build is started on Ubuntu 22.04 and Debian 12 before it is released.
+
 ## [0.13.0] - 2026-10-22
 
 ### Added
