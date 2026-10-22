@@ -151,6 +151,12 @@ pub fn run(
                             size: 0,
                             sha256: String::new(),
                         }),
+                        windows: Some(shuttlescp_core::update::Asset {
+                            name: String::from("ShuttleSCP-1.0.0-windows-x64-setup.exe"),
+                            url: format!("{repository}/releases/download/v1.0.0/x.exe"),
+                            size: 0,
+                            sha256: String::new(),
+                        }),
                     },
                     |_| {},
                 );

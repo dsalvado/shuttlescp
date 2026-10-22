@@ -62,15 +62,16 @@ pub fn report_error(parent: &gtk::Window, error: &str) {
     close.grab_focus();
 }
 
-/// Offer a newer release. From an AppImage it can be downloaded and installed here;
-/// otherwise the download page is offered instead.
+/// Offer a newer release. From an AppImage, or on Windows with the installer, it can be
+/// downloaded and installed here (see [`self_update`]); on macOS the browser downloads
+/// the disk image; otherwise the download page is offered instead.
 ///
 /// # Arguments
 ///
 /// * `parent` - Window the dialog stays above
 /// * `manifest` - The newer release, from a verified manifest
-/// * `on_installed` - Called with the AppImage's path once the new version replaced it,
-///   to restart into it
+/// * `on_installed` - Called once the download is in place, with the program to start
+///   after quitting: the new AppImage, or on Windows the installer
 pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(PathBuf) + 'static) {
     let dialog = Dialog::new(parent, "Update Available");
     dialog.content.append(&dialog::text(
@@ -113,8 +114,8 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
         dialog.window.present();
         return;
     }
-    let Some(appimage) = update::running_appimage() else {
-        // Not an AppImage (e.g. built from source): nothing here can be replaced.
+    let Some((asset, target)) = self_update(&manifest) else {
+        // E.g. built from source on Linux: nothing here can be replaced.
         dialog.content.append(&dialog::text(
             "Download the new version from the ShuttleSCP web page.",
             &["dim-label"],
@@ -155,8 +156,8 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
             status.set_visible(true);
             status.set_label("Downloading...");
             start_download(
-                &manifest,
-                appimage.clone(),
+                asset.clone(),
+                target.clone(),
                 Widgets {
                     window: window.clone(),
                     bar: bar.clone(),
@@ -191,19 +192,18 @@ struct Widgets {
     install: gtk::Button,
 }
 
-/// Download the update on a worker thread, showing its progress, and install it.
+/// Download the update on a worker thread, showing its progress, and put it at `target`.
 fn start_download(
-    manifest: &Manifest,
-    appimage: PathBuf,
+    asset: update::Asset,
+    target: PathBuf,
     widgets: Widgets,
     cancel: Arc<AtomicBool>,
     on_installed: Rc<dyn Fn(PathBuf)>,
 ) {
-    let Some(dir) = appimage.parent().map(std::path::Path::to_path_buf) else {
+    let Some(dir) = target.parent().map(std::path::Path::to_path_buf) else {
         return;
     };
     let (sender, news) = mpsc::channel();
-    let asset = manifest.appimage.clone();
     tracing::info!("downloading update {}", asset.name);
     std::thread::spawn(move || {
         let result = update::download(
@@ -230,7 +230,7 @@ fn start_download(
                     ));
                 }
                 Download::Done(result) => {
-                    finish(result, &appimage, &widgets, on_installed.as_ref());
+                    finish(result, &target, &widgets, on_installed.as_ref());
                     return glib::ControlFlow::Break;
                 }
             }
@@ -239,18 +239,18 @@ fn start_download(
     });
 }
 
-/// The download ended: install it and restart, or say what went wrong.
+/// The download ended: put it in place and restart, or say what went wrong.
 fn finish(
     result: Result<PathBuf, String>,
-    appimage: &std::path::Path,
+    target: &std::path::Path,
     widgets: &Widgets,
     on_installed: &dyn Fn(PathBuf),
 ) {
-    let installed = result.and_then(|downloaded| update::install(&downloaded, appimage));
+    let installed = result.and_then(|downloaded| update::install(&downloaded, target));
     match installed {
         Ok(()) => {
             widgets.window.close();
-            on_installed(appimage.to_path_buf());
+            on_installed(target.to_path_buf());
         }
         // Closed during the download: nothing more to show.
         Err(_) if !widgets.window.is_visible() => {}
@@ -273,6 +273,25 @@ fn finish(
             });
         }
     }
+}
+
+/// What this copy of the app can update itself with: the release's file and where the
+/// download goes. On Linux that is the running AppImage, replaced in place; on Windows
+/// the installer, in a temporary folder, which runs once the app has closed. `None`
+/// when the app cannot update itself (a build from source on Linux; a release without
+/// a Windows installer).
+fn self_update(manifest: &Manifest) -> Option<(update::Asset, PathBuf)> {
+    if cfg!(windows) {
+        let asset = manifest.windows.clone()?;
+        // The name comes from the signed manifest; only its last part is used.
+        let name = std::path::Path::new(&asset.name).file_name()?.to_owned();
+        let dir = std::env::temp_dir().join("shuttlescp-update");
+        std::fs::create_dir_all(&dir)
+            .inspect_err(|error| tracing::warn!("cannot create {}: {error}", dir.display()))
+            .ok()?;
+        return Some((asset, dir.join(name)));
+    }
+    Some((manifest.appimage.clone(), update::running_appimage()?))
 }
 
 /// Open a web page in the desktop's browser.

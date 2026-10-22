@@ -1437,6 +1437,7 @@ fn unix_now() -> u64 {
 ///
 /// The environment the AppImage set up for this copy (paths into its mount, which goes
 /// away with it) is left out; the new AppImage sets up its own.
+#[cfg(unix)]
 fn restart_after_exit(program: &Path) {
     let mut command = std::process::Command::new("/bin/sh");
     command
@@ -1459,6 +1460,32 @@ fn restart_after_exit(program: &Path) {
     match command.spawn() {
         Ok(_) => tracing::info!("will start {} once closed", program.display()),
         Err(error) => tracing::error!("cannot restart into {}: {error}", program.display()),
+    }
+}
+
+/// Windows: run `installer` (the downloaded update) once this process has exited, so it
+/// can replace the app's files. PowerShell waits for this process, then starts the
+/// installer silently: it shows only its progress, and starts the new version when done.
+#[cfg(windows)]
+fn restart_after_exit(installer: &Path) {
+    use std::os::windows::process::CommandExt;
+
+    /// Process creation flag: no console window for PowerShell.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // PowerShell takes text in single quotes, with any quote inside doubled.
+    let quoted = installer.display().to_string().replace('\'', "''");
+    let script = format!(
+        "Wait-Process -Id {} -ErrorAction SilentlyContinue; \
+         Start-Process -FilePath '{quoted}' -ArgumentList '/SILENT','/NORESTART'",
+        std::process::id()
+    );
+    let spawned = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+    match spawned {
+        Ok(_) => tracing::info!("will run {} once closed", installer.display()),
+        Err(error) => tracing::error!("cannot run {}: {error}", installer.display()),
     }
 }
 

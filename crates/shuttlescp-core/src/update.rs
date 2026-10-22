@@ -68,6 +68,10 @@ pub struct Manifest {
     /// before it ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub macos: Option<Asset>,
+    /// The Windows installer, from 0.11 on. Earlier manifests have none, and apps before
+    /// it ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<Asset>,
 }
 
 /// A file of a release.
@@ -126,7 +130,10 @@ pub fn verify_manifest(
         .map_err(|_| String::from("the update is not signed by the ShuttleSCP release key"))?;
     let manifest: Manifest = serde_json::from_slice(manifest)
         .map_err(|error| format!("the update description cannot be read: {error}"))?;
-    for asset in std::iter::once(&manifest.appimage).chain(&manifest.macos) {
+    for asset in std::iter::once(&manifest.appimage)
+        .chain(&manifest.macos)
+        .chain(&manifest.windows)
+    {
         if !asset.url.starts_with(DOWNLOAD_PREFIX) {
             return Err(format!(
                 "the update would be downloaded from an unexpected place: {}",
@@ -366,6 +373,7 @@ mod tests {
                 sha256: hex(&Sha256::digest(b"hello world")),
             },
             macos: None,
+            windows: None,
         })
         .expect("serialize")
     }
@@ -526,6 +534,32 @@ mod tests {
 
         // Assert
         assert_eq!(read.macos, None);
+        assert_eq!(read.windows, None);
+    }
+
+    #[test]
+    fn a_windows_download_from_elsewhere_is_refused() {
+        // Arrange
+        let key = key_pair();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&manifest_json(&release_url())).expect("json");
+        value["windows"] = serde_json::json!({
+            "name": "ShuttleSCP-1.2.0-windows-x64-setup.exe",
+            "url": "https://example.com/setup.exe",
+            "size": 1,
+            "sha256": "00",
+        });
+        let manifest = serde_json::to_vec(&value).expect("serialize");
+
+        // Act
+        let result = verify_manifest(
+            &manifest,
+            key.sign(&manifest).as_ref(),
+            key.public_key().as_ref(),
+        );
+
+        // Assert
+        assert!(result.is_err_and(|error| error.contains("unexpected place")));
     }
 
     #[test]
