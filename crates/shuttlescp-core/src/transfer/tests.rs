@@ -377,6 +377,79 @@ async fn cancelled_job_copies_nothing() {
     assert!(!dst.join("top.txt.filepart").exists());
 }
 
+/// Run a job between two local folders, stopping the items named in `stop` as soon as
+/// the job is planned (as the user would from the transfer list).
+async fn run_local_stopping(job: Job, stop: &'static [&'static str]) -> JobSummary {
+    let cancel = CancelFlag::default();
+    let sink: Sink = {
+        let cancel = cancel.clone();
+        Arc::new(move |event: TransferEvent| {
+            if let TransferEvent::Planned(items) = event {
+                for item in items
+                    .iter()
+                    .filter(|item| stop.contains(&item.name.as_str()))
+                {
+                    cancel.stop_item(item.id);
+                }
+            }
+        })
+    };
+    execute(&job, Endpoint::Local, Some(Endpoint::Local), &cancel, &sink).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_file_is_left_out_and_the_rest_is_copied() {
+    let (_temp, src, dst) = setup();
+
+    let summary = run_local_stopping(
+        job(
+            JobKind::Copy,
+            vec![src.join("a"), src.join("top.txt")],
+            &dst,
+        ),
+        &["top.txt"],
+    )
+    .await;
+
+    // a, one.txt, sub, two.txt copied; top.txt stopped, with no partial copy left.
+    assert_eq!((summary.done, summary.stopped), (4, 1));
+    assert!(summary.is_complete(), "stopping a file is not a failure");
+    assert!(dst.join("a/sub/two.txt").exists());
+    assert!(!dst.join("top.txt").exists());
+    assert!(!dst.join("top.txt.filepart").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_keeps_a_stopped_file_and_its_folder() {
+    let (_temp, src, dst) = setup();
+
+    let summary =
+        run_local_stopping(job(JobKind::Move, vec![src.join("a")], &dst), &["one.txt"]).await;
+
+    // one.txt stays, so a stays too (stopped); sub and two.txt moved.
+    assert_eq!((summary.done, summary.stopped), (2, 2));
+    assert!(src.join("a/one.txt").exists());
+    assert!(!src.join("a/sub").exists());
+    assert!(dst.join("a/sub/two.txt").exists());
+    assert!(!dst.join("a/one.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_leaves_a_stopped_file_and_its_folder() {
+    let (_temp, src, _dst) = setup();
+
+    let summary = run_local_stopping(
+        job(JobKind::Delete, vec![src.join("a")], &src),
+        &["two.txt"],
+    )
+    .await;
+
+    // two.txt stays, so sub and a stay (stopped); one.txt deleted.
+    assert_eq!((summary.done, summary.stopped), (1, 3));
+    assert!(src.join("a/sub/two.txt").exists());
+    assert!(!src.join("a/one.txt").exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn create_folder_and_rename_refuse_taken_names() {
     let (_temp, src, _dst) = setup();

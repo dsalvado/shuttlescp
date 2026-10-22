@@ -23,6 +23,7 @@ mod meter;
 mod ops;
 mod plan;
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -313,6 +314,9 @@ pub enum ItemOutcome {
     Failed(String),
     /// The job was cancelled first.
     Cancelled,
+    /// The user stopped this item on its own; the rest of the job went on. A folder is
+    /// stopped when items inside it were (and nothing in it failed).
+    Stopped,
 }
 
 /// The totals of a finished job.
@@ -326,6 +330,8 @@ pub struct JobSummary {
     pub failed: usize,
     /// Items not done because the job was cancelled.
     pub cancelled: usize,
+    /// Items the user stopped on their own (the job is still complete without them).
+    pub stopped: usize,
     /// Bytes of the files copied (0 for deletes).
     pub bytes: u64,
     /// Why the job could not start at all (e.g. a source could not be read).
@@ -430,11 +436,26 @@ pub enum TransferEvent {
     JobFinished(JobSummary),
 }
 
-/// Asks a running job to stop. Clones share the request.
+/// Asks a running job to stop, or to leave out some of its items. Clones share the
+/// requests.
 #[derive(Debug, Clone, Default)]
-pub struct CancelFlag(Arc<AtomicBool>);
+pub struct CancelFlag(Arc<AtomicBool>, Arc<Mutex<HashSet<usize>>>);
 
 impl CancelFlag {
+    /// Ask the job to leave out one item (by id): a file being copied stops at its next
+    /// chunk and its partial copy is deleted; a file not started is not copied. The
+    /// rest of the job goes on. For a folder, stop each item inside it.
+    pub fn stop_item(&self, id: usize) {
+        if let Ok(mut stopped) = self.1.lock() {
+            stopped.insert(id);
+        }
+    }
+
+    /// Whether the user asked to leave out this item.
+    pub fn is_item_stopped(&self, id: usize) -> bool {
+        self.1.lock().is_ok_and(|stopped| stopped.contains(&id))
+    }
+
     /// Ask the job to stop: files being copied stop at their next chunk and their
     /// partial copies are deleted; items not started are skipped.
     pub fn cancel(&self) {
@@ -566,6 +587,7 @@ async fn execute(
             ItemOutcome::Skipped => summary.skipped += 1,
             ItemOutcome::Failed(_) => summary.failed += 1,
             ItemOutcome::Cancelled => summary.cancelled += 1,
+            ItemOutcome::Stopped => summary.stopped += 1,
         }
     }
     summary

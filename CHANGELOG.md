@@ -7,6 +7,13 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- A single file or folder can be stopped while the rest of its transfer goes on: each
+  unfinished item in the Queue has its own stop button. A stopped file's partial copy
+  is removed (when moving, it stays where it was), and the transfer still counts as
+  completed ("1 stopped").
+
 ### Changed
 
 - Selecting several files works as in a file manager: press the left button on an empty

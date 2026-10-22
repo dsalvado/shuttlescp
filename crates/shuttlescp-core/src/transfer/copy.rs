@@ -125,6 +125,11 @@ pub(super) async fn copy_items(
             finish(&mut outcomes, item.id, ItemOutcome::Cancelled);
             continue;
         }
+        if cancel.is_item_stopped(item.id) {
+            tracing::info!("stopped by the user before copying: {}", item.source);
+            finish(&mut outcomes, item.id, ItemOutcome::Stopped);
+            continue;
+        }
         let (item, src, dst, cancel, sink) = (
             item.clone(),
             src.clone(),
@@ -238,6 +243,10 @@ async fn settle_conflicts(
             settled(item.id, ItemOutcome::Cancelled);
             continue;
         }
+        if cancel.is_item_stopped(item.id) {
+            settled(item.id, ItemOutcome::Stopped);
+            continue;
+        }
         if item.existing_is_dir {
             settled(
                 item.id,
@@ -334,6 +343,9 @@ async fn folder_outcome(
         ItemOutcome::Failed(String::from("some items inside it failed"))
     } else if inside().any(|outcome| matches!(outcome, Some(ItemOutcome::Cancelled) | None)) {
         ItemOutcome::Cancelled
+    } else if inside().any(|outcome| outcome == Some(&ItemOutcome::Stopped)) {
+        // Stopped files are not there (or, when moving, still here with this folder).
+        ItemOutcome::Stopped
     } else if delete_source {
         // Some files were skipped, so their sources (and this folder) stay.
         ItemOutcome::Skipped
@@ -403,10 +415,14 @@ async fn copy_file(
     }
     match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
         Ok(()) => {}
-        Err(ItemOutcome::Cancelled) => {
-            // Cancelling means the user wants the copy gone, not kept for later.
+        Err(outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped)) => {
+            // Cancelling (or stopping this file) means the user wants the copy gone,
+            // not kept for later.
             let _ = dst.remove_file(&partial).await;
-            return ItemOutcome::Cancelled;
+            if outcome == ItemOutcome::Stopped {
+                tracing::info!("stopped by the user: {}", item.source);
+            }
+            return outcome;
         }
         Err(outcome) => {
             if let ItemOutcome::Failed(error) = &outcome {
@@ -518,6 +534,9 @@ async fn copy_contents(
         if cancel.is_cancelled() {
             return Err(ItemOutcome::Cancelled);
         }
+        if cancel.is_item_stopped(item.id) {
+            return Err(ItemOutcome::Stopped);
+        }
         let read = reader.read(&mut buffer).await.map_err(|error| {
             ItemOutcome::Failed(format!("cannot read {}: {error}", item.source))
         })?;
@@ -559,16 +578,21 @@ pub(super) async fn delete_items(
     // Children always come after their parent, so going backwards empties each folder
     // before it is removed.
     for item in items.iter().rev() {
+        let inside = || children[item.id].iter().map(|&child| &outcomes[child]);
         let outcome = if cancel.is_cancelled() {
             ItemOutcome::Cancelled
+        } else if cancel.is_item_stopped(item.id)
+            || (item.kind == ItemKind::Folder
+                && inside().any(|outcome| *outcome == ItemOutcome::Stopped)
+                && inside()
+                    .all(|outcome| matches!(outcome, ItemOutcome::Done | ItemOutcome::Stopped)))
+        {
+            // Left as it is, with whatever the user stopped inside it.
+            ItemOutcome::Stopped
         } else {
             match item.kind {
                 ItemKind::File => src.remove_file(&item.source).await,
-                ItemKind::Folder
-                    if children[item.id]
-                        .iter()
-                        .all(|&child| outcomes[child] == ItemOutcome::Done) =>
-                {
+                ItemKind::Folder if inside().all(|outcome| *outcome == ItemOutcome::Done) => {
                     src.remove_dir(&item.source).await
                 }
                 ItemKind::Folder => Err(String::from("some items inside it were not deleted")),
@@ -586,6 +610,7 @@ pub(super) async fn delete_items(
                 item.source
             ),
             ItemOutcome::Failed(error) => tracing::warn!("{error}"),
+            ItemOutcome::Stopped => tracing::info!("not deleted (stopped): {}", item.source),
             ItemOutcome::Skipped | ItemOutcome::Cancelled => {}
         }
         sink(TransferEvent::ItemFinished {

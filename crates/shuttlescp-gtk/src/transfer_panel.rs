@@ -162,6 +162,14 @@ pub enum TransferPanelMsg {
     Start(Job),
     /// Stop the job with this id.
     Cancel(u64),
+    /// Leave one file (or a folder, with everything in it) out of a running job; the
+    /// rest goes on.
+    StopItem {
+        /// The job.
+        job: u64,
+        /// The file or folder.
+        item: usize,
+    },
     /// Run an unfinished job again, continuing where it stopped.
     Retry(u64),
     /// Show or hide the contents of a job (`item` is `None`) or folder.
@@ -466,6 +474,25 @@ impl Component for TransferPanel {
                     tracing::info!("cancelling transfer {id}");
                     job.user_cancelled = true;
                     job.cancel.cancel();
+                }
+            }
+            TransferPanelMsg::StopItem { job: id, item } => {
+                if let Some(job) = self.shared.borrow().jobs.get(&id) {
+                    // The item and everything inside it that has not finished yet.
+                    let mut stopping = vec![item];
+                    while let Some(current) = stopping.pop() {
+                        if job
+                            .items
+                            .get(current)
+                            .is_some_and(|state| state.outcome.is_none())
+                        {
+                            job.cancel.stop_item(current);
+                        }
+                        stopping.extend(job.children.get(current).into_iter().flatten());
+                    }
+                    if let Some(state) = job.items.get(item) {
+                        tracing::info!("stopping {} in transfer {id}", state.source);
+                    }
                 }
             }
             TransferPanelMsg::Retry(id) => self.retry(id, &sender),
@@ -1324,6 +1351,8 @@ struct RowView {
     error: bool,
     status: Option<&'static str>,
     can_cancel: bool,
+    /// What the Cancel button does, as its tooltip.
+    cancel_tooltip: &'static str,
     can_retry: bool,
     /// A finished job's header: it can be removed from the list.
     can_remove: bool,
@@ -1360,6 +1389,7 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.info, "error", row.error);
     widgets.status.set_icon_name(row.status);
     widgets.cancel.set_visible(row.can_cancel);
+    widgets.cancel.set_tooltip_text(Some(row.cancel_tooltip));
     widgets.retry.set_visible(row.can_retry);
     widgets
         .status
@@ -1427,6 +1457,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         error,
         status,
         can_cancel: job.is_running(),
+        cancel_tooltip: "Cancel the whole transfer",
         can_retry: job
             .summary
             .as_ref()
@@ -1447,7 +1478,12 @@ fn summary_text(job: &JobState, summary: &JobSummary) -> (String, bool, Option<&
     };
     let (cancelled, skipped) = (
         count(summary.cancelled, "cancelled"),
-        count(summary.skipped, "skipped"),
+        // Stopped and skipped items alike were left out on purpose.
+        format!(
+            "{}{}",
+            count(summary.skipped, "skipped"),
+            count(summary.stopped, "stopped")
+        ),
     );
     if let Some(error) = &summary.error {
         (error.clone(), true, Some(FAILED_ICON))
@@ -1468,7 +1504,7 @@ fn summary_text(job: &JobState, summary: &JobSummary) -> (String, bool, Option<&
         )
     } else if job.job.kind == JobKind::Delete {
         (
-            format!("{} deleted", items_text(summary.done)),
+            format!("{} deleted{skipped}", items_text(summary.done)),
             false,
             Some(DONE_ICON),
         )
@@ -1498,6 +1534,12 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         ),
         Some(ItemOutcome::Failed(error)) => (error.clone(), true, Some(FAILED_ICON)),
         Some(ItemOutcome::Cancelled) => (String::from("Cancelled"), false, Some(STOPPED_ICON)),
+        Some(ItemOutcome::Stopped) if deleting => (
+            String::from("Stopped: not deleted"),
+            false,
+            Some(STOPPED_ICON),
+        ),
+        Some(ItemOutcome::Stopped) => (String::from("Stopped"), false, Some(STOPPED_ICON)),
         None if item.asking => (
             String::from("Already exists: waiting for your answer"),
             false,
@@ -1534,7 +1576,12 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         info,
         error,
         status,
-        can_cancel: false,
+        // A file or folder not done yet can be left out while the rest goes on.
+        can_cancel: job.is_running() && item.outcome.is_none() && !item.asking,
+        cancel_tooltip: match item.kind {
+            ItemKind::File => "Stop this file; the rest goes on",
+            ItemKind::Folder => "Stop this folder; the rest goes on",
+        },
         can_retry: false,
         can_remove: false,
     }
@@ -1718,7 +1765,10 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
         group.add_action(&action);
     };
     add("toggle", |job, item| TransferPanelMsg::Toggle { job, item });
-    add("cancel", |job, _| TransferPanelMsg::Cancel(job));
+    add("cancel", |job, item| match item {
+        None => TransferPanelMsg::Cancel(job),
+        Some(item) => TransferPanelMsg::StopItem { job, item },
+    });
     add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
     add("retry", |job, _| TransferPanelMsg::Retry(job));
     page.insert_action_group(ACTION_GROUP, Some(&group));
