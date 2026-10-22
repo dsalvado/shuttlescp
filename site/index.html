@@ -198,6 +198,10 @@
   ol li { margin-bottom: 6px; }
   footer { margin-top: 40px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding-top: 16px; }
 </style>
+<!-- Visit counts (Umami on the author's own server: no cookies, no personal data). -->
+<script defer src="https://analytics.dsalvado.ca/script.js"
+        data-website-id="c864ac17-65f7-420c-96c9-7fe7884ec8a8"
+        data-domains="shuttlescp.dsalvado.ca"></script>
 </head>
 <body>
 <main>
@@ -221,11 +225,11 @@
     <div class="version" id="release-version">Looking up the latest release…</div>
     <div class="meta" id="release-meta"></div>
     <div class="actions" id="download-actions">
-      <a class="button" id="download-linux" href="https://github.com/dsalvado/shuttlescp/releases/latest">Download</a>
-      <a class="button secondary" id="download-macos" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for macOS</a>
-      <a class="button secondary" id="download-windows" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for Windows</a>
-      <a id="all-releases" href="https://github.com/dsalvado/shuttlescp/releases">All releases</a>
-      <a id="checksums" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>SHA-256 checksums</a>
+      <a class="button" id="download-linux" data-umami-event="download-linux" href="https://github.com/dsalvado/shuttlescp/releases/latest">Download</a>
+      <a class="button secondary" id="download-macos" data-umami-event="download-macos" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for macOS</a>
+      <a class="button secondary" id="download-windows" data-umami-event="download-windows" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for Windows</a>
+      <a id="all-releases" data-umami-event="all-releases" href="https://github.com/dsalvado/shuttlescp/releases">All releases</a>
+      <a id="checksums" data-umami-event="checksums" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>SHA-256 checksums</a>
     </div>
     <div class="os-note" id="windows-note" hidden>
       <p><strong>On Windows, the first time you run the installer:</strong> if Windows says
@@ -334,7 +338,8 @@ cargo run --release</code></pre>
     Made by David Salvador · <a href="https://dsalvado.ca">dsalvado.ca</a><br>
     ShuttleSCP is free software under the
     <a href="https://github.com/dsalvado/shuttlescp/blob/master/LICENSE">GNU GPL, version 3 or later</a>.
-    Source code, issues and releases on <a href="https://github.com/dsalvado/shuttlescp">GitHub</a>.
+    Source code, issues and releases on <a href="https://github.com/dsalvado/shuttlescp">GitHub</a>.<br>
+    Visits are counted with <a href="https://umami.is">Umami</a> on my own server, without cookies.
   </footer>
  </div>
 </main>
