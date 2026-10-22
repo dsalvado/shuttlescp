@@ -4,6 +4,7 @@
 //! entry whose name matches the app id, not from the window. So at startup the app
 //! writes (or updates) `~/.local/share/applications/<app id>.desktop`, which also makes
 //! ShuttleSCP appear in the desktop's app launcher. Other systems only get the icon.
+//! Development builds do not replace an existing entry.
 
 use std::path::Path;
 
@@ -63,6 +64,12 @@ pub fn install(app_id: &str) {
         }
     }
     let path = applications.join(format!("{app_id}.desktop"));
+    // A development build (`cargo run`) leaves an existing entry alone: otherwise the
+    // app launcher would start the developer's debug build instead of the installed
+    // AppImage. Without any entry it writes one, for the icon.
+    if cfg!(debug_assertions) && path.exists() {
+        return;
+    }
     let entry = entry_text(app_id, &exe);
     if std::fs::read_to_string(&path).is_ok_and(|current| current == entry) {
         return;

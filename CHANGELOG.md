@@ -7,6 +7,12 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- A ShuttleSCP built from source in debug mode (`cargo run`) no longer takes over the
+  app launcher's ShuttleSCP entry, which then started that build instead of the
+  installed AppImage.
+
 ## [0.12.0] - 2026-10-22
 
 ### Added
