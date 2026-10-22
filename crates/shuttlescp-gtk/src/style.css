@@ -69,6 +69,21 @@ window.csd.tiled-left {
     font-size: smaller;
 }
 
+/* The status bar's update notice: as low as the bar's text, in the accent colour so it
+   is noticed, with a small close button after it. */
+.statusbar .update-notice button {
+    min-height: 0;
+    min-width: 0;
+    padding: 0 4px;
+}
+.statusbar .update-notice button:first-child {
+    color: @theme_selected_bg_color;
+    font-weight: bold;
+}
+.statusbar .update-notice image {
+    -gtk-icon-size: 10px;
+}
+
 /* Visible, easy to grab divider between the local and remote panes. Many themes draw
    the wide handle almost transparent. */
 paned.pane-split > separator.wide {

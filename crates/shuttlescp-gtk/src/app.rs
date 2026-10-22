@@ -268,9 +268,19 @@ pub enum AppMsg {
     },
     /// The user turned the automatic update check on or off.
     AutoUpdateChecks(bool),
-    /// A new version replaced this AppImage: restart into it (asking first while
-    /// transfers run).
-    RestartIntoUpdate(PathBuf),
+    /// A new version is in place (the AppImage replaced, or on Windows the installer
+    /// downloaded): restart into it (asking first while transfers run).
+    RestartIntoUpdate {
+        /// The program to start after quitting.
+        program: PathBuf,
+        /// The new version, for the status bar until the restart.
+        version: String,
+    },
+    /// The status bar's update notice was clicked: offer the update again, or restart
+    /// into the installed one.
+    ShowUpdate,
+    /// The status bar's update notice was closed.
+    DismissUpdateNotice,
     /// Restart into the new version without asking.
     RestartNow(PathBuf),
     /// The main window was resized, maximized or restored.
@@ -318,6 +328,24 @@ pub struct App {
     restart_with: Option<PathBuf>,
     /// A look for a newer release is under way.
     checking_for_updates: bool,
+    /// What the status bar says about a newer release, until it is installed or the
+    /// user closes the notice.
+    update_notice: Option<UpdateNotice>,
+}
+
+/// The status bar's notice of a newer release.
+#[derive(Debug, Clone)]
+enum UpdateNotice {
+    /// A newer release is out; clicking the notice offers it. (Boxed: a manifest is far
+    /// larger than the other variant.)
+    Available(Box<Manifest>),
+    /// The new version is in place; restarting finishes the update.
+    Installed {
+        /// The new version.
+        version: String,
+        /// The program to start after quitting.
+        program: PathBuf,
+    },
 }
 
 #[relm4::component(pub)]
@@ -388,6 +416,32 @@ impl SimpleComponent for App {
                             set_xalign: 0.0,
                             #[watch]
                             set_label: &model.connection_status(),
+                        },
+                        // A newer release: click to see it, x to hide the notice.
+                        gtk::Box {
+                            add_css_class: "update-notice",
+                            #[watch]
+                            set_visible: model.update_notice.is_some(),
+
+                            gtk::Button {
+                                add_css_class: "flat",
+                                #[watch]
+                                set_label: &model.update_notice_text(),
+                                #[watch]
+                                set_tooltip_text: Some(&model.update_notice_tooltip()),
+                                connect_clicked => AppMsg::ShowUpdate,
+                            },
+                            gtk::Button {
+                                add_css_class: "flat",
+                                set_icon_name: "window-close-symbolic",
+                                set_tooltip_text: Some("Hide this notice"),
+                                connect_clicked => AppMsg::DismissUpdateNotice,
+                            },
+                        },
+                        gtk::Separator {
+                            set_orientation: gtk::Orientation::Vertical,
+                            #[watch]
+                            set_visible: model.update_notice.is_some(),
                         },
                         gtk::Label {
                             #[watch]
@@ -514,6 +568,7 @@ impl SimpleComponent for App {
             quitting,
             restart_with: None,
             checking_for_updates: false,
+            update_notice: None,
         };
         // The "New Connection" tab, always last: clicking it opens the Login dialog.
         let new_tab = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -601,19 +656,36 @@ impl SimpleComponent for App {
                 self.config.set_check_for_updates(check);
                 self.save_config();
             }
-            AppMsg::RestartIntoUpdate(path) if self.running_transfers.get() > 0 => {
-                self.confirm_stopping_transfers(
-                    self.running_transfers.get(),
-                    "Restart",
-                    "Restart into the new version?",
-                    "Restart",
-                    &sender,
-                    move || AppMsg::RestartNow(path.clone()),
-                );
+            AppMsg::RestartIntoUpdate { program, version } => {
+                // Kept in the status bar in case the restart is put off.
+                self.update_notice = Some(UpdateNotice::Installed {
+                    version,
+                    program: program.clone(),
+                });
+                if self.running_transfers.get() > 0 {
+                    self.confirm_stopping_transfers(
+                        self.running_transfers.get(),
+                        "Restart",
+                        "Restart into the new version?",
+                        "Restart",
+                        &sender,
+                        move || AppMsg::RestartNow(program.clone()),
+                    );
+                } else {
+                    self.restart_into(program);
+                }
             }
-            AppMsg::RestartIntoUpdate(path) | AppMsg::RestartNow(path) => {
-                self.restart_with = Some(path);
-                self.quit(RESTARTING_FOR_UPDATE);
+            AppMsg::RestartNow(program) => self.restart_into(program),
+            AppMsg::ShowUpdate => match self.update_notice.clone() {
+                Some(UpdateNotice::Available(manifest)) => self.offer_update(*manifest, &sender),
+                Some(UpdateNotice::Installed { version, program }) => {
+                    sender.input(AppMsg::RestartIntoUpdate { program, version });
+                }
+                None => {}
+            },
+            AppMsg::DismissUpdateNotice => {
+                tracing::info!("update notice hidden");
+                self.update_notice = None;
             }
             AppMsg::ThemeSelected(choice) => {
                 if &choice == self.config.theme() {
@@ -665,6 +737,9 @@ impl SimpleComponent for App {
                 }
                 let start = self.sessions[0].local_dir.clone();
                 self.add_session(start, self.session_notebook.width() / 2, &sender);
+                self.update_notice = Some(UpdateNotice::Available(Box::new(
+                    crate::ui_gallery::sample_manifest(),
+                )));
             }
             AppMsg::Disconnect => {
                 if let Some(index) = self.current_index() {
@@ -1046,6 +1121,49 @@ impl App {
                 .is_none_or(|last| now.saturating_sub(last) >= UPDATE_CHECK_INTERVAL.as_secs())
     }
 
+    /// Offer a newer release in the update dialog; once it is in place, restart into it.
+    fn offer_update(&self, manifest: Manifest, sender: &ComponentSender<Self>) {
+        let (sender, version) = (sender.clone(), manifest.version.clone());
+        update_dialog::offer(self.window.upcast_ref(), manifest, move |program| {
+            sender.input(AppMsg::RestartIntoUpdate {
+                program,
+                version: version.clone(),
+            });
+        });
+    }
+
+    /// Quit, then start `program`: the new AppImage, or on Windows the installer.
+    fn restart_into(&mut self, program: PathBuf) {
+        self.restart_with = Some(program);
+        self.quit(RESTARTING_FOR_UPDATE);
+    }
+
+    /// The status bar's update notice.
+    fn update_notice_text(&self) -> String {
+        match &self.update_notice {
+            Some(UpdateNotice::Available(manifest)) => {
+                format!("Update available: {}", manifest.version)
+            }
+            Some(UpdateNotice::Installed { .. }) => String::from("Restart to finish updating"),
+            None => String::new(),
+        }
+    }
+
+    /// What clicking the status bar's update notice does.
+    fn update_notice_tooltip(&self) -> String {
+        match &self.update_notice {
+            Some(UpdateNotice::Available(manifest)) => format!(
+                "ShuttleSCP {} is available (you have {}). Click to see it.",
+                manifest.version,
+                env!("CARGO_PKG_VERSION")
+            ),
+            Some(UpdateNotice::Installed { version, .. }) => {
+                format!("ShuttleSCP {version} is ready. Click to restart into it.")
+            }
+            None => String::new(),
+        }
+    }
+
     /// Look for a newer release on a worker thread (it waits on the network).
     fn check_for_updates(&mut self, asked: bool, sender: &ComponentSender<Self>) {
         if self.checking_for_updates {
@@ -1076,10 +1194,15 @@ impl App {
         match result {
             Ok(Some(manifest)) => {
                 tracing::info!("version {} is available", manifest.version);
-                let sender = sender.clone();
-                update_dialog::offer(window, manifest, move |path| {
-                    sender.input(AppMsg::RestartIntoUpdate(path));
-                });
+                if let Some(UpdateNotice::Installed { .. }) = self.update_notice {
+                    // Already downloaded: only the restart is left.
+                    if asked {
+                        sender.input(AppMsg::ShowUpdate);
+                    }
+                    return;
+                }
+                self.update_notice = Some(UpdateNotice::Available(Box::new(manifest.clone())));
+                self.offer_update(manifest, sender);
             }
             Ok(None) => {
                 tracing::info!("ShuttleSCP is up to date");

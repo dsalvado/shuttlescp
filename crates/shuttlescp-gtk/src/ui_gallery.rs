@@ -132,34 +132,7 @@ pub fn run(
         (
             "update-available",
             Box::new(|window| {
-                let repository = env!("CARGO_PKG_REPOSITORY");
-                update_dialog::offer(
-                    window,
-                    shuttlescp_core::update::Manifest {
-                        version: String::from("1.0.0"),
-                        published: String::from("2026-11-02T09:00:00Z"),
-                        notes_url: format!("{repository}/releases/tag/v1.0.0"),
-                        appimage: shuttlescp_core::update::Asset {
-                            name: String::from("ShuttleSCP-1.0.0-x86_64.AppImage"),
-                            url: format!("{repository}/releases/download/v1.0.0/x.AppImage"),
-                            size: 0,
-                            sha256: String::new(),
-                        },
-                        macos: Some(shuttlescp_core::update::Asset {
-                            name: String::from("ShuttleSCP-1.0.0-macos-arm64.dmg"),
-                            url: format!("{repository}/releases/download/v1.0.0/x.dmg"),
-                            size: 0,
-                            sha256: String::new(),
-                        }),
-                        windows: Some(shuttlescp_core::update::Asset {
-                            name: String::from("ShuttleSCP-1.0.0-windows-x64-setup.exe"),
-                            url: format!("{repository}/releases/download/v1.0.0/x.exe"),
-                            size: 0,
-                            sha256: String::new(),
-                        }),
-                    },
-                    |_| {},
-                );
+                update_dialog::offer(window, sample_manifest(), |_| {});
             }),
         ),
         (
@@ -286,5 +259,24 @@ fn save_png(window: &gtk::Widget, path: &std::path::Path) {
     match texture.save_to_png(path) {
         Ok(()) => tracing::info!("UI gallery: saved {}", path.display()),
         Err(error) => tracing::warn!("UI gallery: cannot save {}: {error}", path.display()),
+    }
+}
+
+/// A made-up release 1.0.0, to picture the update dialog and the status bar's notice.
+pub fn sample_manifest() -> shuttlescp_core::update::Manifest {
+    let repository = env!("CARGO_PKG_REPOSITORY");
+    let asset = |name: &str, file: &str| shuttlescp_core::update::Asset {
+        name: String::from(name),
+        url: format!("{repository}/releases/download/v1.0.0/{file}"),
+        size: 0,
+        sha256: String::new(),
+    };
+    shuttlescp_core::update::Manifest {
+        version: String::from("1.0.0"),
+        published: String::from("2026-11-02T09:00:00Z"),
+        notes_url: format!("{repository}/releases/tag/v1.0.0"),
+        appimage: asset("ShuttleSCP-1.0.0-x86_64.AppImage", "x.AppImage"),
+        macos: Some(asset("ShuttleSCP-1.0.0-macos-arm64.dmg", "x.dmg")),
+        windows: Some(asset("ShuttleSCP-1.0.0-windows-x64-setup.exe", "x.exe")),
     }
 }

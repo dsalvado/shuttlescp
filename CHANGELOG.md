@@ -11,6 +11,10 @@ becomes its release notes on GitHub.
 
 - Double-clicking a file in the local pane (or pressing Enter on it) opens it in the app
   your system uses for that type, as the file manager would.
+- A newer release is shown in the status bar ("Update available: 1.0.0") until it is
+  installed or the notice is closed, so it is not missed while another dialog is open.
+  Clicking it offers the update again; once the update is in place it reads "Restart
+  to finish updating".
 
 ## [0.11.0] - 2026-10-21
 
