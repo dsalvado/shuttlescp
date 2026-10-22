@@ -99,8 +99,8 @@
   .download .version { font-size: 1.15rem; font-weight: 600; }
   .download .meta, .download p.meta { color: var(--muted); font-size: 0.92rem; }
   .download p.meta { margin: 14px 0 0; }
-  /* What macOS asks the first time, shown before anyone downloads. */
-  .mac-note {
+  /* What macOS or Windows asks the first time, shown before anyone downloads. */
+  .os-note {
     margin-top: 16px;
     padding: 10px 14px;
     border-left: 3px solid var(--accent);
@@ -108,8 +108,8 @@
     background: var(--accent-soft);
     font-size: 0.92rem;
   }
-  .mac-note p { margin: 0; }
-  .mac-note p + p { margin-top: 4px; color: var(--muted); }
+  .os-note p { margin: 0; }
+  .os-note p + p { margin-top: 4px; color: var(--muted); }
   .pill {
     display: inline-block;
     margin-left: 8px;
@@ -238,7 +238,7 @@
     </svg>
     <div>
       <h1>ShuttleSCP</h1>
-      <p>A graphical SFTP, SCP and FTP client for Linux and macOS, inspired by WinSCP.</p>
+      <p>A graphical SFTP, SCP and FTP client for Linux, macOS and Windows, inspired by WinSCP.</p>
     </div>
   </header>
 
@@ -249,10 +249,17 @@
     <div class="actions" id="download-actions">
       <a class="button" id="download-linux" href="https://github.com/dsalvado/shuttlescp/releases/latest">Download</a>
       <a class="button secondary" id="download-macos" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for macOS</a>
+      <a class="button secondary" id="download-windows" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for Windows</a>
       <a id="all-releases" href="https://github.com/dsalvado/shuttlescp/releases">All releases</a>
       <a id="checksums" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>SHA-256 checksums</a>
     </div>
-    <div class="mac-note" id="mac-note">
+    <div class="os-note" id="windows-note" hidden>
+      <p><strong>On Windows, the first time you run the installer:</strong> if Windows says
+        "Windows protected your PC", click "More info", then "Run anyway".</p>
+      <p>ShuttleSCP is free and its installer is not signed with a paid code-signing certificate,
+        so Windows SmartScreen asks this once. <a href="#install-windows">Install steps</a></p>
+    </div>
+    <div class="os-note" id="mac-note">
       <p><strong>On a Mac, the first time you open it:</strong> right-click (or Control-click)
         ShuttleSCP in Applications, choose Open, then Open again.</p>
       <p>ShuttleSCP is free and is not signed with a paid Apple Developer ID, so macOS asks this
@@ -302,6 +309,20 @@
       Updates in the Help menu).</li>
   </ol>
   <p>It needs a Mac with Apple silicon (M1 or later) and macOS 14 (Sonoma) or newer.</p>
+  <!-- Shown once the latest release has a Windows installer (script below). -->
+  <div id="install-windows-steps" hidden>
+  <h3 class="platform" id="install-windows">Windows</h3>
+  <ol>
+    <li>Download the installer above and run it. It installs ShuttleSCP for your user only, with
+      no administrator rights needed, and adds it to the Start menu.</li>
+    <li>The first time, Windows SmartScreen may say "Windows protected your PC": click "More info",
+      then "Run anyway". ShuttleSCP is free and its installer is not signed with a paid
+      code-signing certificate, so Windows asks this once.</li>
+    <li>ShuttleSCP checks for new versions and can update itself (Help › Check for Updates). To
+      remove it, use Settings › Apps.</li>
+  </ol>
+  <p>It needs 64-bit Windows 10 or 11.</p>
+  </div>
   <p>To check a download by hand, compare it with the release's checksums:
     <code>sha256sum --check SHA256SUMS</code> (on a Mac: <code>shasum -a 256 --check SHA256SUMS</code>).</p>
 
@@ -312,7 +333,7 @@
     <div class="feature"><h3>Two panes</h3><p>This computer on the left, the server on the right; drag and drop between them.</p></div>
     <div class="feature"><h3>Several connections</h3><p>Each in its own tab and colour, with its own transfer lists.</p></div>
     <div class="feature"><h3>Safe transfers</h3><p>Asks before replacing files; interrupted transfers continue where they stopped.</p></div>
-    <div class="feature"><h3>Passwords kept safe</h3><p>Saved in GNOME Keyring or KWallet on Linux and the Keychain on macOS, never in a plain file.</p></div>
+    <div class="feature"><h3>Passwords kept safe</h3><p>Saved in GNOME Keyring or KWallet on Linux, the Keychain on macOS and the Credential Manager on Windows, never in a plain file.</p></div>
     <div class="feature"><h3>Signed updates</h3><p>Updates are only offered when signed with the ShuttleSCP release key.</p></div>
   </div>
 
@@ -325,7 +346,8 @@
 cd shuttlescp
 cargo run --release</code></pre>
   <p>On a Mac, <code>packaging/macos/run-dev.sh</code> runs it as an app, with its own icon in the
-    Dock.</p>
+    Dock. On Windows, GTK comes from <a href="https://www.msys2.org">MSYS2</a> and Rust builds with
+    its GNU toolchain; see <a href="https://github.com/dsalvado/shuttlescp/blob/master/BUILDING.md">BUILDING.md</a>.</p>
 
   <h2>How it was built</h2>
   <p>ShuttleSCP was built with <a href="https://claude.com/claude-code">Claude Code</a>,
@@ -398,11 +420,22 @@ cargo run --release</code></pre>
     const actions = document.getElementById("download-actions");
     const linux = document.getElementById("download-linux");
     const macos = document.getElementById("download-macos");
+    const windows = document.getElementById("download-windows");
+    const macNote = document.getElementById("mac-note");
+    const windowsNote = document.getElementById("windows-note");
     const checksums = document.getElementById("checksums");
     const notes = document.getElementById("release-notes");
     const comingSoon = document.getElementById("coming-soon");
     // The visitor's system, to put its download first.
-    const onMac = /mac/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? "");
+    const platform = navigator.userAgentData?.platform ?? navigator.platform ?? "";
+    const onMac = /mac/i.test(platform);
+    const onWindows = /win/i.test(platform);
+    // Put a download first and highlight it, the others staying secondary.
+    const putFirst = (button) => {
+      for (const other of [linux, macos, windows]) other.classList.add("secondary");
+      button.classList.remove("secondary");
+      actions.prepend(button);
+    };
     try {
       const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
         // Asks for the release notes already turned into (GitHub-sanitised) HTML.
@@ -418,6 +451,7 @@ cargo run --release</code></pre>
       const release = await response.json();
       const appimage = release.assets.find((asset) => asset.name.endsWith(".AppImage"));
       const dmg = release.assets.find((asset) => asset.name.endsWith(".dmg"));
+      const setup = release.assets.find((asset) => asset.name.endsWith("-windows-x64-setup.exe"));
       const sums = release.assets.find((asset) => asset.name === "SHA256SUMS");
       const megabytes = (asset) => (asset.size / (1024 * 1024)).toFixed(0);
       const date = new Date(release.published_at).toLocaleDateString(undefined, {
@@ -444,15 +478,29 @@ cargo run --release</code></pre>
         macos.href = dmg.browser_download_url;
         macos.hidden = false;
         offered.push(`macOS disk image, Apple silicon, ${megabytes(dmg)} MB`);
-        // A Mac visitor gets the Mac download first and highlighted.
-        if (onMac) {
-          actions.prepend(macos);
-          macos.classList.remove("secondary");
-          linux.classList.add("secondary");
-        }
       } else {
-        comingSoon.textContent = "macOS and Windows versions are coming soon.";
-        document.getElementById("mac-note").hidden = true;
+        macNote.hidden = true;
+      }
+      if (setup) {
+        windows.href = setup.browser_download_url;
+        windows.hidden = false;
+        windowsNote.hidden = false;
+        document.getElementById("install-windows-steps").hidden = false;
+        offered.push(`Windows installer, 64-bit, ${megabytes(setup)} MB`);
+      }
+      // A Mac or Windows visitor gets their download first and highlighted, and only
+      // their system's first-run note.
+      if (onMac && dmg) {
+        putFirst(macos);
+        windowsNote.hidden = true;
+      } else if (onWindows && setup) {
+        putFirst(windows);
+        macNote.hidden = true;
+      }
+      const missing = [dmg ? null : "macOS", setup ? null : "Windows"].filter(Boolean);
+      comingSoon.hidden = missing.length === 0;
+      if (missing.length > 0) {
+        comingSoon.textContent = `${missing.length === 1 ? "A " : ""}${missing.join(" and ")} version${missing.length === 1 ? " is" : "s are"} coming soon.`;
       }
       meta.textContent = [`Released ${date}`, ...offered].join(" · ");
       if (sums) {
