@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use relm4::gtk::prelude::*;
 use relm4::gtk::{self, glib, graphene};
 
-use shuttlescp_core::transfer::FileInfo;
+use shuttlescp_core::transfer::{FileInfo, Side};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::conflict_dialog;
@@ -98,6 +98,7 @@ pub fn run(
                         prompt: "New name for report.pdf:",
                         initial: "report.pdf",
                         confirm_label: "Rename",
+                        side: Side::Local,
                     },
                     |_| {},
                 );

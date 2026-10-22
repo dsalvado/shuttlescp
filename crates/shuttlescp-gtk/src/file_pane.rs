@@ -778,6 +778,7 @@ impl Component for FilePane {
                     prompt: &format!("Create a folder in {}:", self.current_dir),
                     initial: NEW_FOLDER_NAME,
                     confirm_label: "Create",
+                    side: self.current_dir.side(),
                 },
                 &sender,
                 FilePaneMsg::CreateFolder,
@@ -799,6 +800,7 @@ impl Component for FilePane {
                         prompt: &format!("New name for {name}:"),
                         initial: &name,
                         confirm_label: "Rename",
+                        side: path.side(),
                     },
                     &sender,
                     move |new_name| FilePaneMsg::RenameTo {

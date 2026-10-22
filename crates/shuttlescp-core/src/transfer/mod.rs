@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 pub use meter::{RateMeter, fraction, percent};
-pub use ops::{check_name, check_same_side, create_folder, rename};
+pub use ops::{check_name, check_same_side, create_folder, rename, windows_name_problem};
 
 use crate::format::format_size;
 use crate::path::{RemotePath, SidePath};

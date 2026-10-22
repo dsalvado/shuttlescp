@@ -3,7 +3,7 @@
 use relm4::gtk;
 use relm4::gtk::prelude::*;
 
-use shuttlescp_core::transfer::check_name;
+use shuttlescp_core::transfer::{Side, check_name};
 
 use crate::dialog::{self, ButtonKind, Dialog};
 
@@ -18,6 +18,8 @@ pub struct NamePrompt<'a> {
     pub initial: &'a str,
     /// Label of the confirm button, e.g. "Create".
     pub confirm_label: &'a str,
+    /// Where the file or folder is, whose naming rules apply.
+    pub side: Side,
 }
 
 /// Ask over `parent` for a name. `on_name` gets the name only if the user confirms;
@@ -32,6 +34,7 @@ pub struct NamePrompt<'a> {
 /// * `wording` - Texts shown in the prompt
 /// * `on_name` - Receives the confirmed name
 pub fn ask(parent: &gtk::Window, wording: NamePrompt<'_>, on_name: impl Fn(String) + 'static) {
+    let side = wording.side;
     let dialog = Dialog::new(parent, wording.title);
     let entry = gtk::Entry::builder()
         .text(wording.initial)
@@ -49,7 +52,7 @@ pub fn ask(parent: &gtk::Window, wording: NamePrompt<'_>, on_name: impl Fn(Strin
         let (window, entry) = (dialog.window.clone(), entry.clone());
         dialog.add_button(wording.confirm_label, ButtonKind::Suggested, move || {
             let name = entry.text().to_string();
-            if check_name(&name).is_ok() {
+            if check_name(&name, side).is_ok() {
                 window.close();
                 on_name(name);
             }
@@ -62,7 +65,7 @@ pub fn ask(parent: &gtk::Window, wording: NamePrompt<'_>, on_name: impl Fn(Strin
     let validate = {
         let (confirm, problem) = (confirm.clone(), problem.clone());
         move |text: &str| {
-            let result = check_name(text);
+            let result = check_name(text, side);
             confirm.set_sensitive(result.is_ok());
             problem.set_visible(result.is_err());
             problem.set_label(&result.err().unwrap_or_default());

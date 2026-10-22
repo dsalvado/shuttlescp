@@ -403,10 +403,61 @@ async fn create_folder_and_rename_refuse_taken_names() {
 
 #[test]
 fn check_name_rejects_unusable_names() {
-    assert!(check_name("report 2.pdf").is_ok());
-    for bad in ["", "  ", ".", "..", "a/b", "nul\0"] {
-        assert!(check_name(bad).is_err(), "{bad:?} should be refused");
+    for side in [Side::Local, Side::Remote] {
+        assert!(check_name("report 2.pdf", side).is_ok());
+        for bad in ["", "  ", ".", "..", "a/b", "nul\0"] {
+            assert!(check_name(bad, side).is_err(), "{bad:?} should be refused");
+        }
     }
+    // Server names follow the server's rules, which it enforces itself.
+    assert!(check_name("a:b?", Side::Remote).is_ok());
+    assert_eq!(
+        check_name("a:b?", Side::Local).is_err(),
+        cfg!(windows),
+        "local names follow Windows' rules on Windows only"
+    );
+}
+
+#[test]
+fn windows_names_follow_windows_rules() {
+    for good in [
+        "report.pdf",
+        ".gitignore",
+        "console.txt",
+        "COM10",
+        "LPT0",
+        "a b",
+        "café",
+    ] {
+        assert_eq!(windows_name_problem(good), None, "{good:?} is fine");
+    }
+    for bad in [
+        "a\\b",
+        "a:b",
+        "a*",
+        "a?",
+        "say \"hi\"",
+        "<a>",
+        "a|b",
+        "tab\there",
+        "end.",
+        "end ",
+        "CON",
+        "con.txt",
+        "Nul",
+        "aux .log",
+        "COM1",
+        "lpt9.doc",
+    ] {
+        assert!(
+            windows_name_problem(bad).is_some(),
+            "{bad:?} should be refused"
+        );
+    }
+    assert_eq!(
+        windows_name_problem("a:b").as_deref(),
+        Some("a name cannot contain \":\"")
+    );
 }
 
 #[test]

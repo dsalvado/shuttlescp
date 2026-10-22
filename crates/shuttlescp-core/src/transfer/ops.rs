@@ -3,15 +3,24 @@
 
 use crate::path::SidePath;
 
+use super::Side;
 use super::endpoint::Endpoint;
 use crate::remote::Remote;
 
-/// Check that `name` can be a file or folder name.
+/// Characters Windows does not allow in a file or folder name.
+const WINDOWS_FORBIDDEN: [char; 9] = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+/// Names Windows keeps for devices, whatever extension follows ("CON.txt" too).
+const WINDOWS_RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+/// Device names Windows keeps with a digit 1 to 9 after them ("COM1", "LPT9").
+const WINDOWS_RESERVED_NUMBERED: [&str; 2] = ["COM", "LPT"];
+
+/// Check that `name` can be a file or folder name on `side`. On Windows, local names
+/// also follow Windows' rules (see [`windows_name_problem`]).
 ///
 /// # Errors
 ///
 /// Returns a message saying what is wrong with it
-pub fn check_name(name: &str) -> Result<(), String> {
+pub fn check_name(name: &str, side: Side) -> Result<(), String> {
     if name.trim().is_empty() {
         Err(String::from("enter a name"))
     } else if name == "." || name == ".." {
@@ -20,9 +29,39 @@ pub fn check_name(name: &str) -> Result<(), String> {
         Err(String::from("a name cannot contain \"/\""))
     } else if name.contains('\0') {
         Err(String::from("a name cannot contain a null character"))
+    } else if cfg!(windows)
+        && side == Side::Local
+        && let Some(problem) = windows_name_problem(name)
+    {
+        Err(problem)
     } else {
         Ok(())
     }
+}
+
+/// What makes `name` unusable on Windows, if anything: the characters
+/// `\ / : * ? " < > |`, control characters, a space or dot at the end, or a device
+/// name such as CON or COM1.
+pub fn windows_name_problem(name: &str) -> Option<String> {
+    if let Some(forbidden) = name.chars().find(|c| WINDOWS_FORBIDDEN.contains(c)) {
+        return Some(format!("a name cannot contain \"{forbidden}\""));
+    }
+    if name.chars().any(char::is_control) {
+        return Some(String::from("a name cannot contain control characters"));
+    }
+    if name.ends_with([' ', '.']) {
+        return Some(String::from("a name cannot end with a space or a dot"));
+    }
+    // Windows reads "con.txt" and "CON .txt" as the device CON too.
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    let upper = stem.to_ascii_uppercase();
+    let numbered = WINDOWS_RESERVED_NUMBERED.iter().any(|device| {
+        upper
+            .strip_prefix(device)
+            .is_some_and(|digit| matches!(digit.as_bytes(), [b'1'..=b'9']))
+    });
+    (WINDOWS_RESERVED.contains(&upper.as_str()) || numbered)
+        .then(|| format!("\"{stem}\" is a name Windows keeps for a device"))
 }
 
 /// Create a new folder called `name` in `parent`.
@@ -46,7 +85,7 @@ pub async fn create_folder(
     parent: &SidePath,
     name: &str,
 ) -> Result<SidePath, String> {
-    check_name(name)?;
+    check_name(name, parent.side())?;
     let endpoint = Endpoint::of(remote);
     let path = parent.join(name);
     if endpoint.exists(&path).await {
@@ -78,7 +117,7 @@ pub async fn rename(
     path: &SidePath,
     new_name: &str,
 ) -> Result<SidePath, String> {
-    check_name(new_name)?;
+    check_name(new_name, path.side())?;
     let endpoint = Endpoint::of(remote);
     let target = path.with_file_name(new_name);
     if &target == path {
