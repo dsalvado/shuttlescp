@@ -46,7 +46,9 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 - Upload, download, move, rename, delete and create folders from the right-click menu
   or the keyboard (Delete, F2).
 - Drag and drop between the panes, or onto a folder in the same pane, then choose Copy
-  Here or Move Here. Drag with the right mouse button to select a range of rows.
+  Here or Move Here. Select several files by dragging a box over them from an empty
+  spot (anywhere but a file's icon or name), as in a file manager.
+- Double-click a local file to open it in its usual app.
 - The local pane remembers the last folder on each disk, and the app reopens where you
   left off.
 
@@ -54,6 +56,8 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
 - Several transfers run side by side. Each one shows its folders and files as a tree,
   with progress, speed and time left.
+- Pause a transfer and resume it later, even after restarting the app, or pause, resume
+  or stop single files while the rest carries on.
 - A file that already exists is never replaced without asking: overwrite, skip or
   cancel, for one file or all of them.
 - Interrupted transfers continue where they stopped, even after the app was closed or
@@ -85,8 +89,9 @@ chmod +x ShuttleSCP-*-x86_64.AppImage
 ```
 
 The first run adds ShuttleSCP to your desktop's app launcher. It checks for new versions
-(at most once a day; Help › Check for Updates to check now, or to turn it off) and
-installs them only when they are signed with the ShuttleSCP release key.
+(at most once a day; Help › Check for Updates to check now, or to turn it off), shows a
+new one in the status bar, and installs it only when it is signed with the ShuttleSCP
+release key. An update can wait until running transfers finish.
 
 ### macOS
 
