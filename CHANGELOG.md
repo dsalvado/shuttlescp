@@ -7,6 +7,11 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- Double-clicking a file in the local pane (or pressing Enter on it) opens it in the app
+  your system uses for that type, as the file manager would.
+
 ## [0.11.0] - 2026-10-21
 
 ### Added

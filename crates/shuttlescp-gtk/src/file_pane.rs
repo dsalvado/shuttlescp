@@ -28,6 +28,7 @@ use shuttlescp_core::path::SidePath;
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
+use crate::dialog::{self, Dialog};
 use crate::disk_picker::DiskPicker;
 use crate::name_dialog::{self, NamePrompt};
 
@@ -416,6 +417,46 @@ impl FilePane {
         name_dialog::ask(&window, wording, move |name| sender.input(on_name(name)));
     }
 
+    /// Open a local file with the system's default app for its type, as double-clicking
+    /// it in the file manager would (xdg-open on Linux, Finder on macOS, Explorer on
+    /// Windows). If that fails, e.g. no app handles the type, the user is told.
+    fn open_local_file(root: &gtk::Box, file: &Path) {
+        let uri = gio::File::for_path(file).uri();
+        tracing::info!("opening {} with its default app", file.display());
+        // The launch context lets the desktop show the app starting and focus it.
+        let context = root.display().app_launch_context();
+        let (root, file) = (root.clone(), file.to_path_buf());
+        gio::AppInfo::launch_default_for_uri_async(
+            &uri,
+            Some(&context),
+            None::<&gio::Cancellable>,
+            move |result| {
+                let Err(error) = result else {
+                    return;
+                };
+                tracing::warn!("cannot open {}: {error}", file.display());
+                let Some(window) = root.root().and_downcast::<gtk::Window>() else {
+                    return;
+                };
+                let name = file.file_name().map_or_else(
+                    || file.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                let dialog = Dialog::new(&window, "Open File");
+                dialog
+                    .content
+                    .append(&dialog::text(&format!("Cannot open {name}"), &["heading"]));
+                dialog.content.append(&dialog::text(
+                    &format!("{}.", error.message().trim_end_matches('.')),
+                    &[],
+                ));
+                let close = dialog.add_close_button("Close");
+                dialog.window.present();
+                close.grab_focus();
+            },
+        );
+    }
+
     /// Full paths of the selected files and folders ("..", if selected, is left out).
     fn selected_paths(&self) -> Vec<SidePath> {
         let selection = &self.entries.selection_model;
@@ -666,18 +707,21 @@ impl Component for FilePane {
             FilePaneMsg::Activate(position) => {
                 // Build the target first: `item.borrow()` holds a borrow that must end
                 // before `self` is mutably borrowed by `request_listing`.
-                let target =
-                    self.entries
-                        .get_visible(position)
-                        .and_then(|item| match &*item.borrow() {
-                            Row::Parent { path } => Some(path.clone()),
-                            Row::Entry { entry, path, .. } => match entry.kind() {
-                                EntryKind::Directory => Some(path.clone()),
-                                EntryKind::File => None,
-                            },
-                        });
-                if let Some(dir) = target {
-                    self.request_listing(dir, &sender);
+                let target = self
+                    .entries
+                    .get_visible(position)
+                    .map(|item| match &*item.borrow() {
+                        Row::Parent { path } => (path.clone(), EntryKind::Directory),
+                        Row::Entry { entry, path, .. } => (path.clone(), entry.kind()),
+                    });
+                match target {
+                    Some((dir, EntryKind::Directory)) => self.request_listing(dir, &sender),
+                    // A local file opens in the app the system uses for it; a server's
+                    // file would need downloading first, so nothing happens there.
+                    Some((SidePath::Local(file), EntryKind::File)) => {
+                        Self::open_local_file(root, &file);
+                    }
+                    Some((SidePath::Remote(_), EntryKind::File)) | None => {}
                 }
             }
             FilePaneMsg::DiskSelected(position) => {
