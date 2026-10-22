@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-22
+
 ### Added
 
 - A single file or folder can be stopped while the rest of its transfer goes on: each
@@ -169,7 +171,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/dsalvado/shuttlescp/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/dsalvado/shuttlescp/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/dsalvado/shuttlescp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/dsalvado/shuttlescp/compare/v0.9.3...v0.10.0
