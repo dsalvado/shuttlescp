@@ -7,9 +7,17 @@
 # run time (settings schemas, image loaders, ...).
 #
 # The same script runs on a developer's machine and in the release workflow
-# (.github/workflows/release.yml). Build on the oldest system you want to support: an
-# AppImage runs on systems with the same or a newer C library (glibc) than the one it
-# was built on. The release workflow uses Ubuntu 24.04 (glibc 2.39, GTK 4.14).
+# (.github/workflows/release.yml), which uses Ubuntu 24.04 (glibc 2.39, GTK 4.14).
+#
+# Older systems: a program normally runs only where the C library (glibc) is as new as
+# the one it was built with. So the AppImage also carries the build system's glibc and
+# the few other libraries linuxdeploy leaves to the system (the C++ runtime, fonts, text
+# shaping), in a top-level compat folder (outside usr/lib, where linuxdeploy would rewrite
+# their library paths, which glibc's loader does not survive). The program's launcher (shuttlescp-launcher.sh) uses them
+# only when the system's glibc is older; elsewhere everything runs as usual. The graphics
+# drivers and display libraries always come from the system, which is safe: newer
+# libraries work with older ones, and those must match the machine.
+# packaging/linux/test-old-distro.sh checks the result on Ubuntu 22.04 and Debian 12.
 #
 # Usage: packaging/linux/build-appimage.sh
 #   SKIP_BUILD=1   use the existing target/release/shuttlescp instead of building it
@@ -61,6 +69,40 @@ install -Dm644 "$PACKAGING/$APP_ID.desktop" "$APPDIR/usr/share/applications/$APP
 install -Dm644 "$PACKAGING/$APP_ID.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 install -Dm644 "$PACKAGING/$APP_ID.metainfo.xml" "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml"
 
+# The libraries for older systems (see the top of this file), and the launcher that
+# chooses. Called once linuxdeploy has gathered the usual ones into usr/lib.
+add_compat_libraries() {
+    local lib="$APPDIR/usr/lib" compat="$APPDIR/compat" glibc
+    # Always the system's: graphics drivers and display libraries (and what only they use).
+    local keep='^(libGL|libEGL|libGLX|libGLdispatch|libgbm|libdrm|libX11|libX11-xcb|libxcb|libXau|libXdmcp|libvulkan)[.-]'
+    mkdir -p "$compat"
+    # The whole glibc family, from the build system, so its parts always match.
+    for name in ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libmvec.so.1 libpthread.so.0 \
+                libdl.so.2 librt.so.1 libutil.so.1 libresolv.so.2 libanl.so.1; do
+        cp -L "/lib/x86_64-linux-gnu/$name" "$compat/"
+    done
+    # Every other library the program needs but linuxdeploy left to the system, and what
+    # those need in turn, until nothing new turns up.
+    local added=1 file name path
+    while (( added )); do
+        added=0
+        for file in "$APPDIR/usr/bin/shuttlescp" "$lib"/*.so* "$compat"/*.so*; do
+            while read -r name path; do
+                [[ "$name" =~ $keep || -e "$lib/$name" || -e "$compat/$name" ]] && continue
+                cp -L "$path" "$compat/$name"
+                added=1
+            done < <(LD_LIBRARY_PATH="$lib:$compat" ldd "$file" 2>/dev/null \
+                     | awk '/=> \// {print $1, $3}')
+        done
+    done
+    # The launcher replaces the program, which moves next to it.
+    mv "$APPDIR/usr/bin/shuttlescp" "$APPDIR/usr/bin/shuttlescp.bin"
+    glibc=$(getconf GNU_LIBC_VERSION | awk '{print $2}')
+    sed "s/@GLIBC@/$glibc/" "$PACKAGING/shuttlescp-launcher.sh" > "$APPDIR/usr/bin/shuttlescp"
+    chmod 755 "$APPDIR/usr/bin/shuttlescp"
+    echo "==> Added $(ls "$compat" | wc -l) libraries for systems older than glibc $glibc"
+}
+
 # 4. Gather the libraries and pack the AppImage.
 #    APPIMAGE_EXTRACT_AND_RUN lets linuxdeploy (itself an AppImage) run where FUSE is
 #    not available, such as CI machines.
@@ -79,6 +121,7 @@ export PATH="$TOOLS:$PATH"
     --icon-file "$APPDIR/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" \
     --plugin gtk
 install -Dm644 "$PACKAGING/apprun-hook.sh" "$APPDIR/apprun-hooks/zz-shuttlescp.sh"
+add_compat_libraries
 "$TOOLS/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --output appimage
 
 [[ -f "$OUTPUT" ]] || { echo "error: no AppImage was made" >&2; exit 1; }

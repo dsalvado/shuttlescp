@@ -7,7 +7,9 @@
 #   - GTK's add-ons are inside: the SVG image loader and the input-method module
 #     (0.9.0 lacked them: SVG images did not load, GTK fell back from GPU drawing);
 #   - the start-up hooks, run in order exactly as AppRun runs them, leave no forced
-#     theme and no forced X11 backend (0.9.1 forced Adwaita: View > Theme did nothing).
+#     theme and no forced X11 backend (0.9.1 forced Adwaita: View > Theme did nothing);
+#   - the libraries for older systems are inside, unmodified, with the launcher that uses
+#     them (test-old-distro.sh then starts it on such a system).
 #
 # Usage: packaging/linux/check-appimage.sh dist/ShuttleSCP-<version>-x86_64.AppImage
 
@@ -36,6 +38,15 @@ check "the SVG loader is registered" \
     'grep -q "libpixbufloader-svg.so" "$ROOT"/usr/lib/gdk-pixbuf-2.0/*/loaders.cache'
 check "input-method module (ibus) is bundled" \
     'compgen -G "$ROOT/usr/lib/gtk-4.0/*/immodules/libim-ibus.so" >/dev/null'
+
+check "the launcher is in place of the program" \
+    'head -n 1 "$ROOT/usr/bin/shuttlescp" | grep -q "^#!/bin/sh" && [ -x "$ROOT/usr/bin/shuttlescp.bin" ]'
+check "the launcher knows the bundled glibc version" \
+    'grep -q "^bundled=[0-9]" "$ROOT/usr/bin/shuttlescp"'
+check "glibc and its loader are bundled for older systems" \
+    '[ -x "$ROOT/compat/ld-linux-x86-64.so.2" ] && [ -e "$ROOT/compat/libc.so.6" ] && [ -e "$ROOT/compat/libstdc++.so.6" ]'
+check "the bundled glibc was not modified (no library path added)" \
+    '! readelf -d "$ROOT/compat/libc.so.6" | grep -q "RUNPATH\|RPATH"'
 
 # The hooks in a clean environment, as a user's session would start them; with a dark
 # desktop too, since the plugin picks "Adwaita:dark" then.

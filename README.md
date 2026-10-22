@@ -80,8 +80,9 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
 Download the AppImage from the [ShuttleSCP web page](https://shuttlescp.dsalvado.ca/)
 or the [latest release](https://github.com/dsalvado/shuttlescp/releases/latest). It is one
-file holding ShuttleSCP and everything it needs, for 64-bit Linux from 2024 or later
-(Ubuntu 24.04, Fedora 40, Debian 13 and the like):
+file holding ShuttleSCP and everything it needs, for 64-bit Linux from 2020 on (it is
+tested on Ubuntu 20.04, 22.04 and 24.04 and on Debian 12 and 13; Fedora, Linux Mint and
+the like work the same way):
 
 ```sh
 chmod +x ShuttleSCP-*-x86_64.AppImage
