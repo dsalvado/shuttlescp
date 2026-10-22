@@ -56,3 +56,31 @@ This builds the release program and packs it, with GTK 4 and the libraries it ne
 systems with the same or a newer C library than the one it was built on, so official
 releases are built on Ubuntu 24.04 by the release workflow; see
 [docs/RELEASING.md](docs/RELEASING.md).
+
+## Windows
+
+ShuttleSCP builds on Windows against GTK 4 from [MSYS2](https://www.msys2.org) (its
+UCRT64 environment), with Rust's GNU toolchain, which links with MSYS2's libraries:
+
+1. Install MSYS2, then in its **UCRT64** shell run `packaging/windows/install-build-deps.sh`
+   (GTK 4, its icons, librsvg, gcc, binutils, pkgconf).
+2. Install Rust ([rustup.rs](https://rustup.rs)) and the GNU toolchain:
+   `rustup toolchain install stable-x86_64-pc-windows-gnu`.
+3. Build and run, with MSYS2's `ucrt64\bin` on `PATH` (it is, in the UCRT64 shell):
+   `cargo +stable-x86_64-pc-windows-gnu run --release`.
+
+A release build is a Windows GUI program (no console window); a debug build keeps the
+console, for development. The program's icon and version details are built into the
+.exe from `packaging/windows/shuttlescp.ico` (made from the SVG by `make-icon.sh`).
+
+To make the installer, in the UCRT64 shell:
+
+```sh
+packaging/windows/build-bundle.sh      # target/windows/ShuttleSCP: the program with GTK's files
+powershell -File packaging/windows/check-bundle.ps1   # runs it without MSYS2, as a user's PC would
+packaging/windows/build-installer.sh   # target/windows/ShuttleSCP-<version>-windows-x64-setup.exe
+```
+
+The installer is made by [Inno Setup](https://jrsoftware.org/isinfo.php) (version 6 or 7;
+`packaging/windows/install-inno-setup.ps1` installs the version CI uses). It is not
+code-signed, so Windows SmartScreen asks to confirm it the first time it runs.

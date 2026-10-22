@@ -7,6 +7,31 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- **Windows version** (64-bit Windows 10 and 11), as an installer that needs no
+  administrator rights, with a Start menu entry and an uninstaller. Passwords are saved
+  in the Credential Manager, the file lists show Explorer's icons, SSH keys can come
+  from Windows' OpenSSH agent or PuTTY's Pageant, and it updates itself through the
+  next release's installer (checked against the release key). The installer is not
+  code-signed, so Windows SmartScreen asks to confirm it the first time.
+- On Windows, names Windows does not allow are refused when creating or renaming
+  (`\ / : * ? " < > |`, a space or dot at the end, CON, NUL, COM1...), and server files
+  with such names are downloaded with the character written as `%XX` (`notes:v2.txt`
+  becomes `notes%3Av2.txt`), as WinSCP does.
+
+### Changed
+
+- The open menu's title in the menu bar is shown with a soft highlight.
+- Messages from GTK and the libraries under it (warnings about icons or fonts) go to the
+  log instead of the terminal.
+
+### Fixed
+
+- Deleting files in the local pane did nothing while no server was connected.
+- Choosing System default (or a light theme) after a dark or high-contrast theme kept
+  the dark or high-contrast look where the desktop does not set one (Windows).
+
 ## [0.10.0] - 2026-10-21
 
 ### Added

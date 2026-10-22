@@ -34,8 +34,8 @@ The automation lives in `.github/workflows/`, as YAML files GitHub reads:
 
 | File | Runs when | Does |
 |---|---|---|
-| `ci.yml` | a push to `master`, or a pull request | formatting check, lint (clippy), tests |
-| `release.yml` | a tag like `v1.0.0` is pushed | tests, AppImage, macOS disk image, signed manifest, GitHub release |
+| `ci.yml` | a push to `master`, or a pull request | formatting check, lint (clippy), tests on Linux, macOS and Windows; the AppImage, disk image and installer as artifacts |
+| `release.yml` | a tag like `v1.0.0` is pushed | tests, AppImage, macOS disk image, Windows installer, signed manifest, GitHub release |
 | `pages.yml` | `site/` changes on `master` | publishes the web page at https://shuttlescp.dsalvado.ca/ |
 
 Each workflow has **jobs**; each job runs on a **runner**, a fresh virtual machine GitHub
@@ -65,14 +65,18 @@ trusts a signature, not the download location:
    written into the app (`RELEASE_PUBLIC_KEY` in `crates/shuttlescp-core/src/update.rs`);
    the private half becomes the `UPDATE_SIGNING_KEY` secret.
 2. **A signed manifest.** For each release, `packaging/make-release-manifest.sh` writes
-   `latest.json` (version, AppImage name, download address, size and SHA-256) and signs
-   it, giving `latest.json.sig`.
+   `latest.json` (the version and, for the AppImage, the macOS disk image and the Windows
+   installer, the name, download address, size and SHA-256) and signs it, giving
+   `latest.json.sig`.
 3. **The app checks before it trusts.** It downloads both files from the latest
    release and refuses the update unless the signature matches the built-in public key,
    the version is newer than its own (an old release cannot be replayed), and the
-   downloaded AppImage has exactly the size and SHA-256 the signed manifest gives.
+   downloaded AppImage (or Windows installer) has exactly the size and SHA-256 the
+   signed manifest gives.
 4. **A safe swap.** The new AppImage is downloaded next to the old one and replaces it
-   in one rename, so the file is always either the old version or the new one.
+   in one rename, so the file is always either the old version or the new one. On
+   Windows the checked installer runs once the app has closed, then the app restarts.
+   On macOS the app only offers the new disk image's download.
 
 So even someone who managed to upload files to the release, or tampered with the
 download on its way, could not get an update installed without the private key.
@@ -179,6 +183,13 @@ is missing or does not match the app's public key.
 - **Check the app**: `packaging/macos/check-app.sh` (also run by `build-app.sh`): no
   library from outside the bundle, GTK's run-time files inside, a valid signature, and
   the app starts from the bundle without touching Homebrew.
+- **Build the Windows installer** (on Windows, in an MSYS2 UCRT64 shell):
+  `packaging/windows/build-bundle.sh`, then `build-installer.sh`, make
+  `target/windows/ShuttleSCP-<version>-windows-x64-setup.exe` as the release workflow does
+  (see BUILDING.md).
+- **Check the program folder**: `powershell -File packaging/windows/check-bundle.ps1`
+  runs it with MSYS2 off `PATH`: nothing loaded from outside the folder, and it starts
+  and quits.
 - **Check workflow files** before pushing them with
   [actionlint](https://github.com/rhysd/actionlint): `actionlint .github/workflows/*.yml`.
 - **Run the checks CI runs**:

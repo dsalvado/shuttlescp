@@ -4,7 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/dsalvado/shuttlescp?label=release)](https://github.com/dsalvado/shuttlescp/releases/latest)
 [![Licence: GPL v3 or later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
 
-A graphical SFTP and FTP client for Linux and macOS, inspired by WinSCP: your computer's
+A graphical SFTP and FTP client for Linux, macOS and Windows, inspired by WinSCP: your computer's
 files on the left, the server's on the right, and copying between them is a drag, a
 right-click or a key press away.
 
@@ -12,9 +12,9 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
 ![ShuttleSCP with two connections open](docs/screenshot.png)
 
-> **Status: public beta (0.9).** It is used day to day on Linux and macOS, and feedback
-> is very welcome: please [open an issue](https://github.com/dsalvado/shuttlescp/issues).
-> A Windows version is planned (the transfer engine is kept free of GTK for that).
+> **Status: public beta.** It is used day to day on Linux and macOS, and the Windows
+> version is new; feedback is very welcome: please
+> [open an issue](https://github.com/dsalvado/shuttlescp/issues).
 > See the [changelog](CHANGELOG.md) for what each release brought.
 
 ## Features
@@ -24,9 +24,10 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 - SFTP and SCP over SSH, and FTP with plain, explicit or implicit TLS (FTPS), in
   passive or active mode.
 - SSH login with a password, a private key file (OpenSSH or PuTTY `.ppk`, with its
-  passphrase if protected) or the keys of the desktop's SSH agent.
-- Saved sites, with passwords kept in the desktop keyring (GNOME Keyring, KWallet...)
-  or the macOS Keychain, never in a plain file.
+  passphrase if protected) or the keys of an SSH agent (the desktop's; on Windows,
+  Windows' OpenSSH agent or PuTTY's Pageant).
+- Saved sites, with passwords kept in the desktop keyring (GNOME Keyring, KWallet...),
+  the macOS Keychain or the Windows Credential Manager, never in a plain file.
 - Export and import of sites, with saved passwords encrypted under a passphrase you
   choose, to move them to another computer.
 - Several connections at once, each in its own tab with its own colour. The tab, its
@@ -36,7 +37,9 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
 **Files**
 
 - Two file panes, sortable by name, size or date, with the desktop's file icons (on
-  macOS, the ones Finder shows).
+  macOS, the ones Finder shows; on Windows, Explorer's).
+- On Windows, a server file whose name Windows does not allow (such as `notes:v2.txt`)
+  is downloaded with the character written as `%3A`, as WinSCP does.
 - A drive list on both sides: this computer's disks, and the server's (its mounted
   disks and network shares on Linux, its volumes on macOS, its drive letters on
   Windows).
@@ -98,6 +101,19 @@ Open again. If it only offers "Move to Trash", open System Settings › Privacy 
 and click "Open Anyway". It checks for new versions and offers to download them; it does
 not replace itself.
 
+### Windows
+
+Download the installer (`ShuttleSCP-…-windows-x64-setup.exe`) from the
+[ShuttleSCP web page](https://shuttlescp.dsalvado.ca/) or the
+[latest release](https://github.com/dsalvado/shuttlescp/releases/latest) and run it. It
+installs ShuttleSCP for your user only (no administrator rights needed), with a Start
+menu entry and an uninstaller under Settings › Apps. It runs on 64-bit Windows 10 and 11.
+
+The installer is not signed with a paid code-signing certificate, so the first time
+Windows SmartScreen may say "Windows protected your PC": click "More info", then
+"Run anyway". ShuttleSCP checks for new versions and, when you agree, downloads the new
+installer (checked against the ShuttleSCP release key), runs it and restarts.
+
 You can also build it from source, as described below.
 
 ## Building
@@ -120,6 +136,12 @@ On macOS, GTK 4 and the rest come from [Homebrew](https://brew.sh):
 `packaging/macos/install-build-deps.sh` installs them (plus the Xcode command line
 tools, `xcode-select --install`). Passwords go to the login Keychain.
 
+On Windows, GTK 4 and the rest come from [MSYS2](https://www.msys2.org), and Rust builds
+with its GNU toolchain (`rustup toolchain install stable-x86_64-pc-windows-gnu`): in an
+MSYS2 UCRT64 shell, `packaging/windows/install-build-deps.sh` installs them, and
+`cargo +stable-x86_64-pc-windows-gnu run --release` builds and runs it. Passwords go to
+the Credential Manager. See [BUILDING.md](BUILDING.md) for the details.
+
 Then:
 
 ```sh
@@ -131,7 +153,9 @@ cargo run --release
 The program is `target/release/shuttlescp`. To build the AppImage yourself, run
 `packaging/linux/build-appimage.sh`; on a Mac, `packaging/macos/build-dmg.sh` builds the
 self-contained app and its disk image, and `packaging/macos/run-dev.sh` runs a debug
-build as an app (`cargo run` starts it without its Dock icon). See [BUILDING.md](BUILDING.md) for release builds
+build as an app (`cargo run` starts it without its Dock icon); on Windows,
+`packaging/windows/build-bundle.sh` and `build-installer.sh` build the program folder
+and its installer. See [BUILDING.md](BUILDING.md) for release builds
 and the build information shown in the app, and [docs/RELEASING.md](docs/RELEASING.md)
 for how releases are made, signed and published.
 
@@ -139,17 +163,19 @@ for how releases are made, signed and published.
 
 | What | Where |
 |---|---|
-| Settings and saved sites | `~/.config/shuttlescp/` (macOS: `~/Library/Application Support/shuttlescp/`) |
-| Log and unfinished transfers | `~/.local/state/shuttlescp/` (macOS: `~/Library/Application Support/shuttlescp/`) |
-| Passwords | Your desktop keyring, under "ShuttleSCP" (macOS: the login Keychain, under "shuttlescp") |
+| Settings and saved sites | `~/.config/shuttlescp/` (macOS: `~/Library/Application Support/shuttlescp/`; Windows: `%APPDATA%\shuttlescp\`) |
+| Log and unfinished transfers | `~/.local/state/shuttlescp/` (macOS: `~/Library/Application Support/shuttlescp/`; Windows: `%LOCALAPPDATA%\shuttlescp\`) |
+| Passwords | Your desktop keyring, under "ShuttleSCP" (macOS: the login Keychain, under "shuttlescp"; Windows: the Credential Manager, under "shuttlescp:…") |
 
 ## Project layout
 
 - `crates/shuttlescp-core`: everything that is not the user interface (sites,
   settings, the keyring, SSH, SFTP and FTP, the transfer engine, logging). It does not
   depend on GTK, so other front ends can reuse it.
-- `crates/shuttlescp-gtk`: the Linux and macOS front end, built with relm4 and GTK 4.
-- `packaging/linux`, `packaging/macos`: the AppImage, and the macOS app and disk image.
+- `crates/shuttlescp-gtk`: the front end for Linux, macOS and Windows, built with relm4
+  and GTK 4.
+- `packaging/linux`, `packaging/macos`, `packaging/windows`: the AppImage, the macOS app
+  and disk image, and the Windows program folder and installer.
 
 Run the tests with `cargo test --workspace`.
 
