@@ -146,8 +146,7 @@
   /* Screenshots: one per system, taking turns (script below), on the page's grid. Each
      casts its own shadow (drop-shadow follows its outline, the Mac window's rounded
      corners too), so it seems to float above the page. The next one slides in from
-     the right as the current one leaves to the left. The Windows one is the Linux
-     picture, blurred, until there is a Windows version. */
+     the right as the current one leaves to the left. */
   .shots { margin: 36px 0 80px; }
   .shot-frame {
     position: relative;
@@ -169,31 +168,6 @@
   }
   .shot.is-shown { opacity: 1; transform: none; }
   .shot.is-leaving { opacity: 0; transform: translateX(-105%); }
-  .shot-soon { display: grid; place-items: center; filter: none; }
-  .shot-soon .blurred {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    border-radius: 6px;
-    filter: var(--lift);
-  }
-  .shot-soon img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    filter: blur(7px) saturate(0.8);
-    transform: scale(1.04);
-  }
-  .shot-soon span {
-    position: relative;
-    padding: 10px 24px;
-    border-radius: 999px;
-    background: rgba(15, 23, 42, 0.72);
-    color: #fff;
-    font-size: clamp(1.1rem, 3.2vw, 1.8rem);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-  }
   .shot-tabs { display: flex; justify-content: center; gap: 8px; margin-bottom: 20px; }
   .shot-tabs button {
     font: inherit;
@@ -278,10 +252,8 @@
            alt="ShuttleSCP on Linux with two connections open, each outlined in its own colour">
       <img class="shot" data-system="macOS" src="screenshot-macos.png" width="1200" height="747"
            alt="ShuttleSCP on macOS, with the Mac's window buttons, menus and file icons" loading="lazy">
-      <div class="shot shot-soon" data-system="Windows" role="img" aria-label="ShuttleSCP for Windows: coming soon">
-        <div class="blurred"><img src="screenshot.png" width="1200" height="798" alt=""></div>
-        <span>Coming soon</span>
-      </div>
+      <img class="shot" data-system="Windows" src="screenshot-windows.png" width="1200" height="876"
+           alt="ShuttleSCP on Windows, with a server connected and Explorer's file icons" loading="lazy">
     </div>
   </figure>
 
