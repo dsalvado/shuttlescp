@@ -13,7 +13,7 @@ members = ["crates/shuttlescp-core", "crates/shuttlescp-gtk"]
 default-members = ["crates/shuttlescp-gtk"]
 
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 authors = ["David Salvador"]
 license = "GPL-3.0-or-later"

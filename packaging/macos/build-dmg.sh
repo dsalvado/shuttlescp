@@ -46,7 +46,22 @@ It runs on Macs with Apple silicon (M1 or later), macOS $MIN_MACOS or newer.
 https://shuttlescp.dsalvado.ca
 EOF
 
-# 3. The disk image, compressed (UDZO). Rebuilt from scratch each time.
+# 3. The disk image, compressed (UDZO). Rebuilt from scratch each time. hdiutil now and
+#    then fails for no reason of ours ("Resource busy" while another process, such as
+#    Spotlight, looks at the new volume; common on CI machines), so it gets three tries,
+#    and its own message is shown.
 rm -f "$OUTPUT"
-hdiutil create -quiet -volname "ShuttleSCP $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$OUTPUT"
+for attempt in 1 2 3; do
+    if hdiutil create -volname "ShuttleSCP $VERSION" -srcfolder "$STAGE" -ov -format UDZO \
+        "$OUTPUT"; then
+        break
+    fi
+    if [ "$attempt" -eq 3 ]; then
+        echo "error: hdiutil could not create the disk image (3 tries)" >&2
+        exit 1
+    fi
+    echo "==> hdiutil failed (try $attempt of 3); trying again in 10 seconds" >&2
+    rm -f "$OUTPUT"
+    sleep 10
+done
 echo "==> Built $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"

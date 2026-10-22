@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-22
+
 ### Added
 
 - Double-clicking a file in the local pane (or pressing Enter on it) opens it in the app
@@ -19,6 +21,11 @@ becomes its release notes on GitHub.
   Transfers Finish" restarts ShuttleSCP into the new version by itself once the last
   transfer is done (the status bar says "Update waits for transfers" meanwhile).
   "Restart Now" stops them as before, and "Later" leaves the restart to the status bar.
+
+### Fixed
+
+- Building the macOS disk image tries again when macOS's disk-image tool fails for no
+  reason of ours (it did once on GitHub's Mac machines), and shows its message.
 
 ## [0.11.0] - 2026-10-21
 
@@ -131,7 +138,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/dsalvado/shuttlescp/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/dsalvado/shuttlescp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/dsalvado/shuttlescp/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/dsalvado/shuttlescp/compare/v0.9.2...v0.9.3
