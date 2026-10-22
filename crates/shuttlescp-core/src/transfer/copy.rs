@@ -415,6 +415,11 @@ async fn copy_file(
     }
     match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
         Ok(()) => {}
+        Err(ItemOutcome::Cancelled) if cancel.is_paused() => {
+            // Paused: the partial copy is what resuming continues from.
+            tracing::info!("paused {} at its partial copy", item.dest);
+            return ItemOutcome::Cancelled;
+        }
         Err(outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped)) => {
             // Cancelling (or stopping this file) means the user wants the copy gone,
             // not kept for later.

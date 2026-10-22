@@ -450,6 +450,40 @@ async fn deleting_leaves_a_stopped_file_and_its_folder() {
     assert!(!src.join("a/one.txt").exists());
 }
 
+/// Copy top.txt over an interrupted copy (its first 300 kB), stopping the job with
+/// `stop` the moment the copy continues; returns what the partial file holds after.
+async fn stop_while_resuming(stop: fn(&CancelFlag)) -> (JobSummary, Option<u64>) {
+    let (_temp, src, dst) = setup();
+    let partial = dst.join("top.txt.filepart");
+    std::fs::write(&partial, &big_content()[..300_000]).expect("write");
+    let cancel = CancelFlag::default();
+    let sink: Sink = {
+        let cancel = cancel.clone();
+        Arc::new(move |event: TransferEvent| {
+            if matches!(event, TransferEvent::Resumed { .. }) {
+                stop(&cancel);
+            }
+        })
+    };
+    let job = job(JobKind::Copy, vec![src.join("top.txt")], &dst);
+    let summary = execute(&job, Endpoint::Local, Some(Endpoint::Local), &cancel, &sink).await;
+    let kept = std::fs::metadata(&partial)
+        .ok()
+        .map(|metadata| metadata.len());
+    (summary, kept)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pausing_keeps_the_partial_copy_and_cancelling_removes_it() {
+    let (paused, kept) = stop_while_resuming(CancelFlag::pause).await;
+    assert_eq!(paused.cancelled, 1);
+    assert_eq!(kept, Some(300_000), "kept for resuming");
+
+    let (cancelled, kept) = stop_while_resuming(CancelFlag::cancel).await;
+    assert_eq!(cancelled.cancelled, 1);
+    assert_eq!(kept, None, "removed");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn create_folder_and_rename_refuse_taken_names() {
     let (_temp, src, _dst) = setup();

@@ -13,6 +13,11 @@ becomes its release notes on GitHub.
   unfinished item in the Queue has its own stop button. A stopped file's partial copy
   is removed (when moving, it stays where it was), and the transfer still counts as
   completed ("1 stopped").
+- Transfers can be paused: the pause button on a running copy or move stops it but keeps
+  what was copied (the partial files stay in place), and it waits in the Queue as
+  "Paused" until resumed with its play button, continuing where it stopped. A paused
+  transfer is also offered for resuming after ShuttleSCP restarts; its close button
+  cancels it.
 
 ### Changed
 

@@ -160,8 +160,11 @@ pub struct PanelConnection {
 pub enum TransferPanelMsg {
     /// Run a job.
     Start(Job),
-    /// Stop the job with this id.
+    /// Stop the job with this id (or forget it, if it is paused).
     Cancel(u64),
+    /// Pause the job with this id: it stops, keeping its partial copies, and waits in
+    /// the Queue to be resumed.
+    Pause(u64),
     /// Leave one file (or a folder, with everything in it) out of a running job; the
     /// rest goes on.
     StopItem {
@@ -254,6 +257,9 @@ struct JobState {
     cancel: CancelFlag,
     /// Cancelled by the user (not by a disconnect), so it is not offered for resuming.
     user_cancelled: bool,
+    /// Paused by the user: once stopped it waits in the Queue to be resumed (and is
+    /// offered for resuming after a restart).
+    paused: bool,
     items: Vec<ItemState>,
     children: Vec<Vec<usize>>,
     roots: Vec<usize>,
@@ -296,6 +302,7 @@ struct RowWidgets {
     bar: gtk::ProgressBar,
     info: gtk::Label,
     status: gtk::Image,
+    pause: gtk::Button,
     cancel: gtk::Button,
     retry: gtk::Button,
     /// The whole line, faded out with its job.
@@ -470,11 +477,37 @@ impl Component for TransferPanel {
         match message {
             TransferPanelMsg::Start(job) => self.start(job, None, &sender),
             TransferPanelMsg::Cancel(id) => {
-                if let Some(job) = self.shared.borrow_mut().jobs.get_mut(&id) {
+                let forget = {
+                    let mut shared = self.shared.borrow_mut();
+                    let Some(job) = shared.jobs.get_mut(&id) else {
+                        return;
+                    };
                     tracing::info!("cancelling transfer {id}");
                     job.user_cancelled = true;
                     job.cancel.cancel();
+                    // A paused job has already stopped: it goes to Failed, where it can
+                    // still be retried, and is no longer offered for resuming.
+                    let paused = !job.is_running() && std::mem::take(&mut job.paused);
+                    paused.then(|| job.pending_key.clone())
+                };
+                if let Some(key) = forget {
+                    if let Some(key) = key {
+                        self.pending.remove(&key);
+                        self.save_pending();
+                    }
+                    self.shelve(id);
                 }
+            }
+            TransferPanelMsg::Pause(id) => {
+                let mut shared = self.shared.borrow_mut();
+                if let Some(job) = shared.jobs.get_mut(&id)
+                    && job.is_running()
+                {
+                    tracing::info!("pausing transfer {id}");
+                    job.paused = true;
+                    job.cancel.pause();
+                }
+                refresh_job(&shared, id);
             }
             TransferPanelMsg::StopItem { job: id, item } => {
                 if let Some(job) = self.shared.borrow().jobs.get(&id) {
@@ -633,6 +666,7 @@ impl TransferPanel {
                 pending_key,
                 cancel: cancel.clone(),
                 user_cancelled: false,
+                paused: false,
                 items: Vec::new(),
                 children: Vec::new(),
                 roots: Vec::new(),
@@ -719,7 +753,11 @@ impl TransferPanel {
             return;
         };
         self.remove_rows(id, old.list);
-        tracing::info!("retrying: {}", old.job.title());
+        if old.paused {
+            tracing::info!("resuming: {}", old.job.title());
+        } else {
+            tracing::info!("retrying: {}", old.job.title());
+        }
         let mut job = old.job;
         job.resume = true;
         self.start(job, old.pending_key, sender);
@@ -962,6 +1000,15 @@ impl TransferPanel {
             let Some(job) = shared.jobs.get_mut(&id) else {
                 return;
             };
+            // Paused: it stays in the Queue (and in the unfinished-transfers file) until
+            // resumed. A job that finished before the pause took effect is just done,
+            // and one cancelled while pausing is cancelled.
+            job.paused &= !summary.is_complete() && !job.user_cancelled;
+            if job.paused {
+                job.summary = Some(summary);
+                refresh_job(&shared, id);
+                return;
+            }
             // Nothing left to resume: done, or the user chose to stop it.
             let forget = (summary.is_complete() || job.user_cancelled)
                 .then(|| job.pending_key.clone())
@@ -1353,7 +1400,11 @@ struct RowView {
     can_cancel: bool,
     /// What the Cancel button does, as its tooltip.
     cancel_tooltip: &'static str,
+    can_pause: bool,
     can_retry: bool,
+    /// The Retry button's icon and tooltip (it resumes a paused job).
+    retry_icon: &'static str,
+    retry_tooltip: &'static str,
     /// A finished job's header: it can be removed from the list.
     can_remove: bool,
 }
@@ -1390,7 +1441,10 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     widgets.status.set_icon_name(row.status);
     widgets.cancel.set_visible(row.can_cancel);
     widgets.cancel.set_tooltip_text(Some(row.cancel_tooltip));
+    widgets.pause.set_visible(row.can_pause);
     widgets.retry.set_visible(row.can_retry);
+    widgets.retry.set_icon_name(row.retry_icon);
+    widgets.retry.set_tooltip_text(Some(row.retry_tooltip));
     widgets
         .status
         .set_visible(!row.can_cancel && !row.can_retry);
@@ -1425,6 +1479,17 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         transfer::fraction(job.done, job.total)
     };
     let (info, error, status) = match &job.summary {
+        None if job.paused => (String::from("Pausing..."), false, None),
+        Some(_) if job.paused && job.total == 0 => (String::from("Paused"), false, None),
+        Some(_) if job.paused => (
+            format!(
+                "Paused: {} of {} copied",
+                format_size(job.done),
+                format_size(job.total)
+            ),
+            false,
+            None,
+        ),
         None if !job.planned => (String::from("Preparing..."), false, None),
         None if deleting => (
             format!("{} of {} deleted", job.finished_items, job.items.len()),
@@ -1448,6 +1513,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         name: title,
         heading: true,
         fraction: match &job.summary {
+            _ if job.paused => Some(fraction),
             // A job that could not start has nothing to show progress of.
             Some(summary) if summary.error.is_some() => None,
             Some(summary) if summary.is_complete() => Some(1.0),
@@ -1456,12 +1522,29 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         info,
         error,
         status,
-        can_cancel: job.is_running(),
-        cancel_tooltip: "Cancel the whole transfer",
-        can_retry: job
-            .summary
-            .as_ref()
-            .is_some_and(|summary| !summary.is_complete()),
+        can_cancel: job.is_running() || job.paused,
+        cancel_tooltip: if job.paused {
+            "Cancel the paused transfer"
+        } else {
+            "Cancel the whole transfer"
+        },
+        // Deletes are quick, and have nothing to continue.
+        can_pause: job.is_running() && !job.paused && !deleting,
+        can_retry: !job.is_running()
+            && job
+                .summary
+                .as_ref()
+                .is_some_and(|summary| !summary.is_complete()),
+        retry_icon: if job.paused {
+            "media-playback-start-symbolic"
+        } else {
+            "view-refresh-symbolic"
+        },
+        retry_tooltip: if job.paused {
+            "Resume: continue where it was paused"
+        } else {
+            "Retry: continue where it stopped"
+        },
         // Finished jobs in the Queue are on their way out on their own.
         can_remove: !job.is_running() && job.list != ListKind::Queue,
     }
@@ -1582,7 +1665,10 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             ItemKind::File => "Stop this file; the rest goes on",
             ItemKind::Folder => "Stop this folder; the rest goes on",
         },
+        can_pause: false,
         can_retry: false,
+        retry_icon: "view-refresh-symbolic",
+        retry_tooltip: "",
         can_remove: false,
     }
 }
@@ -1681,6 +1767,10 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         .css_classes(["dim-label", "transfer-info"])
         .build();
     let status = gtk::Image::new();
+    let pause = small_button(
+        "media-playback-pause-symbolic",
+        Some("Pause: stop for now, keeping what is copied"),
+    );
     let cancel = small_button("window-close-symbolic", Some("Cancel"));
     let retry = small_button(
         "view-refresh-symbolic",
@@ -1689,6 +1779,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     let end_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     end_slot.set_size_request(END_SLOT_WIDTH, -1);
     end_slot.append(&status);
+    end_slot.append(&pause);
     end_slot.append(&cancel);
     end_slot.append(&retry);
     // Only finished jobs show it; running ones show Cancel, which looks the same.
@@ -1718,6 +1809,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         });
     };
     send(&expander, "toggle");
+    send(&pause, "pause");
     send(&cancel, "cancel");
     send(&retry, "retry");
     send(&remove, "dismiss");
@@ -1732,6 +1824,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
             bar,
             info,
             status,
+            pause,
             cancel,
             retry,
             line,
@@ -1769,6 +1862,7 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
         None => TransferPanelMsg::Cancel(job),
         Some(item) => TransferPanelMsg::StopItem { job, item },
     });
+    add("pause", |job, _| TransferPanelMsg::Pause(job));
     add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
     add("retry", |job, _| TransferPanelMsg::Retry(job));
     page.insert_action_group(ACTION_GROUP, Some(&group));

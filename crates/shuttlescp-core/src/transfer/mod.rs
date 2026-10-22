@@ -436,35 +436,57 @@ pub enum TransferEvent {
     JobFinished(JobSummary),
 }
 
-/// Asks a running job to stop, or to leave out some of its items. Clones share the
-/// requests.
+/// Asks a running job to stop (or pause), or to leave out some of its items. Clones
+/// share the requests.
 #[derive(Debug, Clone, Default)]
-pub struct CancelFlag(Arc<AtomicBool>, Arc<Mutex<HashSet<usize>>>);
+pub struct CancelFlag {
+    /// The whole job should stop.
+    cancelled: Arc<AtomicBool>,
+    /// ...and keep its partial copies, to be continued later.
+    paused: Arc<AtomicBool>,
+    /// The items to leave out, by id.
+    stopped: Arc<Mutex<HashSet<usize>>>,
+}
 
 impl CancelFlag {
+    /// Ask the job to pause: it stops like [`CancelFlag::cancel`], but files being
+    /// copied keep their partial copies, so running the job again with `resume`
+    /// continues them where they stopped.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether pausing was asked for.
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
     /// Ask the job to leave out one item (by id): a file being copied stops at its next
     /// chunk and its partial copy is deleted; a file not started is not copied. The
     /// rest of the job goes on. For a folder, stop each item inside it.
     pub fn stop_item(&self, id: usize) {
-        if let Ok(mut stopped) = self.1.lock() {
+        if let Ok(mut stopped) = self.stopped.lock() {
             stopped.insert(id);
         }
     }
 
     /// Whether the user asked to leave out this item.
     pub fn is_item_stopped(&self, id: usize) -> bool {
-        self.1.lock().is_ok_and(|stopped| stopped.contains(&id))
+        self.stopped
+            .lock()
+            .is_ok_and(|stopped| stopped.contains(&id))
     }
 
     /// Ask the job to stop: files being copied stop at their next chunk and their
     /// partial copies are deleted; items not started are skipped.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.cancelled.store(true, Ordering::Relaxed);
     }
 
-    /// Whether cancelling was asked for.
+    /// Whether cancelling (or pausing) was asked for.
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.cancelled.load(Ordering::Relaxed)
     }
 }
 
