@@ -10,7 +10,7 @@ right-click or a key press away.
 
 Written in Rust with [relm4](https://relm4.org) and GTK 4.
 
-![ShuttleSCP with two connections open](docs/screenshot.png)
+![ShuttleSCP resuming an upload of three files, with pause and stop buttons for each](docs/screenshot.png)
 
 > **Status: public beta.** It is used day to day on Linux and macOS, and the Windows
 > version is new; feedback is very welcome: please
