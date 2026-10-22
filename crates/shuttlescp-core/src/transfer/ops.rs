@@ -1,10 +1,13 @@
-//! Single quick operations on one side: creating a folder and renaming; and the check
-//! that a copy within one side makes sense.
+//! Single quick operations on one side: creating a folder and renaming; the checks that
+//! a name is usable and that a copy within one side makes sense; and names that Windows
+//! can use.
 
-use crate::path::SidePath;
+use std::borrow::Cow;
+use std::ffi::{OsStr, OsString};
 
 use super::Side;
 use super::endpoint::Endpoint;
+use crate::path::SidePath;
 use crate::remote::Remote;
 
 /// Characters Windows does not allow in a file or folder name.
@@ -62,6 +65,56 @@ pub fn windows_name_problem(name: &str) -> Option<String> {
     });
     (WINDOWS_RESERVED.contains(&upper.as_str()) || numbered)
         .then(|| format!("\"{stem}\" is a name Windows keeps for a device"))
+}
+
+/// A name Windows can use, for a file or folder called `name` elsewhere (e.g. on a
+/// Linux server). As WinSCP does, each character Windows forbids becomes `%` and its
+/// hex code ("notes:v2.txt" becomes "notes%3Av2.txt"); a space or dot at the end, and
+/// the last letter of a device name ("con.txt" becomes "co%6E.txt"), are written the
+/// same way. A name Windows accepts comes back unchanged.
+pub fn windows_safe_name(name: &str) -> Cow<'_, str> {
+    if windows_name_problem(name).is_none() {
+        return Cow::Borrowed(name);
+    }
+    let escape = |c: char| format!("%{:02X}", u32::from(c));
+    let mut safe: String = name
+        .chars()
+        .map(|c| {
+            if WINDOWS_FORBIDDEN.contains(&c) || c.is_control() {
+                escape(c)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    if let Some(last) = safe.chars().last().filter(|c| matches!(c, ' ' | '.')) {
+        safe.pop();
+        safe.push_str(&escape(last));
+    }
+    if windows_name_problem(&safe).is_some() {
+        // Only a device name is left: its stem ends at the first dot, spaces aside.
+        let stem_end = safe.find('.').unwrap_or(safe.len());
+        let stem = safe[..stem_end].trim_end();
+        if let Some(last) = stem.chars().last() {
+            let cut = stem.len();
+            safe.replace_range(cut - last.len_utf8()..cut, &escape(last));
+        }
+    }
+    Cow::Owned(safe)
+}
+
+/// The name a copy of `name` gets in `dest_dir`: the same, except in a folder on this
+/// computer on Windows, where a name Windows forbids is made usable (see
+/// [`windows_safe_name`]).
+pub(super) fn dest_name<'a>(name: &'a OsStr, dest_dir: &SidePath) -> Cow<'a, OsStr> {
+    if cfg!(windows)
+        && dest_dir.side() == Side::Local
+        && let Some(text) = name.to_str()
+        && let Cow::Owned(safe) = windows_safe_name(text)
+    {
+        return Cow::Owned(OsString::from(safe));
+    }
+    Cow::Borrowed(name)
 }
 
 /// Create a new folder called `name` in `parent`.

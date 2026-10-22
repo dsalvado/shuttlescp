@@ -461,6 +461,35 @@ fn windows_names_follow_windows_rules() {
 }
 
 #[test]
+fn windows_safe_names_encode_what_windows_forbids() {
+    assert_eq!(windows_safe_name("report.pdf"), "report.pdf");
+    assert_eq!(windows_safe_name("notes:v2.txt"), "notes%3Av2.txt");
+    assert_eq!(windows_safe_name("a<b>|c?*"), "a%3Cb%3E%7Cc%3F%2A");
+    assert_eq!(windows_safe_name("say \"hi\""), "say %22hi%22");
+    assert_eq!(windows_safe_name("back\\slash"), "back%5Cslash");
+    assert_eq!(windows_safe_name("tab\there"), "tab%09here");
+    assert_eq!(windows_safe_name("ends."), "ends%2E");
+    assert_eq!(windows_safe_name("ends "), "ends%20");
+    assert_eq!(windows_safe_name("con.txt"), "co%6E.txt");
+    assert_eq!(windows_safe_name("COM1"), "COM%31");
+    assert_eq!(windows_safe_name("aux .log"), "au%78 .log");
+    // Whatever the name, the result is one Windows accepts.
+    for odd in ["a:b.", "CON", "nul ", "x\u{1}y", "café: été", "...", " "] {
+        let safe = windows_safe_name(odd);
+        assert_eq!(windows_name_problem(&safe), None, "{odd:?} became {safe:?}");
+    }
+}
+
+#[test]
+fn copies_to_this_computer_get_usable_names_on_windows() {
+    let dest = |dir: SidePath| ops::dest_name(std::ffi::OsStr::new("a:b"), &dir).into_owned();
+
+    let here = dest(local(Path::new("/srv")));
+    assert_eq!(here, if cfg!(windows) { "a%3Ab" } else { "a:b" });
+    assert_eq!(dest(remote("/srv")), "a:b", "uploads keep their names");
+}
+
+#[test]
 fn job_titles_name_the_direction() {
     let one = job(
         JobKind::Copy,

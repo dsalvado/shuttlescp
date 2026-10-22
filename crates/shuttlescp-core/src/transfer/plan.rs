@@ -145,8 +145,10 @@ fn push_item(
     existing: &Existing,
 ) -> usize {
     let id = items.len();
-    let there = existing.get(name);
-    let mut partial_name = name.to_os_string();
+    // On Windows a name from a server may need changing to be usable here.
+    let dest_name = super::ops::dest_name(name, dest_dir);
+    let there = existing.get(&*dest_name);
+    let mut partial_name = dest_name.to_os_string();
     partial_name.push(PARTIAL_SUFFIX);
     let partial = existing
         .get(&partial_name)
@@ -164,7 +166,7 @@ fn push_item(
         // A folder's total is added up once the whole tree is known.
         size: if node.is_dir { 0 } else { node.size },
         source,
-        dest: dest_dir.join(name),
+        dest: dest_dir.join(&dest_name),
         existing: there.filter(|there| !there.is_dir).map(|there| FileInfo {
             size: there.size,
             modified: there.modified,

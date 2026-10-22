@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 pub use meter::{RateMeter, fraction, percent};
-pub use ops::{check_name, check_same_side, create_folder, rename, windows_name_problem};
+pub use ops::{
+    check_name, check_same_side, create_folder, rename, windows_name_problem, windows_safe_name,
+};
 
 use crate::format::format_size;
 use crate::path::{RemotePath, SidePath};
@@ -151,7 +153,7 @@ impl Job {
         self.sources
             .iter()
             .filter_map(SidePath::file_name)
-            .map(|name| self.dest_dir.join(name))
+            .map(|name| self.dest_dir.join(ops::dest_name(name, &self.dest_dir)))
             .collect()
     }
 
