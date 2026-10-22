@@ -139,3 +139,73 @@ jobs:
           path: dist/ShuttleSCP-*-macos-arm64.dmg
           retention-days: 14
           if-no-files-found: error
+
+  # Windows: lint and test there too (it compiles the Windows-only code: Credential
+  # Manager, Explorer's icons, the name rules), then build the installer exactly as a
+  # release would, check the program it carries, and keep it as an artifact. GTK and the
+  # build tools come from MSYS2 (UCRT64), and Rust is its GNU toolchain, which builds
+  # against MSYS2's GTK (see BUILDING.md).
+  windows:
+    name: Windows installer
+    runs-on: windows-2025
+    # Steps run in MSYS2's bash unless they say otherwise.
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          # Lets MSYS2's bash use Rust and the tools installed outside it.
+          path-type: inherit
+
+      - name: Install GTK 4 and the packaging tools
+        run: packaging/windows/install-build-deps.sh
+
+      - name: Install Rust (the GNU toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+          components: clippy
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Lint
+        run: cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo +stable-x86_64-pc-windows-gnu test --workspace --locked
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: packaging/windows/install-inno-setup.ps1
+
+      - name: Build the program folder
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          packaging/windows/build-bundle.sh
+
+      # Runs it as on a PC without MSYS2: nothing loaded from outside the folder, and it
+      # starts and quits. The runner has no graphics card, hence GTK's software renderer.
+      - name: Check the program folder
+        shell: pwsh
+        env:
+          GSK_RENDERER: cairo
+        run: packaging/windows/check-bundle.ps1
+
+      - name: Build the installer
+        run: packaging/windows/build-installer.sh
+
+      - name: Keep it as an artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ShuttleSCP-Windows
+          path: target/windows/ShuttleSCP-*-windows-x64-setup.exe
+          retention-days: 14
+          if-no-files-found: error

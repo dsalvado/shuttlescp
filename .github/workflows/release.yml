@@ -2,8 +2,8 @@
 #
 # Runs when a version tag such as "v0.9.0" is pushed (see docs/RELEASING.md). It checks
 # that the tag matches the version in Cargo.toml and that CHANGELOG.md describes it,
-# runs the tests, builds the AppImage and (on a Mac) the macOS disk image, writes and
-# signs the update manifest, and publishes everything as a GitHub release whose notes
+# runs the tests, builds the AppImage, (on a Mac) the macOS disk image and (on Windows)
+# the Windows installer, writes and signs the update manifest, and publishes everything as a GitHub release whose notes
 # are the changelog's section.
 # Installed copies of ShuttleSCP then find the new version through the manifest.
 name: Release
@@ -53,9 +53,68 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # The Windows installer, built as in CI (see ci.yml and packaging/windows) and handed
+  # to the publishing job below. Nothing here is signed with a secret.
+  windows:
+    name: Windows installer
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+
+      - name: Install GTK 4 and the packaging tools
+        run: packaging/windows/install-build-deps.sh
+
+      - name: Install Rust (the GNU toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo +stable-x86_64-pc-windows-gnu test --workspace --locked
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: packaging/windows/install-inno-setup.ps1
+
+      - name: Build the program folder
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          packaging/windows/build-bundle.sh
+
+      - name: Check the program folder
+        shell: pwsh
+        env:
+          GSK_RENDERER: cairo
+        run: packaging/windows/check-bundle.ps1
+
+      - name: Build the installer
+        run: packaging/windows/build-installer.sh
+
+      - name: Hand it to the publishing job
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-setup
+          path: target/windows/ShuttleSCP-*-windows-x64-setup.exe
+          retention-days: 1
+          if-no-files-found: error
+
   release:
     name: Build and publish
-    needs: macos
+    needs: [macos, windows]
     # Ubuntu 24.04: the AppImage then runs on systems with glibc 2.39 or newer and
     # needs nothing installed. Building on the oldest supported system is the rule.
     runs-on: ubuntu-24.04
@@ -122,6 +181,12 @@ jobs:
           name: macos-dmg
           path: dist
 
+      - name: Collect the Windows installer
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-setup
+          path: dist
+
       # The private signing key is a repository secret: GitHub hands it to this step
       # only, and hides it in the logs. It is written to a temporary file just for the
       # signing and removed straight after.
@@ -141,7 +206,8 @@ jobs:
           key=$(mktemp)
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
-          PUBLIC_KEY="$public_key" packaging/make-release-manifest.sh dist/ShuttleSCP-*-x86_64.AppImage "$key" dist/ShuttleSCP-*-macos-arm64.dmg
+          PUBLIC_KEY="$public_key" packaging/make-release-manifest.sh dist/ShuttleSCP-*-x86_64.AppImage "$key" \
+            dist/ShuttleSCP-*-macos-arm64.dmg dist/ShuttleSCP-*-windows-x64-setup.exe
 
       # gh is GitHub's command-line tool, already on the runner. The token is a
       # short-lived one GitHub makes for this run, limited by "permissions" above.
@@ -161,6 +227,7 @@ jobs:
             --notes-file dist/release-notes.md \
             dist/ShuttleSCP-*-x86_64.AppImage \
             dist/ShuttleSCP-*-macos-arm64.dmg \
+            dist/ShuttleSCP-*-windows-x64-setup.exe \
             dist/latest.json \
             dist/latest.json.sig \
             dist/SHA256SUMS
