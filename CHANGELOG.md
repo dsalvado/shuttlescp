@@ -18,6 +18,10 @@ becomes its release notes on GitHub.
   "Paused" until resumed with its play button, continuing where it stopped. A paused
   transfer is also offered for resuming after ShuttleSCP restarts; its close button
   cancels it.
+- Single files can be paused too: each file (or folder) being copied has its own pause
+  button. A paused file gives its place to the next one, keeps its partial copy, and
+  continues where it stopped when resumed with its play button; the rest of the
+  transfer goes on meanwhile.
 
 ### Changed
 

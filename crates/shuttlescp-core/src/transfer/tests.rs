@@ -485,6 +485,56 @@ async fn pausing_keeps_the_partial_copy_and_cancelling_removes_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_paused_file_waits_then_continues_from_its_partial_copy() {
+    // Arrange: an interrupted copy left top.txt's first 300 kB; the job pauses the file
+    // as soon as it continues, and resumes it a little later.
+    let (_temp, src, dst) = setup();
+    std::fs::write(dst.join("top.txt.filepart"), &big_content()[..300_000]).expect("write");
+    let cancel = CancelFlag::default();
+    let resumes = Arc::new(Mutex::new(Vec::new()));
+    let sink: Sink = {
+        let (cancel, resumes) = (cancel.clone(), Arc::clone(&resumes));
+        Arc::new(move |event: TransferEvent| {
+            if let TransferEvent::Resumed { id, from } = event {
+                resumes.lock().expect("lock").push(from);
+                if !cancel.is_item_paused(id) && resumes.lock().expect("lock").len() == 1 {
+                    cancel.pause_item(id);
+                    let cancel = cancel.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(300));
+                        cancel.resume_item(id);
+                    });
+                }
+            }
+        })
+    };
+
+    // Act
+    let summary = execute(
+        &job(
+            JobKind::Copy,
+            vec![src.join("a"), src.join("top.txt")],
+            &dst,
+        ),
+        Endpoint::Local,
+        Some(Endpoint::Local),
+        &cancel,
+        &sink,
+    )
+    .await;
+
+    // Assert: everything copied; top.txt continued twice from its partial copy (it was
+    // paused before writing more), never from the start.
+    assert!(summary.is_complete());
+    assert_eq!(summary.done, 5);
+    assert_eq!(
+        std::fs::read(dst.join("top.txt")).expect("read"),
+        big_content()
+    );
+    assert_eq!(*resumes.lock().expect("lock"), vec![300_000, 300_000]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn create_folder_and_rename_refuse_taken_names() {
     let (_temp, src, _dst) = setup();
 

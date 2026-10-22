@@ -2,6 +2,7 @@
 //! folders, and deleting.
 
 use crate::path::SidePath;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,23 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const RESUME_CHECK_BYTES: u64 = 64 * 1024;
 /// How often a job waiting for a conflict answer checks whether it was cancelled.
 const ANSWER_POLL: Duration = Duration::from_millis(200);
+/// How often a job with paused files checks whether they were resumed (or stopped).
+const PAUSE_POLL: Duration = Duration::from_millis(200);
+
+/// How a file's copy ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileEnd {
+    /// It ended for good.
+    Outcome(ItemOutcome),
+    /// The user paused it with this many bytes in its partial copy.
+    Paused(u64),
+}
+
+impl From<ItemOutcome> for FileEnd {
+    fn from(outcome: ItemOutcome) -> Self {
+        Self::Outcome(outcome)
+    }
+}
 
 /// What to do with one file of a copy job, decided before copying starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,9 +117,12 @@ pub(super) async fn copy_items(
         }
     }
 
-    // 3. Files, several at a time; each runs as its own task.
+    // 3. Files, several at a time, in order; each runs as its own task. A file the
+    //    user pauses gives up its place and waits, with its partial copy, until it is
+    //    resumed (then it continues where it stopped), stopped, or the job ends.
     let slots = Arc::new(Semaphore::new(FILES_AT_ONCE));
     let mut running = JoinSet::new();
+    let mut waiting: VecDeque<(PlanItem, FileAction)> = VecDeque::new();
     for item in items.iter().filter(|item| item.kind == ItemKind::File) {
         let Some(action) = actions[item.id] else {
             // Already settled (skipped, failed or cancelled) while handling conflicts.
@@ -113,48 +134,91 @@ pub(super) async fn copy_items(
             finish(&mut outcomes, item.id, outcome);
             continue;
         }
-        // Waits here while FILES_AT_ONCE files are already being copied. The semaphore
-        // is never closed, so acquiring cannot fail.
-        let Ok(slot) = Arc::clone(&slots).acquire_owned().await else {
-            break;
-        };
-        while let Some(finished) = running.try_join_next() {
-            record_finished(finished, &mut outcomes, sink);
-        }
-        if cancel.is_cancelled() {
-            finish(&mut outcomes, item.id, ItemOutcome::Cancelled);
-            continue;
-        }
-        if cancel.is_item_stopped(item.id) {
-            tracing::info!("stopped by the user before copying: {}", item.source);
-            finish(&mut outcomes, item.id, ItemOutcome::Stopped);
-            continue;
-        }
-        let (item, src, dst, cancel, sink) = (
-            item.clone(),
-            src.clone(),
-            dst.clone(),
-            cancel.clone(),
-            Arc::clone(sink),
-        );
-        running.spawn(async move {
-            // Holding the slot until the copy ends lets the next file start.
-            let _slot = slot;
-            let outcome = match action {
-                FileAction::AlreadyThere => {
-                    tracing::info!("already copied earlier: {}", item.dest);
-                    finish_source(&item, &src, delete_source).await
-                }
-                FileAction::Copy | FileAction::Overwrite => {
-                    let replace = action == FileAction::Overwrite;
-                    copy_file(&item, &src, &dst, delete_source, replace, &cancel, &sink).await
-                }
-            };
-            (item.id, outcome)
-        });
+        waiting.push_back((item.clone(), action));
     }
-    while let Some(finished) = running.join_next().await {
-        record_finished(finished, &mut outcomes, sink);
+    let mut paused: Vec<(PlanItem, FileAction)> = Vec::new();
+    loop {
+        // Paused files that were resumed queue up again; stopped or cancelled ones end.
+        let mut still_paused = Vec::new();
+        for (item, action) in paused.drain(..) {
+            let end = if cancel.is_cancelled() {
+                ItemOutcome::Cancelled
+            } else if cancel.is_item_stopped(item.id) {
+                ItemOutcome::Stopped
+            } else if cancel.is_item_paused(item.id) {
+                still_paused.push((item, action));
+                continue;
+            } else {
+                tracing::info!("resuming {}", item.dest);
+                waiting.push_back((item, action));
+                continue;
+            };
+            // Pausing the whole job keeps the partial copy for resuming it.
+            if !cancel.is_paused() {
+                let _ = dst.remove_file(&partial_path(&item.dest)).await;
+            }
+            finish(&mut outcomes, item.id, end);
+        }
+        paused = still_paused;
+
+        // Start the files waiting their turn, while there is room.
+        while let Some((item, action)) = waiting.pop_front() {
+            if cancel.is_cancelled() {
+                finish(&mut outcomes, item.id, ItemOutcome::Cancelled);
+                continue;
+            }
+            if cancel.is_item_stopped(item.id) {
+                tracing::info!("stopped by the user before copying: {}", item.source);
+                finish(&mut outcomes, item.id, ItemOutcome::Stopped);
+                continue;
+            }
+            if cancel.is_item_paused(item.id) {
+                paused.push((item, action));
+                continue;
+            }
+            let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                waiting.push_front((item, action));
+                break;
+            };
+            let (src, dst, cancel, sink) =
+                (src.clone(), dst.clone(), cancel.clone(), Arc::clone(sink));
+            running.spawn(async move {
+                // Holding the slot until the copy ends lets the next file start.
+                let _slot = slot;
+                let end = match action {
+                    FileAction::AlreadyThere => {
+                        tracing::info!("already copied earlier: {}", item.dest);
+                        finish_source(&item, &src, delete_source).await.into()
+                    }
+                    FileAction::Copy | FileAction::Overwrite => {
+                        let replace = action == FileAction::Overwrite;
+                        copy_file(&item, &src, &dst, delete_source, replace, &cancel, &sink).await
+                    }
+                };
+                (item, action, end)
+            });
+        }
+
+        if running.is_empty() && waiting.is_empty() && paused.is_empty() {
+            break;
+        }
+        // Wait for a file to end, but look at the paused ones every so often.
+        match tokio::time::timeout(PAUSE_POLL, running.join_next()).await {
+            Ok(Some(Ok((mut item, action, FileEnd::Paused(at))))) => {
+                // Resuming continues from what the partial copy holds now.
+                item.partial = at;
+                paused.push((item, action));
+            }
+            Ok(Some(Ok((item, _, FileEnd::Outcome(outcome))))) => {
+                finish(&mut outcomes, item.id, outcome);
+            }
+            // A copy task panicked: its item stays without an outcome and counts as not
+            // done.
+            Ok(Some(Err(error))) => tracing::error!("file copy task failed: {error}"),
+            // Only paused files are left: wait for the user.
+            Ok(None) => tokio::time::sleep(PAUSE_POLL).await,
+            Err(_) => {}
+        }
     }
 
     // 4. Folders last, deepest first: each is done once everything inside it is.
@@ -365,25 +429,6 @@ pub(super) fn children_of(items: &[PlanItem]) -> Vec<Vec<usize>> {
     children
 }
 
-/// Record one finished file task and report it.
-fn record_finished(
-    finished: Result<(usize, ItemOutcome), tokio::task::JoinError>,
-    outcomes: &mut [Option<ItemOutcome>],
-    sink: &Sink,
-) {
-    match finished {
-        Ok((id, outcome)) => {
-            sink(TransferEvent::ItemFinished {
-                id,
-                outcome: outcome.clone(),
-            });
-            outcomes[id] = Some(outcome);
-        }
-        // A copy task panicked: its item stays without an outcome and counts as not done.
-        Err(error) => tracing::error!("file copy task failed: {error}"),
-    }
-}
-
 /// A file whose copy is complete: delete the source if moving.
 async fn finish_source(item: &PlanItem, src: &Endpoint, delete_source: bool) -> ItemOutcome {
     if delete_source && let Err(error) = src.remove_file(&item.source).await {
@@ -404,7 +449,7 @@ async fn copy_file(
     replace: bool,
     cancel: &CancelFlag,
     sink: &Sink,
-) -> ItemOutcome {
+) -> FileEnd {
     let started = Instant::now();
     let partial = partial_path(&item.dest);
     let offset = resume_offset(item, src, dst, &partial).await;
@@ -415,32 +460,36 @@ async fn copy_file(
     }
     match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
         Ok(()) => {}
-        Err(ItemOutcome::Cancelled) if cancel.is_paused() => {
+        Err(FileEnd::Paused(at)) => {
+            tracing::info!("paused {} at {at} of {} bytes", item.dest, item.size);
+            return FileEnd::Paused(at);
+        }
+        Err(FileEnd::Outcome(ItemOutcome::Cancelled)) if cancel.is_paused() => {
             // Paused: the partial copy is what resuming continues from.
             tracing::info!("paused {} at its partial copy", item.dest);
-            return ItemOutcome::Cancelled;
+            return ItemOutcome::Cancelled.into();
         }
-        Err(outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped)) => {
+        Err(FileEnd::Outcome(outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped))) => {
             // Cancelling (or stopping this file) means the user wants the copy gone,
             // not kept for later.
             let _ = dst.remove_file(&partial).await;
             if outcome == ItemOutcome::Stopped {
                 tracing::info!("stopped by the user: {}", item.source);
             }
-            return outcome;
+            return outcome.into();
         }
-        Err(outcome) => {
+        Err(FileEnd::Outcome(outcome)) => {
             if let ItemOutcome::Failed(error) = &outcome {
                 tracing::warn!("{error}; the partial copy is kept for resuming");
             }
-            return outcome;
+            return outcome.into();
         }
     }
     if replace && let Err(error) = dst.remove_file(&item.dest).await {
-        return ItemOutcome::Failed(error);
+        return ItemOutcome::Failed(error).into();
     }
     if let Err(error) = dst.rename(&partial, &item.dest).await {
-        return ItemOutcome::Failed(error);
+        return ItemOutcome::Failed(error).into();
     }
     if let Some(modified) = item.modified
         && let Err(error) = dst.set_modified(&item.dest, modified).await
@@ -452,7 +501,7 @@ async fn copy_file(
     if outcome == ItemOutcome::Done {
         log_copied(item, offset, started.elapsed(), delete_source);
     }
-    outcome
+    outcome.into()
 }
 
 /// Record a finished file copy in the log: what went where, how big, how fast.
@@ -513,7 +562,7 @@ async fn resume_offset(item: &PlanItem, src: &Endpoint, dst: &Endpoint, partial:
 ///
 /// # Errors
 ///
-/// Returns the outcome to report when the copy did not complete
+/// Returns how the copy ended when it did not complete: an outcome, or paused
 async fn copy_contents(
     item: &PlanItem,
     src: &Endpoint,
@@ -522,7 +571,7 @@ async fn copy_contents(
     offset: u64,
     cancel: &CancelFlag,
     sink: &Sink,
-) -> Result<(), ItemOutcome> {
+) -> Result<(), FileEnd> {
     let failed = ItemOutcome::Failed;
     let mut reader = src.open_at(&item.source, offset).await.map_err(failed)?;
     let mut writer = dst.open_write_at(partial, offset).await.map_err(failed)?;
@@ -537,10 +586,21 @@ async fn copy_contents(
     let mut reported = Instant::now();
     loop {
         if cancel.is_cancelled() {
-            return Err(ItemOutcome::Cancelled);
+            if cancel.is_paused() {
+                // Kept for resuming: make sure what was written is in the file.
+                let _ = writer.shutdown().await;
+            }
+            return Err(ItemOutcome::Cancelled.into());
         }
         if cancel.is_item_stopped(item.id) {
-            return Err(ItemOutcome::Stopped);
+            return Err(ItemOutcome::Stopped.into());
+        }
+        if cancel.is_item_paused(item.id) {
+            writer.shutdown().await.map_err(|error| {
+                ItemOutcome::Failed(format!("cannot finish {}: {error}", partial))
+            })?;
+            sink(TransferEvent::Progress { id: item.id, done });
+            return Err(FileEnd::Paused(done));
         }
         let read = reader.read(&mut buffer).await.map_err(|error| {
             ItemOutcome::Failed(format!("cannot read {}: {error}", item.source))

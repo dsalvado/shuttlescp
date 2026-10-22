@@ -446,6 +446,8 @@ pub struct CancelFlag {
     paused: Arc<AtomicBool>,
     /// The items to leave out, by id.
     stopped: Arc<Mutex<HashSet<usize>>>,
+    /// The files paused on their own, by id.
+    paused_items: Arc<Mutex<HashSet<usize>>>,
 }
 
 impl CancelFlag {
@@ -469,6 +471,30 @@ impl CancelFlag {
         if let Ok(mut stopped) = self.stopped.lock() {
             stopped.insert(id);
         }
+    }
+
+    /// Pause one file (by id) while the rest of the job goes on: it stops at its next
+    /// chunk, keeps its partial copy and gives up its place to the next file, then
+    /// waits until [`CancelFlag::resume_item`]. The job does not end while a file
+    /// waits. For a folder, pause each file inside it.
+    pub fn pause_item(&self, id: usize) {
+        if let Ok(mut paused) = self.paused_items.lock() {
+            paused.insert(id);
+        }
+    }
+
+    /// Let a paused file continue where it stopped.
+    pub fn resume_item(&self, id: usize) {
+        if let Ok(mut paused) = self.paused_items.lock() {
+            paused.remove(&id);
+        }
+    }
+
+    /// Whether this file is paused.
+    pub fn is_item_paused(&self, id: usize) -> bool {
+        self.paused_items
+            .lock()
+            .is_ok_and(|paused| paused.contains(&id))
     }
 
     /// Whether the user asked to leave out this item.

@@ -165,6 +165,20 @@ pub enum TransferPanelMsg {
     /// Pause the job with this id: it stops, keeping its partial copies, and waits in
     /// the Queue to be resumed.
     Pause(u64),
+    /// Pause one file (or every file in a folder) of a running job; the rest goes on.
+    PauseItem {
+        /// The job.
+        job: u64,
+        /// The file or folder.
+        item: usize,
+    },
+    /// Let a paused file (or folder) continue.
+    ResumeItem {
+        /// The job.
+        job: u64,
+        /// The file or folder.
+        item: usize,
+    },
     /// Leave one file (or a folder, with everything in it) out of a running job; the
     /// rest goes on.
     StopItem {
@@ -247,6 +261,8 @@ struct ItemState {
     expanded: bool,
     /// Waiting for the user to decide about an existing file.
     asking: bool,
+    /// Paused by the user, waiting to be resumed.
+    paused: bool,
 }
 
 /// One job in the list.
@@ -528,6 +544,12 @@ impl Component for TransferPanel {
                     }
                 }
             }
+            TransferPanelMsg::PauseItem { job: id, item } => {
+                self.pause_item(id, item, true);
+            }
+            TransferPanelMsg::ResumeItem { job: id, item } => {
+                self.pause_item(id, item, false);
+            }
             TransferPanelMsg::Retry(id) => self.retry(id, &sender),
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
             TransferPanelMsg::Clear(kind) => self.clear(kind),
@@ -746,6 +768,37 @@ impl TransferPanel {
         let _ = sender.output(TransferPanelOutput::TargetChanged(side));
     }
 
+    /// Pause (or resume) a file of a running job, or every unfinished file in a folder.
+    fn pause_item(&mut self, id: u64, item: usize, pause: bool) {
+        let mut shared = self.shared.borrow_mut();
+        let Some(job) = shared.jobs.get_mut(&id) else {
+            return;
+        };
+        if let Some(state) = job.items.get(item) {
+            let verb = if pause { "pausing" } else { "resuming" };
+            tracing::info!("{verb} {} in transfer {id}", state.source);
+        }
+        let mut changing = vec![item];
+        while let Some(current) = changing.pop() {
+            let Some(state) = job.items.get_mut(current) else {
+                continue;
+            };
+            if state.outcome.is_some() {
+                continue;
+            }
+            state.paused = pause;
+            if state.kind == ItemKind::File {
+                if pause {
+                    job.cancel.pause_item(current);
+                } else {
+                    job.cancel.resume_item(current);
+                }
+            }
+            changing.extend(job.children.get(current).into_iter().flatten());
+        }
+        refresh_job(&shared, id);
+    }
+
     /// Run a finished, incomplete job again (back in the Queue), continuing where it
     /// stopped.
     fn retry(&mut self, id: u64, sender: &ComponentSender<Self>) {
@@ -947,6 +1000,7 @@ impl TransferPanel {
                         outcome: None,
                         expanded,
                         asking: false,
+                        paused: false,
                     }
                 })
                 .collect();
@@ -1305,8 +1359,11 @@ fn resumed(shared: &mut Shared, id: u64, item: usize, from: u64, now: Instant) -
     let Some(state) = job.items.get_mut(item) else {
         return Vec::new();
     };
-    state.done = from;
+    // A file resumed after a pause has its bytes counted already: only the difference
+    // changes the totals.
+    let before = std::mem::replace(&mut state.done, from);
     state.meter = Some(RateMeter::starting_from(now, from));
+    let (added, removed) = (from.saturating_sub(before), before.saturating_sub(from));
     let mut changed = vec![RowKey {
         job: id,
         item: Some(item),
@@ -1316,9 +1373,9 @@ fn resumed(shared: &mut Shared, id: u64, item: usize, from: u64, now: Instant) -
         let Some(folder) = job.items.get_mut(folder_id) else {
             break;
         };
-        folder.done += from;
+        folder.done = (folder.done + added).saturating_sub(removed);
         if let Some(meter) = &mut folder.meter {
-            meter.add_done_earlier(from);
+            meter.add_done_earlier(added);
         }
         changed.push(RowKey {
             job: id,
@@ -1326,8 +1383,8 @@ fn resumed(shared: &mut Shared, id: u64, item: usize, from: u64, now: Instant) -
         });
         parent = folder.parent;
     }
-    job.done += from;
-    job.meter.add_done_earlier(from);
+    job.done = (job.done + added).saturating_sub(removed);
+    job.meter.add_done_earlier(added);
     changed.push(RowKey {
         job: id,
         item: None,
@@ -1366,6 +1423,7 @@ fn item_finished(
         if let Some(state) = job.items.get_mut(item) {
             state.outcome = Some(outcome);
             state.asking = false;
+            state.paused = false;
         }
     }
     changed.push(RowKey {
@@ -1401,6 +1459,8 @@ struct RowView {
     /// What the Cancel button does, as its tooltip.
     cancel_tooltip: &'static str,
     can_pause: bool,
+    /// What the Pause button does, as its tooltip.
+    pause_tooltip: &'static str,
     can_retry: bool,
     /// The Retry button's icon and tooltip (it resumes a paused job).
     retry_icon: &'static str,
@@ -1442,6 +1502,7 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     widgets.cancel.set_visible(row.can_cancel);
     widgets.cancel.set_tooltip_text(Some(row.cancel_tooltip));
     widgets.pause.set_visible(row.can_pause);
+    widgets.pause.set_tooltip_text(Some(row.pause_tooltip));
     widgets.retry.set_visible(row.can_retry);
     widgets.retry.set_icon_name(row.retry_icon);
     widgets.retry.set_tooltip_text(Some(row.retry_tooltip));
@@ -1530,6 +1591,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         },
         // Deletes are quick, and have nothing to continue.
         can_pause: job.is_running() && !job.paused && !deleting,
+        pause_tooltip: "Pause: stop for now, keeping what is copied",
         can_retry: !job.is_running()
             && job
                 .summary
@@ -1629,6 +1691,16 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             None,
         ),
         None if deleting => (String::new(), false, None),
+        None if item.paused && item.kind == ItemKind::File && item.done > 0 => (
+            format!(
+                "Paused: {} of {}",
+                format_size(item.done),
+                format_size(item.size)
+            ),
+            false,
+            None,
+        ),
+        None if item.paused => (String::from("Paused"), false, None),
         None if item.kind == ItemKind::File && item.meter.is_none() => {
             (String::from("Waiting"), false, None)
         }
@@ -1665,10 +1737,23 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             ItemKind::File => "Stop this file; the rest goes on",
             ItemKind::Folder => "Stop this folder; the rest goes on",
         },
-        can_pause: false,
-        can_retry: false,
-        retry_icon: "view-refresh-symbolic",
-        retry_tooltip: "",
+        // Files (and folders) being copied can wait while the rest goes on.
+        can_pause: job.is_running()
+            && !job.paused
+            && !deleting
+            && item.outcome.is_none()
+            && !item.asking
+            && !item.paused,
+        pause_tooltip: match item.kind {
+            ItemKind::File => "Pause this file; the rest goes on",
+            ItemKind::Folder => "Pause the files in this folder; the rest goes on",
+        },
+        can_retry: job.is_running() && !job.paused && item.outcome.is_none() && item.paused,
+        retry_icon: "media-playback-start-symbolic",
+        retry_tooltip: match item.kind {
+            ItemKind::File => "Resume this file",
+            ItemKind::Folder => "Resume this folder",
+        },
         can_remove: false,
     }
 }
@@ -1862,9 +1947,15 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
         None => TransferPanelMsg::Cancel(job),
         Some(item) => TransferPanelMsg::StopItem { job, item },
     });
-    add("pause", |job, _| TransferPanelMsg::Pause(job));
+    add("pause", |job, item| match item {
+        None => TransferPanelMsg::Pause(job),
+        Some(item) => TransferPanelMsg::PauseItem { job, item },
+    });
     add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
-    add("retry", |job, _| TransferPanelMsg::Retry(job));
+    add("retry", |job, item| match item {
+        None => TransferPanelMsg::Retry(job),
+        Some(item) => TransferPanelMsg::ResumeItem { job, item },
+    });
     page.insert_action_group(ACTION_GROUP, Some(&group));
 }
 
