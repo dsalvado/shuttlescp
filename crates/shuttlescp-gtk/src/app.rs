@@ -201,6 +201,14 @@ pub enum AppMsg {
     },
     /// A session's remote pane moved to another folder.
     RemoteDirChanged { session: SessionId, dir: RemotePath },
+    /// Which ways a site-to-site session's transfers are copying.
+    Relaying {
+        session: SessionId,
+        /// Left server to right server.
+        to_right: bool,
+        /// Right server to left server.
+        to_left: bool,
+    },
     /// A site-to-site session's left pane (a server) moved to another folder.
     LeftDirChanged { session: SessionId, dir: RemotePath },
     /// Another session tab was brought forward: its transfer lists follow.
@@ -767,6 +775,15 @@ impl SimpleComponent for App {
                 {
                     tracing::debug!("remote pane now shows {dir}");
                     connection.dir = dir;
+                }
+            }
+            AppMsg::Relaying {
+                session,
+                to_right,
+                to_left,
+            } => {
+                if let Some(session) = self.session(session) {
+                    session.show_relaying(to_right, to_left);
                 }
             }
             AppMsg::LeftDirChanged { session, dir } => {

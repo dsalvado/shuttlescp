@@ -127,12 +127,13 @@ impl PendingStore {
         self.claimed.borrow().contains(key)
     }
 
-    /// A site's records that no panel shows: its interrupted jobs.
-    fn unclaimed_for_site(&self, site_id: &str) -> Vec<PendingJob> {
+    /// A site's records that no panel shows: its interrupted jobs. With
+    /// `left_site_id`, those of that site-to-site pair instead.
+    fn unclaimed_for_site(&self, left_site_id: Option<&str>, site_id: &str) -> Vec<PendingJob> {
         let claimed = self.claimed.borrow();
         self.transfers
             .borrow()
-            .for_site(site_id)
+            .for_sites(left_site_id, site_id)
             .filter(|pending| !claimed.contains(&pending.key))
             .cloned()
             .collect()
@@ -153,8 +154,22 @@ pub struct PanelConnection {
     pub site_id: String,
     /// The open session.
     pub remote: Remote,
-    /// In a site-to-site session, the left pane's server (`remote` is the right pane's).
-    pub left: Option<Remote>,
+    /// The server's name, for the titles of site-to-site jobs.
+    pub name: String,
+    /// In a site-to-site session, the left pane's server (the fields above are the right
+    /// pane's).
+    pub left: Option<LeftConnection>,
+}
+
+/// The left pane's server of a site-to-site session.
+#[derive(Debug, Clone)]
+pub struct LeftConnection {
+    /// Id of its site, recorded with unfinished jobs next to the right one's.
+    pub site_id: String,
+    /// The open session.
+    pub remote: Remote,
+    /// The server's name, for the titles of site-to-site jobs.
+    pub name: String,
 }
 
 /// Messages handled by the transfers panel.
@@ -229,6 +244,13 @@ pub enum TransferPanelOutput {
         /// In the right pane: on the server.
         remote: Vec<SidePath>,
     },
+    /// Which ways running site-to-site jobs copy: left to right, right to left.
+    Relaying {
+        /// From the left pane's server to the right pane's.
+        to_right: bool,
+        /// From the right pane's server to the left pane's.
+        to_left: bool,
+    },
     /// The number of jobs in the lists changed.
     Counts {
         /// Jobs still running.
@@ -300,6 +322,8 @@ struct JobState {
     shelved: u64,
     /// Its first bytes arrived (and the pane it writes to was asked to refresh).
     writing: bool,
+    /// Site to site, the names of the servers it copies from and to, for its title.
+    route: Option<(String, String)>,
 }
 
 impl JobState {
@@ -362,6 +386,8 @@ pub struct TransferPanel {
     counts: (usize, usize, usize),
     /// Paths in use last reported to the main window: local, remote.
     in_use: (Vec<SidePath>, Vec<SidePath>),
+    /// Directions of running site-to-site jobs last reported: to the right, to the left.
+    relaying: (bool, bool),
     /// When the panes were last asked to refresh for a job's progress.
     last_target_refresh: Option<Instant>,
     /// Counter giving each shelved job its place in time.
@@ -478,6 +504,7 @@ impl Component for TransferPanel {
             banner_text: gtk::Label::default(),
             counts: (0, 0, 0),
             in_use: (Vec::new(), Vec::new()),
+            relaying: (false, false),
             last_target_refresh: None,
             next_shelf: 0,
         };
@@ -664,30 +691,38 @@ impl TransferPanel {
     fn start(&mut self, job: Job, pending_key: Option<String>, sender: &ComponentSender<Self>) {
         let id = self.next_id;
         self.next_id += 1;
-        // The server the sources are on and, site to site, the one copies go to.
-        let (remote, dest_remote) = match &self.connection {
+        // The server the sources are on and, site to site, the one copies go to (with
+        // their names, for the job's title).
+        let (remote, dest_remote, route) = match &self.connection {
             Some(connection) => {
-                let (left, right) = (connection.left.clone(), Some(connection.remote.clone()));
-                if job.left_server {
-                    (left, job.between_servers.then_some(right).flatten())
+                let right = (connection.remote.clone(), connection.name.clone());
+                let left = connection
+                    .left
+                    .as_ref()
+                    .map(|left| (left.remote.clone(), left.name.clone()));
+                let (from, to) = if job.left_server {
+                    (left, Some(right))
                 } else {
-                    (right, job.between_servers.then_some(left).flatten())
-                }
+                    (Some(right), left)
+                };
+                let to = to.filter(|_| job.between_servers);
+                let route = from
+                    .as_ref()
+                    .zip(to.as_ref())
+                    .map(|(from, to)| (from.1.clone(), to.1.clone()));
+                (from.map(|from| from.0), to.map(|to| to.0), route)
             }
-            None => (None, None),
+            None => (None, None, None),
         };
-        // Record jobs that use the server, so they can be resumed if interrupted. Not yet
-        // site to site: a record names one site.
-        let site_to_site = self
-            .connection
-            .as_ref()
-            .is_some_and(|connection| connection.left.is_some());
-        let pending_key = match (&self.connection, job.uses_server() && !site_to_site) {
+        // Record jobs that use the server, so they can be resumed if interrupted (site to
+        // site, with both sites).
+        let pending_key = match (&self.connection, job.uses_server()) {
             (Some(connection), true) => {
                 let key = pending_key.unwrap_or_else(new_site_id);
                 self.pending.add(PendingJob {
                     key: key.clone(),
                     site_id: connection.site_id.clone(),
+                    left_site_id: connection.left.as_ref().map(|left| left.site_id.clone()),
                     job: job.clone(),
                 });
                 self.save_pending();
@@ -719,6 +754,7 @@ impl TransferPanel {
                 fading: false,
                 shelved: 0,
                 writing: false,
+                route,
             },
         );
         self.store(ListKind::Queue).append(&row_object(RowKey {
@@ -925,7 +961,10 @@ impl TransferPanel {
         }
         self.interrupted.clear();
         if let Some(connection) = &connection {
-            self.interrupted = self.pending.unclaimed_for_site(&connection.site_id);
+            self.interrupted = self.pending.unclaimed_for_site(
+                connection.left.as_ref().map(|left| left.site_id.as_str()),
+                &connection.site_id,
+            );
         }
         let count = self.interrupted.len();
         if count > 0 {
@@ -1219,6 +1258,23 @@ impl TransferPanel {
             let _ = sender.output(TransferPanelOutput::InUse {
                 local: in_use.0,
                 remote: in_use.1,
+            });
+        }
+        let relaying = {
+            let shared = self.shared.borrow();
+            let ways: Vec<bool> = shared
+                .jobs
+                .values()
+                .filter(|job| job.is_running() && job.job.between_servers)
+                .map(|job| job.job.left_server)
+                .collect();
+            (ways.contains(&true), ways.contains(&false))
+        };
+        if relaying != self.relaying {
+            self.relaying = relaying;
+            let _ = sender.output(TransferPanelOutput::Relaying {
+                to_right: relaying.0,
+                to_left: relaying.1,
             });
         }
         if counts != self.counts {
@@ -1546,6 +1602,8 @@ fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
 fn job_row(job: &JobState, now: Instant) -> RowView {
     let deleting = job.job.kind == JobKind::Delete;
     let icon = match (job.job.kind, job.job.side) {
+        // Site to site: through this computer.
+        _ if job.route.is_some() => "computer-symbolic",
         (JobKind::Delete, _) => "user-trash-symbolic",
         _ if job.job.same_side => "go-next-symbolic",
         (_, Side::Local) => "go-up-symbolic",
@@ -1577,10 +1635,23 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         None => (job.meter.describe(job.done, job.total, now), false, None),
         Some(summary) => summary_text(job, summary),
     };
+    let title = match &job.route {
+        // "Copy report.pdf: left-server → right-server".
+        Some((from, to)) => format!(
+            "{} {}: {from} \u{2192} {to}",
+            if job.job.kind == JobKind::Move {
+                "Move"
+            } else {
+                "Copy"
+            },
+            job.job.subject()
+        ),
+        None => job.job.title(),
+    };
     let title = if job.job.resume {
-        format!("{} (resumed)", job.job.title())
+        format!("{title} (resumed)")
     } else {
-        job.job.title()
+        title
     };
     RowView {
         indent: 0,
@@ -1985,6 +2056,7 @@ mod tests {
         PendingJob {
             key: key.to_owned(),
             site_id: String::from("site"),
+            left_site_id: None,
             job: Job {
                 kind: JobKind::Copy,
                 side: Side::Local,
@@ -2011,7 +2083,7 @@ mod tests {
 
         // Act + Assert: only the earlier one is offered for resuming.
         let offered: Vec<String> = store
-            .unclaimed_for_site("site")
+            .unclaimed_for_site(None, "site")
             .into_iter()
             .map(|pending| pending.key)
             .collect();
@@ -2019,7 +2091,7 @@ mod tests {
 
         // Its session closes: the running one can be offered again.
         store.release("running");
-        assert_eq!(store.unclaimed_for_site("site").len(), 2);
+        assert_eq!(store.unclaimed_for_site(None, "site").len(), 2);
 
         // Both records reach the file, which every session shares.
         store.save();

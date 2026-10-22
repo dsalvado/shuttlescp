@@ -121,13 +121,7 @@ impl Job {
     /// Short description, e.g. "Upload report.pdf to /home/me" or "Delete 3 items from
     /// the server".
     pub fn title(&self) -> String {
-        let what = match self.sources.as_slice() {
-            [single] => single.file_name().map_or_else(
-                || single.to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            ),
-            many => format!("{} items", many.len()),
-        };
+        let what = self.subject();
         let dest = &self.dest_dir;
         let on_server = match self.side {
             Side::Local => "",
@@ -169,6 +163,17 @@ impl Job {
             self.source_pane()
         } else {
             self.source_pane().other()
+        }
+    }
+
+    /// What the job acts on, for titles: the name of its one source, or "3 items".
+    pub fn subject(&self) -> String {
+        match self.sources.as_slice() {
+            [single] => single.file_name().map_or_else(
+                || single.to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            many => format!("{} items", many.len()),
         }
     }
 

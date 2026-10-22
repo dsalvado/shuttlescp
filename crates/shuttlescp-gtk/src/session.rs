@@ -28,9 +28,10 @@ use shuttlescp_core::sites::Site;
 use shuttlescp_core::transfer::{Job, JobKind, Side};
 
 use crate::app::{App, AppMsg, NOT_CONNECTED};
-use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput};
+use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
 use crate::transfer_panel::{
-    PanelConnection, PendingStore, TransferPanel, TransferPanelMsg, TransferPanelOutput,
+    LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelMsg,
+    TransferPanelOutput,
 };
 
 /// Identifies a session for its whole life (positions change as tabs close).
@@ -70,6 +71,8 @@ pub struct Connection {
 pub struct LeftServer {
     /// "user@host" of the site, for the status bar.
     pub name: String,
+    /// Id of the site, recorded with unfinished transfers.
+    site_id: String,
     /// Server host name, for the tab title.
     host: String,
     /// Folder shown in the left pane.
@@ -207,6 +210,11 @@ impl Session {
                 TransferPanelOutput::TargetChanged(side) => {
                     AppMsg::TargetChanged { session: id, side }
                 }
+                TransferPanelOutput::Relaying { to_right, to_left } => AppMsg::Relaying {
+                    session: id,
+                    to_right,
+                    to_left,
+                },
                 TransferPanelOutput::InUse { local, remote } => AppMsg::PathsInUse {
                     session: id,
                     local,
@@ -252,6 +260,7 @@ impl Session {
             remote_in_use: Vec::new(),
             left_server: left.map(|(site, remote)| LeftServer {
                 name: site.display_name(),
+                site_id: site.id.clone(),
                 host: remote.host().to_owned(),
                 dir: remote.home().clone(),
                 remote,
@@ -371,6 +380,18 @@ impl Session {
                 pane_message(id, Side::Remote, output)
             });
         pane.emit(FilePaneMsg::InUse(self.remote_in_use.clone()));
+        // Each pane's menu names the other: "Download to this computer", "Upload to
+        // <server>", site to site "Copy to <server>".
+        pane.emit(FilePaneMsg::Peer(Some(match &self.left_server {
+            Some(left) => Peer {
+                name: left.host.clone(),
+                is_server: true,
+            },
+            None => Peer {
+                name: String::from("this computer"),
+                is_server: false,
+            },
+        })));
         self.set_right(pane.widget());
         self.transfer_tabs
             .show_connection(Some(&site.display_name()));
@@ -378,9 +399,17 @@ impl Session {
             .emit(TransferPanelMsg::Connection(Some(PanelConnection {
                 site_id: site.id.clone(),
                 remote: remote.clone(),
-                left: self.left_server.as_ref().map(|left| left.remote.clone()),
+                name: remote.host().to_owned(),
+                left: self.left_server.as_ref().map(|left| LeftConnection {
+                    site_id: left.site_id.clone(),
+                    remote: left.remote.clone(),
+                    name: left.host.clone(),
+                }),
             })));
-        self.local_pane.emit(FilePaneMsg::PeerAvailable(true));
+        self.local_pane.emit(FilePaneMsg::Peer(Some(Peer {
+            name: remote.host().to_owned(),
+            is_server: true,
+        })));
         tracing::info!("session {id}: connected to {}", site.display_name());
         self.connection = Some(Connection {
             name: site.display_name(),
@@ -400,7 +429,7 @@ impl Session {
             // Transfers hold their own handle on the session; the panel stops them so
             // the connection really closes.
             self.transfers.emit(TransferPanelMsg::Connection(None));
-            self.local_pane.emit(FilePaneMsg::PeerAvailable(false));
+            self.local_pane.emit(FilePaneMsg::Peer(None));
             // Dropping the pane drops its session, which closes the connection.
             drop(connection);
         }
@@ -429,6 +458,14 @@ impl Session {
         self.local_pane.emit(FilePaneMsg::Refresh);
         if let Some(connection) = &self.connection {
             connection.pane.emit(FilePaneMsg::Refresh);
+        }
+    }
+
+    /// Show which ways site-to-site transfers are copying, as arrows by the picture of
+    /// this computer.
+    pub fn show_relaying(&self, to_right: bool, to_left: bool) {
+        if let Some(relay) = &self.relay {
+            relay.show_directions(to_right, to_left);
         }
     }
 
@@ -528,6 +565,10 @@ impl SessionTab {
 struct RelayPicture {
     root: gtk::Box,
     lights: gtk::Box,
+    /// Above the computer, pointing right: files going from the left server to the right
+    /// one. Below, pointing left: the other way.
+    to_right: gtk::Image,
+    to_left: gtk::Image,
 }
 
 impl RelayPicture {
@@ -539,6 +580,24 @@ impl RelayPicture {
             .css_classes(["relay"])
             .tooltip_text("Files copied between the two servers pass through this computer")
             .build();
+        // The arrows keep their place while hidden (see `show_directions`), so nothing
+        // moves when they appear.
+        let arrow = |icon: &str, tooltip: &str| {
+            let image = gtk::Image::from_icon_name(icon);
+            image.add_css_class("relay-arrow");
+            image.set_tooltip_text(Some(tooltip));
+            image.set_opacity(0.0);
+            image
+        };
+        let to_right = arrow(
+            "go-next-symbolic",
+            "Copying from the left server to the right one",
+        );
+        let to_left = arrow(
+            "go-previous-symbolic",
+            "Copying from the right server to the left one",
+        );
+        root.append(&to_right);
         let computer = gtk::Image::from_icon_name("computer-symbolic");
         computer.set_pixel_size(32);
         root.append(&computer);
@@ -559,7 +618,19 @@ impl RelayPicture {
             lights.append(&light);
         }
         root.append(&lights);
-        Self { root, lights }
+        root.append(&to_left);
+        Self {
+            root,
+            lights,
+            to_right,
+            to_left,
+        }
+    }
+
+    /// Show the arrow of each way files are being copied.
+    fn show_directions(&self, to_right: bool, to_left: bool) {
+        self.to_right.set_opacity(if to_right { 1.0 } else { 0.0 });
+        self.to_left.set_opacity(if to_left { 1.0 } else { 0.0 });
     }
 
     /// Blink the lights while transfers run.
