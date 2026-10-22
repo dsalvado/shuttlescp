@@ -5,11 +5,11 @@
 //! by this app in a file of its own. Each entry is tagged with the app name and the site
 //! id, which also makes it identifiable in tools such as Seahorse.
 //!
-//! On macOS it is the user's login Keychain, which the system unlocks at login.
+//! On macOS it is the user's login Keychain, which the system unlocks at login, and on
+//! Windows the Credential Manager, which Windows protects with the user's login.
 //!
-//! Other platforms do not have a backend yet (Windows Credential Manager is the natural
-//! one): there every call reports [`KeyringError::Unsupported`] and the app simply works
-//! without saved passwords.
+//! Other platforms do not have a backend: there every call reports
+//! [`KeyringError::Unsupported`] and the app simply works without saved passwords.
 
 use secrecy::SecretString;
 use thiserror::Error;
@@ -253,8 +253,90 @@ mod backend {
     }
 }
 
+/// Windows: Credential Manager through `keyring-core` and its Windows store, which keep
+/// the (unsafe) Windows calls on their side.
+///
+/// Each password is a generic credential named `<application>:<site-id>` (e.g.
+/// "shuttlescp:3f2a..."), with the label as its comment, as Credential Manager shows
+/// under Windows Credentials. Credentials are kept on this computer only ("Local"),
+/// never roamed with a domain profile. The calls block, so they run on tokio's
+/// blocking threads.
+#[cfg(windows)]
+mod backend {
+    use std::collections::HashMap;
+
+    use keyring_core::api::CredentialStoreApi;
+    use secrecy::{ExposeSecret, SecretString};
+
+    use super::KeyringError;
+
+    // Lets `?` convert library errors.
+    impl From<keyring_core::Error> for KeyringError {
+        fn from(error: keyring_core::Error) -> Self {
+            match error {
+                keyring_core::Error::BadEncoding(_) => Self::NotText,
+                error => Self::Service(error.to_string()),
+            }
+        }
+    }
+
+    /// Run a blocking Credential Manager call off the async worker threads.
+    async fn blocking<T: Send + 'static>(
+        call: impl FnOnce() -> Result<T, KeyringError> + Send + 'static,
+    ) -> Result<T, KeyringError> {
+        tokio::task::spawn_blocking(call)
+            .await
+            .map_err(|error| KeyringError::Service(error.to_string()))?
+    }
+
+    /// The credential for keyring attributes (it need not exist yet).
+    fn entry(attributes: &[(&str, &str); 2]) -> Result<keyring_core::Entry, KeyringError> {
+        let target = format!("{}:{}", attributes[0].1, attributes[1].1);
+        let modifiers = HashMap::from([("target", target.as_str()), ("persistence", "Local")]);
+        let store = windows_native_keyring_store::Store::new()?;
+        Ok(store.build(attributes[0].1, attributes[1].1, Some(&modifiers))?)
+    }
+
+    pub(super) async fn store(
+        attributes: &[(&str, &str); 2],
+        label: &str,
+        password: &SecretString,
+    ) -> Result<(), KeyringError> {
+        let entry = entry(attributes)?;
+        let label = label.to_owned();
+        let password = password.clone();
+        blocking(move || {
+            entry.set_password(password.expose_secret())?;
+            entry.update_attributes(&HashMap::from([("comment", label.as_str())]))?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn load(
+        attributes: &[(&str, &str); 2],
+    ) -> Result<Option<SecretString>, KeyringError> {
+        let entry = entry(attributes)?;
+        blocking(move || match entry.get_password() {
+            Ok(password) => Ok(Some(SecretString::from(password))),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.into()),
+        })
+        .await
+    }
+
+    pub(super) async fn delete(attributes: &[(&str, &str); 2]) -> Result<(), KeyringError> {
+        let entry = entry(attributes)?;
+        blocking(move || match entry.delete_credential() {
+            Err(keyring_core::Error::NoEntry) | Ok(()) => Ok(()),
+            Err(error) => Err(error.into()),
+        })
+        .await
+    }
+}
+
 /// Other platforms: no password store yet.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod backend {
     use secrecy::SecretString;
 
@@ -291,11 +373,11 @@ mod tests {
         );
     }
 
-    /// Writes to the real login Keychain, so only run on request:
-    /// `cargo test -p shuttlescp-core keychain_round_trip -- --ignored`
-    #[cfg(target_os = "macos")]
+    /// Writes to the real login Keychain (macOS) or Credential Manager (Windows), so only
+    /// run on request: `cargo test -p shuttlescp-core keychain_round_trip -- --ignored`
+    #[cfg(any(target_os = "macos", windows))]
     #[tokio::test]
-    #[ignore = "uses the user's real Keychain"]
+    #[ignore = "uses the user's real password store"]
     async fn keychain_round_trip() {
         use secrecy::ExposeSecret;
 
