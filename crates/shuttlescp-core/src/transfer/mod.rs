@@ -103,6 +103,10 @@ pub struct Job {
     /// Copies go to another folder on the same side (e.g. a file dragged onto a folder
     /// in its own pane) instead of to the other side.
     pub same_side: bool,
+    /// Site to site: the sources are on one server and copies go to another server
+    /// (`side` is [`Side::Remote`] and so is `dest_dir`). The data passes through this
+    /// computer, as with `scp -3`; [`run`] gets both connections.
+    pub between_servers: bool,
     /// Continue an earlier, interrupted run of this job: files already copied (same
     /// size and date at the destination) are not copied again or asked about, and
     /// sources already moved away are passed over.
@@ -126,6 +130,12 @@ impl Job {
             Side::Remote => " on the server",
         };
         match (self.kind, self.side) {
+            (JobKind::Copy, _) if self.between_servers => {
+                format!("Copy {what} to {dest} on the other server")
+            }
+            (JobKind::Move, _) if self.between_servers => {
+                format!("Move {what} to {dest} on the other server")
+            }
             (JobKind::Copy, _) if self.same_side => format!("Copy {what} to {dest}{on_server}"),
             (JobKind::Move, _) if self.same_side => format!("Move {what} to {dest}{on_server}"),
             (JobKind::Copy, Side::Local) => format!("Upload {what} to {dest}"),
@@ -159,8 +169,9 @@ impl Job {
     }
 
     /// Where copies go: the other side, or the same side for a [`Job::same_side`] job.
+    /// Site to site, both are servers ([`Side::Remote`]).
     pub fn dest_side(&self) -> Side {
-        if self.same_side {
+        if self.same_side || self.between_servers {
             self.side
         } else {
             self.side.other()
@@ -178,6 +189,8 @@ struct JobRecord {
     dest_dir: PathBuf,
     #[serde(default)]
     same_side: bool,
+    #[serde(default)]
+    between_servers: bool,
     #[serde(default)]
     resume: bool,
 }
@@ -208,6 +221,7 @@ impl From<JobRecord> for Job {
             sources: Vec::new(),
             dest_dir: SidePath::Local(PathBuf::new()),
             same_side: record.same_side,
+            between_servers: record.between_servers,
             resume: record.resume,
         };
         job.sources = record
@@ -228,6 +242,7 @@ impl From<Job> for JobRecord {
             sources: job.sources.into_iter().map(JobRecord::saved).collect(),
             dest_dir: JobRecord::saved(job.dest_dir),
             same_side: job.same_side,
+            between_servers: job.between_servers,
             resume: job.resume,
         }
     }
@@ -524,7 +539,10 @@ type Sink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
 /// # Arguments
 ///
 /// * `job` - What to do
-/// * `remote` - The server connection; needed unless the job only deletes local files
+/// * `remote` - The server connection; needed unless the job only deletes local files.
+///   Site to site, the connection to the server the sources are on
+/// * `dest_remote` - Site to site ([`Job::between_servers`]), the connection to the
+///   server copies go to; otherwise unused
 /// * `cancel` - Lets the caller stop the job
 /// * `on_event` - Receives progress; called from background tasks, so it must be cheap
 ///   and thread-safe (e.g. send to a channel)
@@ -535,6 +553,7 @@ type Sink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
 pub async fn run(
     job: Job,
     remote: Option<Remote>,
+    dest_remote: Option<Remote>,
     cancel: CancelFlag,
     on_event: impl Fn(TransferEvent) + Send + Sync + 'static,
 ) -> JobSummary {
@@ -544,12 +563,17 @@ pub async fn run(
         Side::Local => Some(Endpoint::Local),
         Side::Remote => remote.clone().map(Endpoint::Remote),
     };
+    let dest = if job.between_servers {
+        dest_remote.map(Endpoint::Remote)
+    } else {
+        endpoint(job.dest_side())
+    };
     let summary = match endpoint(job.side) {
         None => failed_to_start("not connected to a server"),
-        Some(source) => {
-            let dest = endpoint(job.dest_side());
-            execute(&job, source, dest, &cancel, &sink).await
+        Some(_) if job.between_servers && dest.is_none() => {
+            failed_to_start("not connected to the server copies go to")
         }
+        Some(source) => execute(&job, source, dest, &cancel, &sink).await,
     };
     let seconds = started.elapsed().as_secs_f64();
     let amount = if job.kind == JobKind::Delete || summary.bytes == 0 {

@@ -716,7 +716,7 @@ impl TransferPanel {
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {
-                    transfer::run(job, remote, cancel, move |event| {
+                    transfer::run(job, remote, None, cancel, move |event| {
                         // Fails only once the panel is gone, when nobody needs the event.
                         let _ = out.send((id, event));
                     })
@@ -1974,6 +1974,7 @@ mod tests {
                 sources: vec![SidePath::Local(PathBuf::from("/data/a"))],
                 dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
+                between_servers: false,
                 resume: false,
             },
         }

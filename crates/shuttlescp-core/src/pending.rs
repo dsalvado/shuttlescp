@@ -94,6 +94,7 @@ mod tests {
                 sources: vec![SidePath::Local(PathBuf::from("/data/a"))],
                 dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
+                between_servers: false,
                 resume: false,
             },
         }

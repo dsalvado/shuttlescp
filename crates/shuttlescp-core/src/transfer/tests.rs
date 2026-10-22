@@ -48,6 +48,7 @@ fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
         sources: sources.into_iter().map(SidePath::Local).collect(),
         dest_dir: local(dest_dir),
         same_side: false,
+        between_servers: false,
         resume: false,
     }
 }
@@ -57,6 +58,7 @@ fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
 fn same_side_job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
     Job {
         same_side: true,
+        between_servers: false,
         ..job(kind, sources, dest_dir)
     }
 }
@@ -535,6 +537,81 @@ async fn a_paused_file_waits_then_continues_from_its_partial_copy() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn files_of_every_size_copy_whole() {
+    // Sizes around the 256 KiB chunk: empty, one byte, exactly one and two chunks, and
+    // one byte either side, so every way a file can end is copied.
+    const CHUNK: usize = 256 * 1024;
+    let sizes = [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 2 * CHUNK, 2 * CHUNK + 7];
+    let (_temp, src, dst) = setup();
+    let mut sources = Vec::new();
+    for size in sizes {
+        let path = src.join(format!("f{size}"));
+        std::fs::write(
+            &path,
+            (0..size).map(|i| (i % 253) as u8).collect::<Vec<_>>(),
+        )
+        .expect("write");
+        sources.push(path);
+    }
+
+    let (summary, _) = run_local(job(JobKind::Copy, sources, &dst)).await;
+
+    assert!(summary.is_complete(), "{summary:?}");
+    for size in sizes {
+        let copy = std::fs::read(dst.join(format!("f{size}"))).expect("read");
+        assert_eq!(copy.len(), size, "size {size}");
+        assert!(copy.iter().enumerate().all(|(i, &b)| b == (i % 253) as u8));
+    }
+}
+
+#[test]
+fn site_to_site_jobs_go_to_the_server_and_say_so() {
+    let job = Job {
+        kind: JobKind::Copy,
+        side: Side::Remote,
+        sources: vec![remote("/srv/a/report.pdf")],
+        dest_dir: remote("/home/b"),
+        same_side: false,
+        between_servers: true,
+        resume: false,
+    };
+    assert_eq!(job.dest_side(), Side::Remote);
+    assert!(job.uses_server());
+    assert_eq!(
+        job.title(),
+        "Copy report.pdf to /home/b on the other server"
+    );
+    let moved = Job {
+        kind: JobKind::Move,
+        ..job.clone()
+    };
+    assert_eq!(
+        moved.title(),
+        "Move report.pdf to /home/b on the other server"
+    );
+
+    // Saved and read back with both ends as server paths.
+    let json = serde_json::to_string(&job).expect("save");
+    let back: Job = serde_json::from_str(&json).expect("load");
+    assert_eq!(back, job);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_to_site_job_without_its_destination_does_not_start() {
+    let job = Job {
+        kind: JobKind::Copy,
+        side: Side::Remote,
+        sources: vec![remote("/srv/a/report.pdf")],
+        dest_dir: remote("/home/b"),
+        same_side: false,
+        between_servers: true,
+        resume: false,
+    };
+    let summary = run(job, None, None, CancelFlag::default(), |_| {}).await;
+    assert_eq!(summary.error.as_deref(), Some("not connected to a server"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn create_folder_and_rename_refuse_taken_names() {
     let (_temp, src, _dst) = setup();
 
@@ -660,6 +737,7 @@ fn job_titles_name_the_direction() {
         sources: vec![remote("/a"), remote("/b")],
         dest_dir: local(Path::new("")),
         same_side: false,
+        between_servers: false,
         resume: false,
     };
     assert_eq!(many.title(), "Delete 2 items from the server");

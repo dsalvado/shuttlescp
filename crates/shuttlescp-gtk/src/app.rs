@@ -860,6 +860,7 @@ impl SimpleComponent for App {
                         sources: paths,
                         dest_dir,
                         same_side: from_this_pane,
+                        between_servers: false,
                         resume: false,
                     },
                 );
@@ -1396,6 +1397,7 @@ impl App {
             sources: paths,
             dest_dir,
             same_side: false,
+            between_servers: false,
             resume: false,
         };
         if kind != JobKind::Delete {
