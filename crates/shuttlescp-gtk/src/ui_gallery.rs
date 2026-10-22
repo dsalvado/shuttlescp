@@ -53,6 +53,8 @@ pub fn run(
         return;
     }
     let ago = |hours: u64| SystemTime::now() - Duration::from_secs(hours * 3600);
+    let open_login = Rc::new(open_login);
+    let open_login_again = Rc::clone(&open_login);
     let steps: Vec<Step> = vec![
         ("main-window", Box::new(|_| {})),
         (
@@ -65,7 +67,23 @@ pub fn run(
         ),
         ("sessions", Box::new(move |_| open_sessions())),
         ("sessions-first", Box::new(move |_| focus_first())),
-        ("login", Box::new(move |_| open_login())),
+        (
+            "login-site-to-site",
+            Box::new(move |window| {
+                open_login_again();
+                // The dialog opens on the next main-loop turns; then bring its Site to
+                // site tab forward (the "login" step after this one shows Direct).
+                show_login_tab(window, "site-to-site");
+            }),
+        ),
+        (
+            "login",
+            Box::new(move |window| {
+                open_login();
+                // Back to the Direct tab (the dialog keeps the last one shown).
+                show_login_tab(window, "direct");
+            }),
+        ),
         (
             "about",
             Box::new(|window| {
@@ -215,6 +233,60 @@ fn newest_dialog(main: &gtk::Window) -> Option<gtk::Window> {
         .rev()
         .filter_map(|position| toplevels.item(position).and_downcast::<gtk::Window>())
         .find(|window| window != main && window.is_visible())
+}
+
+/// Once the Login dialog has opened (it does on the next main-loop turn), bring the tab
+/// named `tab` forward; on the Site to site tab, also pick a site in each list so their
+/// summaries show.
+fn show_login_tab(main: &gtk::Window, tab: &'static str) {
+    let main = main.clone();
+    glib::idle_add_local_once(move || {
+        let Some(dialog) = newest_dialog(&main) else {
+            return;
+        };
+        let Some(stack) = find_stack(dialog.upcast_ref()) else {
+            return;
+        };
+        stack.set_visible_child_name(tab);
+        if let Some(page) = stack.child_by_name(tab).filter(|_| tab == "site-to-site") {
+            for (list, row) in site_lists(&page).iter().zip([0, 2]) {
+                if let Some(row) = list.row_at_index(row) {
+                    row.activate();
+                }
+            }
+        }
+    });
+}
+
+/// The site lists inside `widget`, in order.
+fn site_lists(widget: &gtk::Widget) -> Vec<gtk::ListBox> {
+    let mut found = Vec::new();
+    if let Some(list) = widget.downcast_ref::<gtk::ListBox>()
+        && list.has_css_class("site-list")
+    {
+        found.push(list.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        found.extend(site_lists(&current));
+        child = current.next_sibling();
+    }
+    found
+}
+
+/// The first stack inside `widget` (depth first), e.g. the Login dialog's tabs.
+fn find_stack(widget: &gtk::Widget) -> Option<gtk::Stack> {
+    if let Some(stack) = widget.downcast_ref::<gtk::Stack>() {
+        return Some(stack.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(stack) = find_stack(&current) {
+            return Some(stack);
+        }
+        child = current.next_sibling();
+    }
+    None
 }
 
 /// Close every window but the main one.

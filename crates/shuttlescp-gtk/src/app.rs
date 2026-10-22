@@ -192,6 +192,13 @@ pub enum AppMsg {
         /// The open SFTP session.
         remote: Remote,
     },
+    /// The Login dialog connected to two sites, for copying between them.
+    ConnectedPair {
+        /// The left pane's site and connection.
+        left: (Site, Remote),
+        /// The right pane's site and connection.
+        right: (Site, Remote),
+    },
     /// A session's remote pane moved to another folder.
     RemoteDirChanged { session: SessionId, dir: RemotePath },
     /// Another session tab was brought forward: its transfer lists follow.
@@ -572,6 +579,9 @@ impl SimpleComponent for App {
                 .forward(sender.input_sender(), |output| match output {
                     LoginOutput::ShowAtStartupChanged(show) => AppMsg::ShowLoginAtStartup(show),
                     LoginOutput::Connected { site, remote } => AppMsg::Connected { site, remote },
+                    LoginOutput::ConnectedPair { left, right } => {
+                        AppMsg::ConnectedPair { left, right }
+                    }
                 }),
             disconnect_action,
             bottom_panel: bottom_panel.clone(),
@@ -747,6 +757,15 @@ impl SimpleComponent for App {
             }
             AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
             AppMsg::Connected { site, remote } => self.connect(&site, remote, &sender),
+            AppMsg::ConnectedPair { left, right } => {
+                // The two-server session comes in the next step; until then the
+                // connections are closed again.
+                tracing::warn!(
+                    "connected to {} and {} site to site, but site-to-site sessions are not built yet",
+                    left.0.display_name(),
+                    right.0.display_name()
+                );
+            }
             AppMsg::RemoteDirChanged { session, dir } => {
                 if let Some(connection) = self
                     .session_mut(session)
