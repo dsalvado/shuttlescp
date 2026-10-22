@@ -1,7 +1,8 @@
 //! Dragging files and folders: onto a folder in the same pane, or into the other pane.
 //!
-//! Every cell of the file list is a drag source: dragging any cell of a row drags the
-//! selected rows. Folder rows and ".." are drop targets for their folder. The list
+//! A file's icon and name (in the Name column) are its drag handles: dragging one drags
+//! the selected rows. Elsewhere a press draws a selection box instead (see
+//! `attach_box_select`). Folder rows and ".." are drop targets for their folder. The list
 //! itself takes drops from the other pane anywhere else, into the folder it shows.
 //! Either way the drop is handed to the pane, which asks whether to copy or move.
 
@@ -18,7 +19,7 @@ use relm4::gtk::{self, gdk, glib, graphene};
 use shuttlescp_core::entry::EntryKind;
 use shuttlescp_core::path::{RemotePath, SidePath};
 
-use super::{ACTION_GROUP, Dropped, Row};
+use super::{ACTION_GROUP, DRAG_HANDLE_CLASS, Dropped, Row};
 
 /// Action a drop on a folder row triggers, with the drop as a [`DropVariant`].
 pub(super) const DROP_ACTION: &str = "drop";
@@ -41,8 +42,23 @@ struct DragPayload {
     paths: Vec<SidePath>,
 }
 
-/// Make dragging a cell drag the selected rows (or just the cell's row, if it is not
-/// selected). The ".." row cannot be dragged.
+/// Whether (`x`, `y`) in `cell` is on one of its drag handles.
+fn on_handle(cell: &gtk::Widget, x: f64, y: f64) -> bool {
+    let mut widget = cell.pick(x, y, gtk::PickFlags::DEFAULT);
+    while let Some(current) = widget {
+        if current.has_css_class(DRAG_HANDLE_CLASS) {
+            return true;
+        }
+        if current == *cell {
+            break;
+        }
+        widget = current.parent();
+    }
+    false
+}
+
+/// Make dragging a cell's drag handle (its icon or name) drag the selected rows (or
+/// just the cell's row, if it is not selected). The ".." row cannot be dragged.
 ///
 /// # Arguments
 ///
@@ -56,7 +72,9 @@ pub(super) fn attach_drag_source(cell: &impl IsA<gtk::Widget>, item: &gtk::ListI
     let cell_widget = cell.clone().upcast::<gtk::Widget>();
     source.connect_prepare(move |source, x, y| {
         let item = item.upgrade()?;
-        if with_row(&item, |row| matches!(row, Row::Parent { .. }))? {
+        if with_row(&item, |row| matches!(row, Row::Parent { .. }))?
+            || !on_handle(&cell_widget, x, y)
+        {
             return None;
         }
         let view = list_of(&cell_widget)?;

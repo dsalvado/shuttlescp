@@ -7,6 +7,15 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- Selecting several files works as in a file manager: press the left button on an empty
+  spot (anywhere but a file's icon or name, including the empty space below the rows)
+  and drag a box over them. Ctrl (Cmd on macOS) adds to the selection, the list scrolls
+  when the box reaches its edge, and a click on the empty space clears the selection.
+  Dragging a file's icon or name still drags the selected files. This replaces
+  selecting with a right-button drag.
+
 ### Fixed
 
 - A ShuttleSCP built from source in debug mode (`cargo run`) no longer takes over the

@@ -761,3 +761,11 @@ image.session-activity {
 label.in-transfer {
     color: #f66151;
 }
+
+/* The selection box drawn while dragging over a file list (file_pane.rs,
+   attach_box_select). */
+.selection-box {
+    background-color: alpha(@theme_selected_bg_color, 0.15);
+    border: 1px solid alpha(@theme_selected_bg_color, 0.7);
+    border-radius: 2px;
+}

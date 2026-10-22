@@ -68,9 +68,19 @@ const IN_USE_CLASS: &str = "in-transfer";
 /// Name suggested for a new folder.
 const NEW_FOLDER_NAME: &str = "New Folder";
 
-/// How far (in pixels) the pointer must move with the right button held before it
-/// selects rows instead of opening the menu.
-const RANGE_SELECT_THRESHOLD: f64 = 4.0;
+/// CSS class of the parts of a row that drag its files: the icon and the name in the
+/// Name column. Pressing anywhere else in the list starts a selection box instead.
+const DRAG_HANDLE_CLASS: &str = "drag-handle";
+/// How far (in pixels) the pointer must move with the button held before a selection
+/// box starts (less is a click).
+const BOX_SELECT_THRESHOLD: f64 = 4.0;
+/// While a selection box is drawn, the list scrolls when the pointer is this close to
+/// its top or bottom edge (or beyond it); the column titles are within the top margin.
+const AUTOSCROLL_EDGE: f64 = 28.0;
+/// How often the list scrolls while the pointer stays near an edge.
+const AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(30);
+/// The most it scrolls per step, in pixels (the further past the edge, the faster).
+const AUTOSCROLL_MAX_STEP: f64 = 40.0;
 
 thread_local! {
     // The list item of each cell, by the cell's address, so a point in the list can be
@@ -583,17 +593,24 @@ impl Component for FilePane {
                 },
             },
 
-            gtk::ScrolledWindow {
+            // The list, with the selection box drawn over it.
+            gtk::Overlay {
                 set_vexpand: true,
+                add_overlay: &selection_box,
 
-                #[local_ref]
-                entries_view -> gtk::ColumnView {
-                    // GTK themes style "data-table" lists with short rows.
-                    add_css_class: "data-table",
-                    // Lines between columns, drawn dotted by style.css.
-                    set_show_column_separators: true,
-                    connect_activate[sender] => move |_, position| {
-                        sender.input(FilePaneMsg::Activate(position));
+                #[wrap(Some)]
+                set_child = &gtk::ScrolledWindow {
+                    set_vexpand: true,
+
+                    #[local_ref]
+                    entries_view -> gtk::ColumnView {
+                        // GTK themes style "data-table" lists with short rows.
+                        add_css_class: "data-table",
+                        // Lines between columns, drawn dotted by style.css.
+                        set_show_column_separators: true,
+                        connect_activate[sender] => move |_, position| {
+                            sender.input(FilePaneMsg::Activate(position));
+                        },
                     },
                 },
             },
@@ -667,7 +684,15 @@ impl Component for FilePane {
         }
         entries.view.add_controller(keys);
         attach_empty_space_click(&entries.view, &sender);
-        attach_range_select(&entries.view);
+        // The selection box, drawn over the list while the user drags one out.
+        let selection_box = gtk::Box::builder()
+            .css_classes(["selection-box"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Start)
+            .can_target(false)
+            .visible(false)
+            .build();
+        attach_box_select(&entries.view, &selection_box);
         {
             let sender = sender.clone();
             drag::attach_list_drop(&entries.view, move |dropped| {
@@ -1122,8 +1147,6 @@ fn pane_popover(root: &gtk::Box, menu: &gio::Menu) -> gtk::PopoverMenu {
 
 /// Make right-clicking the empty space below the rows open the context menu (with
 /// nothing selected, so it offers New Folder). Clicks on rows are left to their cells.
-/// The menu opens on release, so dragging with the right button can select rows
-/// instead (see [`attach_range_select`]).
 ///
 /// # Arguments
 ///
@@ -1159,21 +1182,24 @@ fn attach_empty_space_click(view: &gtk::ColumnView, sender: &ComponentSender<Fil
     view.add_controller(click);
 }
 
-/// Give a cell its mouse handling: right-click for the context menu, dragging, and
-/// (on folder rows) taking drops.
+/// Give a cell its mouse handling: right-click for the context menu, dragging (from
+/// the Name column's icon and name), and (on folder rows) taking drops.
 ///
 /// # Arguments
 ///
 /// * `cell` - The cell's root widget
 /// * `item` - The list item the cell belongs to
-fn attach_cell_handlers(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
+/// * `draggable` - Whether its drag handles drag the files (the Name column)
+fn attach_cell_handlers(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem, draggable: bool) {
     let key = cell.as_ptr() as usize;
     CELL_ITEMS.with(|items| items.borrow_mut().insert(key, item.downgrade()));
     cell.connect_destroy(move |_| {
         CELL_ITEMS.with(|items| items.borrow_mut().remove(&key));
     });
     attach_context_click(cell, item);
-    drag::attach_drag_source(cell, item);
+    if draggable {
+        drag::attach_drag_source(cell, item);
+    }
     drag::attach_folder_drop(cell, item);
 }
 
@@ -1181,8 +1207,7 @@ fn attach_cell_handlers(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
 ///
 /// The column view does not report which row was right-clicked, so each cell listens
 /// itself and triggers the pane's context menu action with its row position. The menu
-/// opens on release, and not after a right-button drag (which selects rows instead):
-/// moving the pointer cancels the click.
+/// opens on release.
 ///
 /// # Arguments
 ///
@@ -1214,49 +1239,269 @@ fn attach_context_click(cell: &impl IsA<gtk::Widget>, item: &gtk::ListItem) {
     cell.add_controller(click);
 }
 
-/// Make dragging with the right button select every row from where the drag started
-/// to the pointer, as it moves (the selection can then be dragged with the left button).
+/// A selection box being dragged out (see [`attach_box_select`]).
+struct BoxSelect {
+    /// Where the press was, in the list's coordinates; its height is kept as a
+    /// position in the whole (scrolled) list, so the box stretches as the list scrolls.
+    start_x: f64,
+    start_list_y: f64,
+    /// The row pressed on; `None` for the empty space below the rows.
+    start_row: Option<u32>,
+    /// Where the pointer is now, in the list's coordinates.
+    pointer: (f64, f64),
+    /// The selection to add to (Ctrl held), or an empty one.
+    base: gtk::Bitset,
+    /// Ctrl (Cmd on macOS) was held: the box adds to the selection.
+    adding: bool,
+    /// The pointer has moved far enough for this to be a box, not a click.
+    active: bool,
+    /// Scrolls the list while the pointer is near an edge.
+    autoscroll: Option<glib::SourceId>,
+}
+
+/// Select files with a box, as file managers do: pressing the left button anywhere in
+/// the list except on a file's icon or name (which drags the files instead) and moving
+/// draws a box, and every row it touches is selected. Ctrl (Cmd on macOS) adds them to
+/// the selection. Near the top or bottom edge the list scrolls on. A plain click on the
+/// empty space below the rows clears the selection.
 ///
 /// # Arguments
 ///
 /// * `view` - The file list
-fn attach_range_select(view: &gtk::ColumnView) {
+/// * `band` - The box drawn over the list (inside an overlay around the list)
+fn attach_box_select(view: &gtk::ColumnView, band: &gtk::Box) {
     let drag = gtk::GestureDrag::builder()
-        .button(gdk::BUTTON_SECONDARY)
+        .button(gdk::BUTTON_PRIMARY)
         .build();
-    // The row the drag started on; `None` until the pointer has moved far enough.
-    let start: Rc<std::cell::Cell<Option<u32>>> = Rc::default();
+    let state: Rc<RefCell<Option<BoxSelect>>> = Rc::default();
     {
-        let start = Rc::clone(&start);
-        drag.connect_drag_begin(move |_, _, _| start.set(None));
+        let state = Rc::clone(&state);
+        drag.connect_drag_begin(move |gesture, x, y| {
+            let Some(view) = gesture.widget().and_downcast::<gtk::ColumnView>() else {
+                return;
+            };
+            // On a file's icon or name the press drags files; on a column title it sorts.
+            if starts_elsewhere(&view, x, y) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            let Some(selection) = view.model() else {
+                return;
+            };
+            let adding = gesture
+                .current_event_state()
+                .intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::META_MASK);
+            let scrolled = view
+                .vadjustment()
+                .map_or(0.0, |adjustment| adjustment.value());
+            *state.borrow_mut() = Some(BoxSelect {
+                start_x: x,
+                start_list_y: y + scrolled,
+                start_row: row_at_height(&view, y),
+                pointer: (x, y),
+                base: if adding {
+                    selection.selection()
+                } else {
+                    gtk::Bitset::new_empty()
+                },
+                adding,
+                active: false,
+                autoscroll: None,
+            });
+        });
     }
-    drag.connect_drag_update(move |gesture, dx, dy| {
-        let (Some(view), Some((x, y))) = (
-            gesture.widget().and_downcast::<gtk::ColumnView>(),
-            gesture.start_point(),
-        ) else {
-            return;
-        };
-        let Some(selection) = view.model() else {
-            return;
-        };
-        let rows = selection.n_items();
-        if rows == 0 {
-            return;
+    {
+        let (state, band) = (Rc::clone(&state), band.clone());
+        drag.connect_drag_update(move |gesture, dx, dy| {
+            let Some(view) = gesture.widget().and_downcast::<gtk::ColumnView>() else {
+                return;
+            };
+            let start_autoscroll = {
+                let mut state = state.borrow_mut();
+                let Some(current) = state.as_mut() else {
+                    return;
+                };
+                let Some((x, y)) = gesture.start_point() else {
+                    return;
+                };
+                current.pointer = (x + dx, y + dy);
+                if !current.active && dx.hypot(dy) < BOX_SELECT_THRESHOLD {
+                    return;
+                }
+                // From here on the press is ours: the row under it does not also take
+                // it as a click.
+                let starting = !current.active;
+                current.active = true;
+                starting
+            };
+            if start_autoscroll {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let timer = autoscroll(&view, &band, &state);
+                if let Some(current) = state.borrow_mut().as_mut() {
+                    current.autoscroll = Some(timer);
+                }
+            }
+            if let Some(current) = state.borrow().as_ref() {
+                update_box(&view, &band, current);
+            }
+        });
+    }
+    let finish = {
+        let (state, band) = (Rc::clone(&state), band.clone());
+        move |gesture: &gtk::GestureDrag| {
+            band.set_visible(false);
+            let Some(finished) = state.borrow_mut().take() else {
+                return;
+            };
+            if let Some(timer) = finished.autoscroll {
+                timer.remove();
+            }
+            // A click (no box) on the empty space below the rows clears the selection.
+            if !finished.active
+                && !finished.adding
+                && finished.start_row.is_none()
+                && let Some(selection) = gesture
+                    .widget()
+                    .and_downcast::<gtk::ColumnView>()
+                    .and_then(|view| view.model())
+            {
+                selection.unselect_all();
+            }
         }
-        let first = match start.get() {
-            Some(first) => first,
-            None if dx.hypot(dy) < RANGE_SELECT_THRESHOLD => return,
-            // Starting below the last row counts as starting on it.
-            None => row_at(&view, x, y).unwrap_or(rows - 1),
-        };
-        start.set(Some(first));
-        // Beyond the rows: above them is the first row, below them the last.
-        let current = row_at(&view, x + dx, y + dy).unwrap_or(if dy < 0.0 { 0 } else { rows - 1 });
-        let (low, high) = (first.min(current), first.max(current));
-        selection.select_range(low, high - low + 1, true);
+    };
+    {
+        let finish = finish.clone();
+        drag.connect_drag_end(move |gesture, _, _| finish(gesture));
+    }
+    drag.connect_cancel(move |gesture, _| {
+        if let Some(gesture) = gesture.downcast_ref::<gtk::GestureDrag>() {
+            finish(gesture);
+        }
     });
     view.add_controller(drag);
+}
+
+/// Whether a press at (`x`, `y`) in the file list is for something other than a
+/// selection box: a file's icon or name (dragging files) or a column title (sorting).
+fn starts_elsewhere(view: &gtk::ColumnView, x: f64, y: f64) -> bool {
+    let mut widget = view.pick(x, y, gtk::PickFlags::DEFAULT);
+    while let Some(current) = widget {
+        if current.has_css_class(DRAG_HANDLE_CLASS) || current.type_().name().contains("Title") {
+            return true;
+        }
+        if current == *view.upcast_ref::<gtk::Widget>() {
+            break;
+        }
+        widget = current.parent();
+    }
+    false
+}
+
+/// Select the rows the box touches, and draw the box.
+fn update_box(view: &gtk::ColumnView, band: &gtk::Box, current: &BoxSelect) {
+    let Some(selection) = view.model() else {
+        return;
+    };
+    let rows = selection.n_items();
+    let scrolled = view
+        .vadjustment()
+        .map_or(0.0, |adjustment| adjustment.value());
+    let start_y = current.start_list_y - scrolled;
+    let (x, y) = current.pointer;
+    // The row under the pointer. Above the rows (over the column titles, or past the
+    // top), the first row on screen; below them, none.
+    let row = row_at_height(view, y).or_else(|| (y < start_y).then(|| first_row_from(view, y)));
+    // Starting below the rows and moving up selects from the last row up.
+    let range = match (current.start_row, row) {
+        (None, None) => None,
+        (Some(row), None) | (None, Some(row)) => Some((row, rows.saturating_sub(1))),
+        (Some(start), Some(row)) => Some((start.min(row), start.max(row))),
+    };
+    let selected = current.base.copy();
+    if let Some((low, high)) = range
+        && rows > 0
+    {
+        selected.add_range_closed(low, high.min(rows - 1));
+    }
+    selection.set_selection(&selected, &gtk::Bitset::new_range(0, rows));
+
+    // The box, in the overlay's coordinates, kept within the list.
+    let Some(overlay) = band.parent() else {
+        return;
+    };
+    let height = f64::from(view.height());
+    let (top, bottom) = (start_y.min(y).max(0.0), start_y.max(y).min(height));
+    let (left, right) = (current.start_x.min(x).max(0.0), current.start_x.max(x));
+    let Some(corner) = view.compute_point(&overlay, &graphene::Point::new(left as f32, top as f32))
+    else {
+        return;
+    };
+    band.set_margin_start(corner.x().max(0.0) as i32);
+    band.set_margin_top(corner.y().max(0.0) as i32);
+    band.set_size_request(
+        (right.min(f64::from(view.width())) - left).max(1.0) as i32,
+        (bottom - top).max(1.0) as i32,
+    );
+    band.set_visible(true);
+}
+
+/// While a selection box is drawn, scroll the list when the pointer is near its top or
+/// bottom edge, stretching the box over the rows that come into view.
+fn autoscroll(
+    view: &gtk::ColumnView,
+    band: &gtk::Box,
+    state: &Rc<RefCell<Option<BoxSelect>>>,
+) -> glib::SourceId {
+    let (view, band, state) = (view.downgrade(), band.downgrade(), Rc::downgrade(state));
+    glib::timeout_add_local(AUTOSCROLL_INTERVAL, move || {
+        let (Some(view), Some(band), Some(state)) =
+            (view.upgrade(), band.upgrade(), state.upgrade())
+        else {
+            return glib::ControlFlow::Break;
+        };
+        let state = state.borrow();
+        let Some(current) = state.as_ref() else {
+            return glib::ControlFlow::Break;
+        };
+        let (_, y) = current.pointer;
+        let height = f64::from(view.height());
+        let step = if y < AUTOSCROLL_EDGE {
+            -(AUTOSCROLL_EDGE - y)
+        } else if y > height - AUTOSCROLL_EDGE {
+            y - (height - AUTOSCROLL_EDGE)
+        } else {
+            return glib::ControlFlow::Continue;
+        };
+        if let Some(adjustment) = view.vadjustment() {
+            let before = adjustment.value();
+            adjustment.set_value(before + step.clamp(-AUTOSCROLL_MAX_STEP, AUTOSCROLL_MAX_STEP));
+            if adjustment.value() != before {
+                update_box(&view, &band, current);
+            }
+        }
+        glib::ControlFlow::Continue
+    })
+}
+
+/// The row at height `y` in the file list, whatever the pointer's side position (a
+/// box can start right of the columns).
+fn row_at_height(view: &gtk::ColumnView, y: f64) -> Option<u32> {
+    // Inside the Name column, which always comes first; a little in from the edge.
+    row_at(view, 24.0, y)
+}
+
+/// The first row at or below height `y` in the file list (the top one on screen when
+/// `y` is above the rows), or 0 if none is found.
+fn first_row_from(view: &gtk::ColumnView, y: f64) -> u32 {
+    let height = f64::from(view.height());
+    let mut probe = y.max(0.0);
+    while probe < height {
+        if let Some(row) = row_at_height(view, probe) {
+            return row;
+        }
+        probe += 4.0;
+    }
+    0
 }
 
 /// The position of the row at (`x`, `y`) in the file list, if there is one.
@@ -1514,9 +1759,13 @@ impl RelmColumn for NameColumn {
         label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
 
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        // Pressing the icon or the name drags the files; the rest of the cell starts a
+        // selection box.
+        icon_stack.add_css_class(DRAG_HANDLE_CLASS);
+        label.add_css_class(DRAG_HANDLE_CLASS);
         root.append(&icon_stack);
         root.append(&label);
-        attach_cell_handlers(&root, item);
+        attach_cell_handlers(&root, item, true);
         (root, (icon, arrow, label))
     }
 
@@ -1564,7 +1813,7 @@ impl RelmColumn for SizeColumn {
 
     fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         let cell = text_cell(1.0);
-        attach_cell_handlers(&cell, item);
+        attach_cell_handlers(&cell, item, false);
         (cell, ())
     }
 
@@ -1596,7 +1845,7 @@ impl RelmColumn for ModifiedColumn {
 
     fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         let cell = text_cell(0.0);
-        attach_cell_handlers(&cell, item);
+        attach_cell_handlers(&cell, item, false);
         (cell, ())
     }
 
