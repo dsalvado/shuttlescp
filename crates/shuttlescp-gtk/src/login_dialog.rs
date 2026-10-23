@@ -282,9 +282,10 @@ pub struct LoginDialog {
     show_at_startup: bool,
     /// The tab in front.
     tab: LoginTab,
-    /// The site-to-site lists (left pane, right pane), and the site picked in each.
+    /// The site-to-site lists (left pane, right pane), and the site picked in each, by
+    /// id: sites added or deleted on Direct move the others in the list.
     pair_lists: [SiteList; 2],
-    pair_picks: [Option<usize>; 2],
+    pair_picks: [Option<String>; 2],
     /// A site-to-site login under way.
     pair_login: Option<PairLogin>,
     /// The tabs, to bring Direct forward each time the dialog opens.
@@ -301,18 +302,25 @@ impl LoginDialog {
 
     /// The two sites picked on the Site to site tab, if both are.
     fn pair_sites(&self) -> Option<[Site; 2]> {
-        let [left, right] = self.pair_picks;
-        Some([
-            self.book.sites.get(left?)?.clone(),
-            self.book.sites.get(right?)?.clone(),
-        ])
+        Some([self.pair_site(0)?.clone(), self.pair_site(1)?.clone()])
+    }
+
+    /// Where the site picked on a site-to-site list is in the site book, if it still is.
+    fn pair_index(&self, pane: usize) -> Option<usize> {
+        let id = self.pair_picks[pane].as_deref()?;
+        self.book.sites.iter().position(|site| site.id == id)
+    }
+
+    /// The site picked on a site-to-site list, if it still exists.
+    fn pair_site(&self, pane: usize) -> Option<&Site> {
+        self.book.sites.get(self.pair_index(pane)?)
     }
 
     /// One line of the details under a site-to-site list, for the picked site: its
     /// protocol (and FTP encryption), address, user, and how it logs in. Blank until a
     /// site is picked.
     fn pair_detail(&self, pane: usize, detail: PairDetail) -> String {
-        let Some(site) = self.pair_picks[pane].and_then(|index| self.book.sites.get(index)) else {
+        let Some(site) = self.pair_site(pane) else {
             return String::new();
         };
         match detail {
@@ -354,12 +362,13 @@ impl LoginDialog {
         }
     }
 
-    /// Refill both site-to-site lists, keeping their picks.
+    /// Refill both site-to-site lists from the site book, keeping their picks.
     fn fill_pair_lists(&self) {
-        for (list, pick) in self.pair_lists.iter().zip(self.pair_picks) {
+        for (pane, list) in self.pair_lists.iter().enumerate() {
             list.fill(
                 &self.book.sites,
-                pick.map_or(Selection::Nothing, Selection::Saved),
+                self.pair_index(pane)
+                    .map_or(Selection::Nothing, Selection::Saved),
             );
         }
     }
@@ -1565,13 +1574,18 @@ impl Component for LoginDialog {
                 if !self.busy {
                     self.tab = tab;
                     self.status.clear();
+                    // Sites may have been added, changed or deleted on Direct.
+                    if tab == LoginTab::SiteToSite {
+                        self.fill_pair_lists();
+                    }
                 }
             }
             LoginMsg::PairSitePicked { pane, selection } => {
                 if !self.busy
                     && let Selection::Saved(index) = selection
+                    && let Some(site) = self.book.sites.get(index)
                 {
-                    self.pair_picks[pane] = Some(index);
+                    self.pair_picks[pane] = Some(site.id.clone());
                     self.fill_pair_lists();
                 }
             }
