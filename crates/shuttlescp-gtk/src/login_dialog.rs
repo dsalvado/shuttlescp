@@ -189,6 +189,15 @@ pub enum LoginTab {
     SiteToSite,
 }
 
+/// The lines of the details under a site-to-site list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairDetail {
+    Protocol,
+    Address,
+    User,
+    Login,
+}
+
 /// A site-to-site login under way: the two sites are connected one after the other.
 struct PairLogin {
     /// The left pane's site, then the right pane's.
@@ -299,28 +308,50 @@ impl LoginDialog {
         ])
     }
 
-    /// The summary under a site-to-site list: the picked site's protocol, address and
-    /// how it logs in.
-    fn pair_summary(&self, pane: usize) -> String {
+    /// One line of the details under a site-to-site list, for the picked site: its
+    /// protocol (and FTP encryption), address, user, and how it logs in. Blank until a
+    /// site is picked.
+    fn pair_detail(&self, pane: usize, detail: PairDetail) -> String {
         let Some(site) = self.pair_picks[pane].and_then(|index| self.book.sites.get(index)) else {
-            return String::from("Pick a saved site");
+            return String::new();
         };
-        let login = if site.password_saved {
-            "password saved"
-        } else if site.protocol != Protocol::Ftp
-            && (site.ssh.key_file.is_some() || site.ssh.use_agent)
-        {
-            "SSH keys"
-        } else {
-            "no saved password"
-        };
-        format!(
-            "{} · {}@{}:{} · {login}",
-            site.protocol.label(),
-            site.user,
-            site.host,
-            site.port
-        )
+        match detail {
+            PairDetail::Protocol if site.protocol == Protocol::Ftp => {
+                format!("FTP \u{b7} {}", site.ftp.encryption.label())
+            }
+            PairDetail::Protocol => site.protocol.label().to_owned(),
+            PairDetail::Address => format!("{}:{}", site.host, site.port),
+            PairDetail::User => site.user.clone(),
+            PairDetail::Login => {
+                let key = site
+                    .ssh
+                    .key_file
+                    .as_ref()
+                    .filter(|_| site.protocol != Protocol::Ftp)
+                    .map(|path| {
+                        path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        )
+                    });
+                let agent = site.protocol != Protocol::Ftp && site.ssh.use_agent;
+                let mut ways = Vec::new();
+                if let Some(key) = key {
+                    ways.push(format!("key file {key}"));
+                }
+                if agent {
+                    ways.push(String::from("SSH agent"));
+                }
+                if site.password_saved {
+                    ways.push(String::from("saved password"));
+                }
+                if ways.is_empty() {
+                    String::from("no saved password")
+                } else {
+                    ways.join(", then ")
+                }
+            }
+        }
     }
 
     /// Refill both site-to-site lists, keeping their picks.
@@ -1080,8 +1111,9 @@ impl Component for LoginDialog {
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
                                 },
+                                // A short list: room below for the picked site's details.
                                 gtk::ScrolledWindow {
-                                    set_vexpand: true,
+                                    set_height_request: 150,
                                     set_hscrollbar_policy: gtk::PolicyType::Never,
                                     add_css_class: "frame",
                                     #[watch]
@@ -1090,14 +1122,69 @@ impl Component for LoginDialog {
                                     #[local_ref]
                                     left_list_box -> gtk::ListBox {},
                                 },
-                                gtk::Label {
-                                    set_xalign: 0.0,
-                                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                                    add_css_class: "dim-label",
-                                    #[watch]
-                                    set_label: &model.pair_summary(0),
-                                    #[watch]
-                                    set_tooltip_text: Some(&model.pair_summary(0)),
+                                // The picked site's details.
+                                gtk::Grid {
+                                    set_column_spacing: 10,
+                                    set_row_spacing: 3,
+                                    set_vexpand: true,
+                                    set_valign: gtk::Align::Start,
+                                    add_css_class: "site-details",
+                                    attach[0, 0, 1, 1] = &gtk::Label {
+                                        set_label: "Protocol:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 0, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::Protocol),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Protocol)),
+                                    },
+                                    attach[0, 1, 1, 1] = &gtk::Label {
+                                        set_label: "Address:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 1, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::Address),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Address)),
+                                    },
+                                    attach[0, 2, 1, 1] = &gtk::Label {
+                                        set_label: "User:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 2, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::User),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::User)),
+                                    },
+                                    attach[0, 3, 1, 1] = &gtk::Label {
+                                        set_label: "Login:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 3, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::Login),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Login)),
+                                    },
                                 },
                             },
 
@@ -1114,8 +1201,9 @@ impl Component for LoginDialog {
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
                                 },
+                                // A short list: room below for the picked site's details.
                                 gtk::ScrolledWindow {
-                                    set_vexpand: true,
+                                    set_height_request: 150,
                                     set_hscrollbar_policy: gtk::PolicyType::Never,
                                     add_css_class: "frame",
                                     #[watch]
@@ -1124,14 +1212,69 @@ impl Component for LoginDialog {
                                     #[local_ref]
                                     right_list_box -> gtk::ListBox {},
                                 },
-                                gtk::Label {
-                                    set_xalign: 0.0,
-                                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                                    add_css_class: "dim-label",
-                                    #[watch]
-                                    set_label: &model.pair_summary(1),
-                                    #[watch]
-                                    set_tooltip_text: Some(&model.pair_summary(1)),
+                                // The picked site's details.
+                                gtk::Grid {
+                                    set_column_spacing: 10,
+                                    set_row_spacing: 3,
+                                    set_vexpand: true,
+                                    set_valign: gtk::Align::Start,
+                                    add_css_class: "site-details",
+                                    attach[0, 0, 1, 1] = &gtk::Label {
+                                        set_label: "Protocol:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 0, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::Protocol),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Protocol)),
+                                    },
+                                    attach[0, 1, 1, 1] = &gtk::Label {
+                                        set_label: "Address:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 1, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::Address),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Address)),
+                                    },
+                                    attach[0, 2, 1, 1] = &gtk::Label {
+                                        set_label: "User:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 2, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::User),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::User)),
+                                    },
+                                    attach[0, 3, 1, 1] = &gtk::Label {
+                                        set_label: "Login:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 3, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::Login),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Login)),
+                                    },
                                 },
                             },
                             },

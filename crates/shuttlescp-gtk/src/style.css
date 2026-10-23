@@ -821,3 +821,11 @@ label.in-transfer {
 .pane-title image {
     color: alpha(currentColor, 0.7);
 }
+
+/* The picked site's details under each Site to site list (login_dialog.rs). */
+.site-details {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background-color: alpha(currentColor, 0.04);
+}
