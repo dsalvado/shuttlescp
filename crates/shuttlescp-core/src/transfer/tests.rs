@@ -615,6 +615,41 @@ async fn a_site_to_site_job_without_its_destination_does_not_start() {
     assert_eq!(summary.error.as_deref(), Some("not connected to a server"));
 }
 
+#[test]
+fn jobs_writing_the_same_files_conflict() {
+    let upload = |sources: &[&str], dest: &str| Job {
+        kind: JobKind::Copy,
+        side: Side::Local,
+        sources: sources
+            .iter()
+            .map(|source| local(Path::new(source)))
+            .collect(),
+        dest_dir: remote(dest),
+        same_side: false,
+        between_servers: false,
+        left_server: false,
+        resume: false,
+    };
+    let three = upload(&["/home/me/a", "/home/me/b", "/home/me/c"], "/srv");
+    // The same files again (the case that once ran twice), and one of them.
+    assert!(three.conflicts_with(&upload(&["/home/me/a", "/home/me/b", "/home/me/c"], "/srv")));
+    assert!(three.conflicts_with(&upload(&["/home/me/b"], "/srv")));
+    // A file inside a folder another job copies.
+    assert!(upload(&["/x/a"], "/srv/b").conflicts_with(&upload(&["/y/b"], "/srv")));
+    // Elsewhere on the server, or a different name: no conflict.
+    assert!(!three.conflicts_with(&upload(&["/home/me/a"], "/srv/other")));
+    assert!(!three.conflicts_with(&upload(&["/home/me/d"], "/srv")));
+    // The same names, but downloaded to this computer instead.
+    let download = Job {
+        kind: JobKind::Copy,
+        side: Side::Remote,
+        sources: vec![remote("/srv/a")],
+        dest_dir: local(Path::new("/srv")),
+        ..three.clone()
+    };
+    assert!(!three.conflicts_with(&download));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn create_folder_and_rename_refuse_taken_names() {
     let (_temp, src, _dst) = setup();

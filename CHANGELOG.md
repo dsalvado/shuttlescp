@@ -18,6 +18,14 @@ becomes its release notes on GitHub.
   left → right", can be paused, stopped and resumed like any other, and are offered for
   resuming after a restart when the same two sites are connected again.
 
+### Fixed
+
+- Two transfers could write the same files at once: starting the same transfer again
+  after an interrupted one left two resumable records, and resuming both ran them side
+  by side over the same partial files. A transfer over files that another unfinished
+  one (running or paused) is changing now does not start (it goes to Failed, to retry
+  later), and a new transfer replaces older interrupted records over the same files.
+
 ### Changed
 
 - The right-click menu names where files go: "Upload to <server>", "Download to this

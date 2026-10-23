@@ -139,6 +139,30 @@ impl PendingStore {
             .collect()
     }
 
+    /// Forget the unclaimed records of these sites that `job` replaces: earlier
+    /// interrupted runs over the same files (`job` continues their partial files).
+    ///
+    /// # Returns
+    ///
+    /// The keys forgotten
+    fn supersede(&self, left_site_id: Option<&str>, site_id: &str, job: &Job) -> Vec<String> {
+        let replaced: Vec<String> = {
+            let claimed = self.claimed.borrow();
+            self.transfers
+                .borrow()
+                .for_sites(left_site_id, site_id)
+                .filter(|pending| !claimed.contains(&pending.key))
+                .filter(|pending| pending.job.conflicts_with(job))
+                .map(|pending| pending.key.clone())
+                .collect()
+        };
+        for key in &replaced {
+            tracing::info!("an unfinished transfer is replaced by a new one over the same files");
+            self.transfers.borrow_mut().remove(key);
+        }
+        replaced
+    }
+
     /// Write the file, logging (not failing) on error.
     fn save(&self) {
         if let Err(error) = self.transfers.borrow().save(&self.path) {
@@ -691,6 +715,16 @@ impl TransferPanel {
     fn start(&mut self, job: Job, pending_key: Option<String>, sender: &ComponentSender<Self>) {
         let id = self.next_id;
         self.next_id += 1;
+        // Two jobs must never write the same files (their partial files would mix): one
+        // over files another unfinished job changes, running or paused, does not start.
+        let blocked_by = self
+            .shared
+            .borrow()
+            .jobs
+            .values()
+            .filter(|other| other.is_running() || other.paused)
+            .find(|other| other.job.conflicts_with(&job))
+            .map(|other| other.job.title());
         // The server the sources are on and, site to site, the one copies go to (with
         // their names, for the job's title).
         let (remote, dest_remote, route) = match &self.connection {
@@ -715,9 +749,23 @@ impl TransferPanel {
             None => (None, None, None),
         };
         // Record jobs that use the server, so they can be resumed if interrupted (site to
-        // site, with both sites).
+        // site, with both sites). A new job replaces earlier interrupted records over the
+        // same files.
         let pending_key = match (&self.connection, job.uses_server()) {
+            (_, _) if blocked_by.is_some() => pending_key,
             (Some(connection), true) => {
+                if pending_key.is_none() {
+                    let replaced = self.pending.supersede(
+                        connection.left.as_ref().map(|left| left.site_id.as_str()),
+                        &connection.site_id,
+                        &job,
+                    );
+                    if !replaced.is_empty() {
+                        self.interrupted
+                            .retain(|pending| !replaced.contains(&pending.key));
+                        self.show_interrupted();
+                    }
+                }
                 let key = pending_key.unwrap_or_else(new_site_id);
                 self.pending.add(PendingJob {
                     key: key.clone(),
@@ -761,6 +809,25 @@ impl TransferPanel {
             job: id,
             item: None,
         }));
+
+        if let Some(other) = blocked_by {
+            tracing::warn!(
+                "not starting {}: {other} is using the same files",
+                job.title()
+            );
+            self.job_finished(
+                id,
+                JobSummary {
+                    error: Some(format!(
+                        "Not started: \"{other}\" is using the same files. Retry once it has \
+                         finished."
+                    )),
+                    ..JobSummary::default()
+                },
+                sender,
+            );
+            return;
+        }
 
         // The job runs as its own task on the async runtime's worker threads; its events
         // come back to `update_cmd` on the UI thread.
@@ -966,16 +1033,24 @@ impl TransferPanel {
                 &connection.site_id,
             );
         }
-        let count = self.interrupted.len();
-        if count > 0 {
-            tracing::info!("{count} interrupted transfers can be resumed");
+        if !self.interrupted.is_empty() {
+            tracing::info!(
+                "{} interrupted transfers can be resumed",
+                self.interrupted.len()
+            );
         }
+        self.show_interrupted();
+        self.connection = connection;
+    }
+
+    /// Show (or hide) the banner offering the interrupted transfers.
+    fn show_interrupted(&self) {
+        let count = self.interrupted.len();
         self.banner.set_visible(count > 0);
         self.banner_text.set_label(&match count {
             1 => String::from("1 transfer was interrupted and can be resumed."),
             count => format!("{count} transfers were interrupted and can be resumed."),
         });
-        self.connection = connection;
     }
 
     /// Ask the user what to do about a file already at the destination.
@@ -2068,6 +2143,34 @@ mod tests {
                 resume: false,
             },
         }
+    }
+
+    #[test]
+    fn a_new_job_replaces_interrupted_records_over_the_same_files() {
+        // Arrange: two interrupted runs over /data/a, one over another file, and one over
+        // /data/a that a session shows (claimed).
+        let temp = tempfile::tempdir().expect("temp dir");
+        let store = PendingStore::load(temp.path().join("pending.json"));
+        store.transfers.borrow_mut().add(pending("old-1"));
+        store.transfers.borrow_mut().add(pending("old-2"));
+        let mut other = pending("other");
+        other.job.sources = vec![SidePath::Local(PathBuf::from("/data/z"))];
+        store.transfers.borrow_mut().add(other);
+        store.add(pending("shown"));
+
+        // Act: a new upload of /data/a to /srv.
+        let mut replaced = store.supersede(None, "site", &pending("new").job);
+
+        // Assert: the two unclaimed runs over /data/a go; the rest stay.
+        replaced.sort();
+        assert_eq!(replaced, ["old-1", "old-2"]);
+        let left: Vec<String> = store
+            .transfers
+            .borrow()
+            .for_site("site")
+            .map(|pending| pending.key.clone())
+            .collect();
+        assert_eq!(left, ["other", "shown"]);
     }
 
     #[test]

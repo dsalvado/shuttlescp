@@ -166,6 +166,29 @@ impl Job {
         }
     }
 
+    /// The pane whose files the job changes: where copies go, or what a delete removes
+    /// (left is [`Side::Local`], right [`Side::Remote`]).
+    pub fn changed_pane(&self) -> Side {
+        if self.kind == JobKind::Delete {
+            self.source_pane()
+        } else {
+            self.dest_pane()
+        }
+    }
+
+    /// Whether the two jobs (of one session) would change the same files: in the same
+    /// pane, a path one changes is a path the other changes, or inside it, or holds it.
+    /// Two such jobs must not run at once: they would write the same partial files.
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        self.changed_pane() == other.changed_pane()
+            && self.paths_in_use().iter().any(|mine| {
+                other
+                    .paths_in_use()
+                    .iter()
+                    .any(|theirs| mine.starts_with(theirs) || theirs.starts_with(mine))
+            })
+    }
+
     /// What the job acts on, for titles: the name of its one source, or "3 items".
     pub fn subject(&self) -> String {
         match self.sources.as_slice() {
