@@ -798,3 +798,15 @@ label.in-transfer {
     from { opacity: 1; }
     to { opacity: 0.25; }
 }
+
+/* The Login dialog's tabs (Direct, Site to site): the page sits in an outlined area
+   right under the tab buttons, so each tab and what it shows read as one group. */
+.login-tabs {
+    margin-bottom: -1px;
+}
+.login-tabs-page {
+    padding: 10px;
+    border: 1px solid alpha(currentColor, 0.15);
+    border-radius: 0 6px 6px 6px;
+    background-color: alpha(currentColor, 0.03);
+}

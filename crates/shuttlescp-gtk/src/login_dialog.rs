@@ -278,6 +278,8 @@ pub struct LoginDialog {
     pair_picks: [Option<usize>; 2],
     /// A site-to-site login under way.
     pair_login: Option<PairLogin>,
+    /// The tabs, to bring Direct forward each time the dialog opens.
+    tabs: Option<gtk::Stack>,
 }
 
 impl LoginDialog {
@@ -709,13 +711,17 @@ impl Component for LoginDialog {
                 // and Site to site (two servers).
                 #[name = "tab_switcher"]
                 gtk::StackSwitcher {
+                    add_css_class: "login-tabs",
                     set_halign: gtk::Align::Start,
                     #[watch]
                     set_sensitive: !model.busy && !model.editing,
                 },
+                // Each tab's page sits in one outlined area under the tab buttons, so the
+                // buttons and what they show read as one group (see style.css).
                 #[name = "tabs"]
                 gtk::Stack {
                     set_vexpand: true,
+                    add_css_class: "login-tabs-page",
                     set_transition_type: gtk::StackTransitionType::None,
 
                         add_child = &gtk::Box {
@@ -1048,8 +1054,9 @@ impl Component for LoginDialog {
                             set_spacing: 8,
 
                             gtk::Label {
-                                set_label: "Pick a saved site for each pane, then Login. Files copied \
-                                            between them pass through this computer.",
+                                set_label: "Copies between the two servers are transferred through \
+                                            this computer. Pick a saved site for each connection, \
+                                            then Login.",
                                 set_xalign: 0.0,
                                 set_wrap: true,
                                 add_css_class: "dim-label",
@@ -1068,7 +1075,8 @@ impl Component for LoginDialog {
                                 set_hexpand: true,
 
                                 gtk::Label {
-                                    set_label: "Left pane",
+                                    set_label: "Connection 1",
+                                    set_tooltip_text: Some("Shown in the left pane"),
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
                                 },
@@ -1101,7 +1109,8 @@ impl Component for LoginDialog {
                                 set_hexpand: true,
 
                                 gtk::Label {
-                                    set_label: "Right pane",
+                                    set_label: "Connection 2",
+                                    set_tooltip_text: Some("Shown in the right pane"),
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
                                 },
@@ -1244,6 +1253,7 @@ impl Component for LoginDialog {
             pair_lists,
             pair_picks: [None, None],
             pair_login: None,
+            tabs: None,
         };
         model.select(Selection::Nothing);
         model.fill_pair_lists();
@@ -1255,6 +1265,7 @@ impl Component for LoginDialog {
         let right_list_box = model.pair_lists[1].widget();
         let widgets = view_output!();
         widgets.tab_switcher.set_stack(Some(&widgets.tabs));
+        model.tabs = Some(widgets.tabs.clone());
         {
             let sender = sender.clone();
             widgets
@@ -1284,6 +1295,11 @@ impl Component for LoginDialog {
                 };
                 self.select(keep);
                 self.pair_login = None;
+                // Always open on Direct, the usual way in.
+                if let Some(tabs) = &self.tabs {
+                    tabs.set_visible_child_name(DIRECT_TAB);
+                }
+                self.tab = LoginTab::Direct;
                 self.fill_pair_lists();
                 self.status.clear();
                 root.present();
