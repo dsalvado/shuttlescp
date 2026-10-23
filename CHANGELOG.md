@@ -7,6 +7,12 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Login dialog's Site to site lists now show sites added, renamed or deleted on the
+  Direct tab without closing the dialog. Deleting a site could also leave a site-to-site
+  pick pointing at the next site in the list.
+
 ## [0.15.0] - 2026-10-23
 
 ### Added
