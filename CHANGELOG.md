@@ -7,6 +7,12 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- Transfer progress bars show which way files are going: they fill from the pane the
+  files come from, and while data is moving their stripes slide toward the other pane
+  (left to right from the left pane, right to left from the right one).
+
 ## [0.15.1] - 2026-10-23
 
 ### Fixed

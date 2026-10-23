@@ -1688,6 +1688,8 @@ struct RowView {
     can_pause: bool,
     /// What the Pause button does, as its tooltip.
     pause_tooltip: &'static str,
+    /// Data is moving now (not waiting, paused or finished): the bar's stripes slide.
+    moving: bool,
     can_retry: bool,
     /// The Retry button's icon and tooltip (it resumes a paused job).
     retry_icon: &'static str,
@@ -1722,6 +1724,17 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.name, "heading", row.heading);
     widgets.bar.set_visible(row.fraction.is_some());
     widgets.bar.set_fraction(row.fraction.unwrap_or(0.0));
+    // The bar fills from the pane the files come from, and while data moves its stripes
+    // slide toward the other pane. Deletes and copies within a pane go nowhere.
+    let (from, to) = (job.job.source_pane(), job.job.dest_pane());
+    let leftward = from == Side::Remote && to == Side::Local;
+    widgets.bar.set_inverted(leftward);
+    set_class(
+        &widgets.bar,
+        "flow-right",
+        row.moving && from != to && !leftward,
+    );
+    set_class(&widgets.bar, "flow-left", row.moving && leftward);
     widgets.info.set_label(&row.info);
     widgets.info.set_tooltip_text(Some(&row.info));
     set_class(&widgets.info, "error", row.error);
@@ -1834,6 +1847,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         // Deletes are quick, and have nothing to continue.
         can_pause: job.is_running() && !job.paused && !deleting,
         pause_tooltip: "Pause: stop for now, keeping what is copied",
+        moving: job.is_running() && !job.paused && job.planned && !deleting,
         can_retry: !job.is_running()
             && job
                 .summary
@@ -1990,6 +2004,14 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             ItemKind::File => "Pause this file; the rest goes on",
             ItemKind::Folder => "Pause the files in this folder; the rest goes on",
         },
+        // Started (it has a speed) and not done, paused or waiting for an answer.
+        moving: job.is_running()
+            && !job.paused
+            && !deleting
+            && item.outcome.is_none()
+            && !item.asking
+            && !item.paused
+            && item.meter.is_some(),
         can_retry: job.is_running() && !job.paused && item.outcome.is_none() && item.paused,
         retry_icon: "media-playback-start-symbolic",
         retry_tooltip: match item.kind {
