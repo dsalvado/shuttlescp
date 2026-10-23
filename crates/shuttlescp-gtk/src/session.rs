@@ -176,6 +176,9 @@ impl Session {
             .forward(sender.input_sender(), move |output| {
                 pane_message(id, Side::Local, output)
             });
+        if let Some((_, remote)) = &left {
+            ask_server_name(id, Side::Local, remote.clone(), sender);
+        }
         let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
         placeholder.add_css_class("dim-label");
         placeholder.set_hexpand(true);
@@ -184,6 +187,10 @@ impl Session {
         let right_half = relay.as_ref().map(|relay| {
             let half = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             half.append(&relay.root);
+            // A bar like the divider on the picture's left, on its right too.
+            let bar = gtk::Separator::new(gtk::Orientation::Vertical);
+            bar.add_css_class("relay-divider");
+            half.append(&bar);
             half.append(&placeholder);
             half
         });
@@ -282,8 +289,10 @@ impl Session {
     fn set_right(&self, widget: &impl IsA<gtk::Widget>) {
         match &self.right_half {
             Some(half) => {
-                // The picture of this computer stays first; the pane after it changes.
+                // The picture of this computer and its bar stay; the pane after them
+                // changes.
                 if let Some(old) = half.last_child()
+                    && !old.has_css_class("relay-divider")
                     && self.relay.as_ref().is_none_or(|relay| old != relay.root)
                 {
                     half.remove(&old);
@@ -389,6 +398,7 @@ impl Session {
                 pane_message(id, Side::Remote, output)
             });
         pane.emit(FilePaneMsg::InUse(self.remote_in_use.clone()));
+        ask_server_name(id, Side::Remote, remote.clone(), sender);
         // Each pane's menu names the other: "Download to this computer", "Upload to
         // <server>", site to site "Copy to <server>".
         pane.emit(FilePaneMsg::Peer(Some(match &self.left_server {
@@ -467,6 +477,18 @@ impl Session {
         self.local_pane.emit(FilePaneMsg::Refresh);
         if let Some(connection) = &self.connection {
             connection.pane.emit(FilePaneMsg::Refresh);
+        }
+    }
+
+    /// Show a server's own name in its pane's title bar (`pane`: left is
+    /// [`Side::Local`]).
+    pub fn name_server(&self, pane: Side, name: String) {
+        match (pane, &self.connection) {
+            (Side::Local, _) => self.local_pane.emit(FilePaneMsg::ServerName(name)),
+            (Side::Remote, Some(connection)) => {
+                connection.pane.emit(FilePaneMsg::ServerName(name));
+            }
+            (Side::Remote, None) => {}
         }
     }
 
@@ -573,6 +595,7 @@ impl SessionTab {
 /// between the two servers pass through, with two lights like a disk's that blink while
 /// transfers run: green for receiving, amber for sending.
 struct RelayPicture {
+    /// The column: a title strip level with the panes' title bars, then the picture.
     root: gtk::Box,
     lights: gtk::Box,
     /// Above the computer, pointing right: files going from the left server to the right
@@ -585,11 +608,22 @@ impl RelayPicture {
     fn new() -> Self {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .css_classes(["relay"])
+            .build();
+        // The panes' title bars run across the top of this column too, so the right
+        // pane's does not start out of nowhere.
+        let strip = gtk::Box::builder().css_classes(["pane-title"]).build();
+        strip.append(&gtk::Label::new(Some(" ")));
+        root.append(&strip);
+        let picture = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
             .spacing(4)
             .valign(gtk::Align::Center)
-            .css_classes(["relay"])
+            .vexpand(true)
+            .css_classes(["relay-picture"])
             .tooltip_text("Files copied between the two servers pass through this computer")
             .build();
+        root.append(&picture);
         // The arrows keep their place while hidden (see `show_directions`), so nothing
         // moves when they appear.
         let arrow = |icon: &str, tooltip: &str| {
@@ -607,10 +641,10 @@ impl RelayPicture {
             "go-previous-symbolic",
             "Copying from the right server to the left one",
         );
-        root.append(&to_right);
+        picture.append(&to_right);
         let computer = gtk::Image::from_icon_name("computer-symbolic");
         computer.set_pixel_size(32);
-        root.append(&computer);
+        picture.append(&computer);
         let lights = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
@@ -627,8 +661,8 @@ impl RelayPicture {
                 .build();
             lights.append(&light);
         }
-        root.append(&lights);
-        root.append(&to_left);
+        picture.append(&lights);
+        picture.append(&to_left);
         Self {
             root,
             lights,
@@ -736,6 +770,21 @@ fn site_to_site_job(mut job: Job) -> Job {
     job.side = Side::Remote;
     job.between_servers = !job.same_side && job.kind != JobKind::Delete;
     job
+}
+
+/// Ask a server for its own name in the background; it arrives as
+/// [`AppMsg::ServerNamed`] for its pane (left is [`Side::Local`]).
+fn ask_server_name(session: SessionId, pane: Side, remote: Remote, sender: &ComponentSender<App>) {
+    let sender = sender.clone();
+    relm4::spawn(async move {
+        if let Some(name) = remote.server_name().await {
+            sender.input(AppMsg::ServerNamed {
+                session,
+                pane,
+                name,
+            });
+        }
+    });
 }
 
 /// The message a session's file pane output becomes.

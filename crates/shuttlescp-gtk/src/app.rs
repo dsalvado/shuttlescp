@@ -205,6 +205,13 @@ pub enum AppMsg {
     },
     /// A session's remote pane moved to another folder.
     RemoteDirChanged { session: SessionId, dir: RemotePath },
+    /// A server said its own name, for its pane's title bar.
+    ServerNamed {
+        session: SessionId,
+        /// The pane showing that server (left is `Side::Local`).
+        pane: Side,
+        name: String,
+    },
     /// Which ways a site-to-site session's transfers are copying.
     Relaying {
         session: SessionId,
@@ -675,6 +682,10 @@ impl SimpleComponent for App {
         if let Some(dir) = std::env::var_os(crate::ui_gallery::ENV_VAR) {
             let sender = sender.clone();
             let (demo_sender, focus_sender) = (sender.clone(), sender.clone());
+            // With two servers named, the gallery also pictures a site-to-site session.
+            if let Some(pair) = std::env::var_os(crate::ui_gallery::PAIR_VAR) {
+                crate::ui_gallery::connect_pair(&pair.to_string_lossy(), sender.clone());
+            }
             crate::ui_gallery::run(
                 &root,
                 dir.into(),
@@ -794,6 +805,15 @@ impl SimpleComponent for App {
                 {
                     tracing::debug!("remote pane now shows {dir}");
                     connection.dir = dir;
+                }
+            }
+            AppMsg::ServerNamed {
+                session,
+                pane,
+                name,
+            } => {
+                if let Some(session) = self.session(session) {
+                    session.name_server(pane, name);
                 }
             }
             AppMsg::Relaying {

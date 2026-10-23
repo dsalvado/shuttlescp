@@ -342,3 +342,16 @@ async fn live_relay_speed() {
     let (summary, errors) = run_job(delete_a, &a, None).await;
     assert!(summary.is_complete(), "clean up A: {summary:?} {errors:?}");
 }
+
+/// The two real servers' own names, as ShuttleSCP shows them next to their address
+/// (needs the same SHUTTLESCP_LIVE_A / _B as `live_relay_speed`).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs two real servers; see live_relay_speed"]
+async fn live_server_names() {
+    for var in ["SHUTTLESCP_LIVE_A", "SHUTTLESCP_LIVE_B"] {
+        let server = Server::from_env(var);
+        let name = server.connect().await.server_name().await;
+        println!("{}: {name:?}", server.site.host);
+        assert!(name.is_some(), "{} gave no name", server.site.host);
+    }
+}

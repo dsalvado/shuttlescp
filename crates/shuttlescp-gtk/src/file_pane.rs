@@ -121,6 +121,8 @@ pub enum FilePaneMsg {
     /// The other pane, which copies go to (`None`: nowhere to copy to, e.g. the local
     /// pane before a server is connected). Names the menu's Upload / Move items.
     Peer(Option<Peer>),
+    /// The server's own name arrived: show it after the site in the title bar.
+    ServerName(String),
     /// Ask for a name and create a folder in the current folder.
     NewFolder,
     /// Ask for a new name for the selected item.
@@ -330,6 +332,8 @@ enum Row {
 pub struct FilePane {
     /// Directory whose contents are currently displayed.
     current_dir: SidePath,
+    /// The title bar's text: the site (or this computer), and the server's own name.
+    title: String,
     /// Most recently requested directory; listings for anything else are stale.
     requested_dir: SidePath,
     entries: TypedColumnView<Row, gtk::MultiSelection>,
@@ -614,13 +618,15 @@ impl Component for FilePane {
                 set_orientation: gtk::Orientation::Horizontal,
                 set_spacing: 6,
                 add_css_class: "pane-title",
-                set_tooltip_text: Some(&title),
+                #[watch]
+                set_tooltip_text: Some(&model.title),
 
                 gtk::Image {
                     set_icon_name: Some(title_icon),
                 },
                 gtk::Label {
-                    set_label: &title,
+                    #[watch]
+                    set_label: &model.title,
                     set_xalign: 0.0,
                     set_hexpand: true,
                     set_ellipsize: gtk::pango::EllipsizeMode::Middle,
@@ -772,6 +778,7 @@ impl Component for FilePane {
 
         let mut model = Self {
             current_dir: start_dir.clone(),
+            title: title.clone(),
             requested_dir: start_dir.clone(),
             entries,
             status: String::new(),
@@ -908,6 +915,14 @@ impl Component for FilePane {
                 }
                 tracing::debug!("{kind:?} requested for {} items", paths.len());
                 let _ = sender.output(FilePaneOutput::Request { kind, paths });
+            }
+            FilePaneMsg::ServerName(name) => {
+                // Not when the site already says it ("me@docker01" and "docker01").
+                let site_host = self.title.rsplit('@').next().unwrap_or_default();
+                let site_host = site_host.split(':').next().unwrap_or_default();
+                if !name.eq_ignore_ascii_case(site_host) {
+                    self.title = format!("{} \u{b7} {name}", self.title);
+                }
             }
             FilePaneMsg::Peer(peer) => {
                 self.peer_available = peer.is_some();

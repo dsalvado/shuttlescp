@@ -95,11 +95,42 @@ impl client::Handler for HostKeyCheck {
 /// An open SFTP session.
 pub(super) struct Sftp {
     session: SftpSession,
-    /// Keeps the SSH connection open for as long as the session is in use.
-    _ssh: client::Handle<HostKeyCheck>,
+    /// Keeps the SSH connection open for as long as the session is in use (and opens
+    /// other channels on it, see [`Sftp::server_name`]).
+    ssh: client::Handle<HostKeyCheck>,
 }
 
+/// Longest wait for the server to say its name.
+const NAME_TIMEOUT: Duration = Duration::from_secs(3);
+
 impl Sftp {
+    /// The server's own name (`uname -n`), asked on a second channel of the SSH
+    /// connection. `None` if the account may not run commands (SFTP-only accounts), the
+    /// answer is not a plausible host name, or it takes longer than [`NAME_TIMEOUT`].
+    pub(super) async fn server_name(&self) -> Option<String> {
+        let ask = async {
+            let mut channel = self.ssh.channel_open_session().await.ok()?;
+            channel.exec(true, "uname -n").await.ok()?;
+            let (mut output, mut status) = (Vec::new(), None);
+            while let Some(message) = channel.wait().await {
+                match message {
+                    russh::ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                    russh::ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    russh::ChannelMsg::Eof | russh::ChannelMsg::Close => break,
+                    _ => {}
+                }
+                // An SFTP-only account may answer with anything: stop early.
+                if output.len() > 256 {
+                    return None;
+                }
+            }
+            let _ = channel.close().await;
+            status.is_none_or(|status| status == 0).then_some(())?;
+            plausible_host_name(&String::from_utf8_lossy(&output))
+        };
+        tokio::time::timeout(NAME_TIMEOUT, ask).await.ok().flatten()
+    }
+
     pub(super) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         let text = path_text(path);
         self.session
@@ -329,13 +360,7 @@ pub(super) async fn connect(
         .canonicalize(".")
         .await
         .map_err(|error| ConnectError::Sftp(error.to_string()))?;
-    Ok((
-        Sftp {
-            session: sftp,
-            _ssh: ssh,
-        },
-        RemotePath::new(home),
-    ))
+    Ok((Sftp { session: sftp, ssh }, RemotePath::new(home)))
 }
 
 /// Log in: with the site's key file, then the agent's keys, then the password.
@@ -512,6 +537,18 @@ fn is_protected(text: &str, error: &russh::keys::Error) -> bool {
             .is_some_and(|value| value.trim() != "none")
 }
 
+/// `text` (a command's output) as a host name, if it is one: a single line of letters,
+/// digits, dots, dashes and underscores.
+fn plausible_host_name(text: &str) -> Option<String> {
+    let name = text.trim();
+    let valid = !name.is_empty()
+        && name.len() <= 253
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    valid.then(|| name.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -519,6 +556,24 @@ mod tests {
     use secrecy::SecretString;
 
     use super::*;
+
+    #[test]
+    fn only_plausible_host_names_are_taken() {
+        assert_eq!(
+            plausible_host_name("oracle-vm\n").as_deref(),
+            Some("oracle-vm")
+        );
+        assert_eq!(
+            plausible_host_name("db01.example.com").as_deref(),
+            Some("db01.example.com")
+        );
+        assert_eq!(plausible_host_name(""), None);
+        assert_eq!(
+            plausible_host_name("This service allows sftp connections only.\n"),
+            None
+        );
+        assert_eq!(plausible_host_name("a\nb"), None);
+    }
     use crate::sites::{FtpOptions, Protocol, SshAuth};
 
     /// A key in `test-data/keys` (throwaway keys, see the README there).

@@ -774,8 +774,13 @@ label.in-transfer {
    RelayPicture), with two lights like a disk's. Dim at rest; while transfers run the
    green one (receiving) and the amber one (sending) blink, half a beat apart. GTK skips
    the blinking when the desktop turns animations off. */
-.relay {
+.relay-picture {
     padding: 0 8px;
+}
+/* The bar on the picture's right, matching the divider on its left. */
+separator.relay-divider {
+    min-width: 6px;
+    background-color: alpha(currentColor, 0.12);
 }
 .relay image {
     color: alpha(currentColor, 0.7);

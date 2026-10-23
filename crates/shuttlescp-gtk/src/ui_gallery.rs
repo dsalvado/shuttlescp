@@ -26,6 +26,10 @@ use crate::update_dialog;
 pub const ENV_VAR: &str = "SHUTTLESCP_UI_GALLERY";
 /// Application ID used while taking the pictures.
 pub const APP_ID: &str = "io.github.dsalvado.ShuttleSCP.Gallery";
+/// Optional: two servers, `user@host,user@host`, logged in to with the SSH agent's keys,
+/// to picture a site-to-site session (the "sessions-site-to-site" step). Their host keys
+/// must already be in `~/.ssh/known_hosts`.
+pub const PAIR_VAR: &str = "SHUTTLESCP_UI_GALLERY_PAIR";
 /// Time for a window to open and draw before its picture is taken.
 const SETTLE: Duration = Duration::from_millis(800);
 
@@ -67,6 +71,12 @@ pub fn run(
         ),
         ("sessions", Box::new(move |_| open_sessions())),
         ("sessions-first", Box::new(move |_| focus_first())),
+        // Shows whatever tab is in front: the site-to-site one, if `PAIR_VAR` opened one
+        // (it comes forward once both servers are connected).
+        (
+            "sessions-site-to-site",
+            Box::new(|window| show_site_to_site_tab(window.upcast_ref())),
+        ),
         (
             "login-site-to-site",
             Box::new(move |window| {
@@ -363,4 +373,83 @@ pub fn sample_manifest() -> shuttlescp_core::update::Manifest {
         macos: Some(asset("ShuttleSCP-1.0.0-macos-arm64.dmg", "x.dmg")),
         windows: Some(asset("ShuttleSCP-1.0.0-windows-x64-setup.exe", "x.exe")),
     }
+}
+
+/// Log in to the two servers named in [`PAIR_VAR`] and open a site-to-site session.
+pub fn connect_pair(pair: &str, sender: relm4::ComponentSender<crate::app::App>) {
+    let sites: Vec<shuttlescp_core::sites::Site> = pair
+        .split(',')
+        .filter_map(|target| target.trim().split_once('@'))
+        .map(|(user, host)| shuttlescp_core::sites::Site {
+            id: format!("gallery-{host}"),
+            protocol: shuttlescp_core::sites::Protocol::Sftp,
+            host: host.to_owned(),
+            port: 22,
+            user: user.to_owned(),
+            password_saved: false,
+            ftp: shuttlescp_core::sites::FtpOptions::default(),
+            ssh: shuttlescp_core::sites::SshAuth {
+                key_file: None,
+                use_agent: true,
+                passphrase_saved: false,
+            },
+        })
+        .collect();
+    let [left, right] = <[_; 2]>::try_from(sites)
+        .unwrap_or_else(|_| panic!("{PAIR_VAR} must name two servers, user@host,user@host"));
+    relm4::spawn(async move {
+        let open = |site: shuttlescp_core::sites::Site| async move {
+            let credentials = shuttlescp_core::remote::Credentials::default();
+            match shuttlescp_core::remote::connect(&site, credentials, None).await {
+                Ok(remote) => Some((site, remote)),
+                Err(error) => {
+                    tracing::error!("UI gallery: cannot log in to {}: {error}", site.host);
+                    None
+                }
+            }
+        };
+        if let (Some(left), Some(right)) = (open(left).await, open(right).await) {
+            sender.input(crate::app::AppMsg::ConnectedPair { left, right });
+        }
+    });
+}
+
+/// Bring the site-to-site session's tab (its title has "⇄") forward, if there is one.
+fn show_site_to_site_tab(widget: &gtk::Widget) {
+    if let Some(notebook) = widget.downcast_ref::<gtk::Notebook>()
+        && notebook.has_css_class("session-tabs")
+    {
+        for page in 0..notebook.n_pages() {
+            let is_pair = notebook
+                .nth_page(Some(page))
+                .and_then(|child| notebook.tab_label(&child))
+                .is_some_and(|label| has_text(&label, '\u{21c4}'));
+            if is_pair {
+                notebook.set_current_page(Some(page));
+                return;
+            }
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        show_site_to_site_tab(&current);
+        child = current.next_sibling();
+    }
+}
+
+/// Whether a label inside `widget` contains `wanted`.
+fn has_text(widget: &gtk::Widget, wanted: char) -> bool {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>()
+        && label.label().contains(wanted)
+    {
+        return true;
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if has_text(&current, wanted) {
+            return true;
+        }
+        child = current.next_sibling();
+    }
+    false
 }
