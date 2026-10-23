@@ -160,6 +160,12 @@ pub fn run(
             }),
         ),
         (
+            "quit",
+            Box::new(|window| {
+                crate::quit_dialog::ask(window, 1, 1, |_| {});
+            }),
+        ),
+        (
             "update-error",
             Box::new(|window| {
                 update_dialog::report_error(window, "this build cannot check for updates");

@@ -27,6 +27,7 @@ use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
+use crate::quit_dialog::{self, QuitChoice};
 use crate::resize_grips;
 use crate::session::{self, Session, SessionId, SessionInit};
 use crate::theme;
@@ -61,6 +62,9 @@ const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// Wait this long after startup before looking for a newer release, so it never slows
 /// the start down.
 const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// Longest wait, when quitting, for the sessions to delete their unfinished transfers'
+/// partial files.
+const DISCARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// How long the transfers must have stopped before an update waiting for them restarts
 /// the app.
 const IDLE_RESTART_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
@@ -274,11 +278,17 @@ pub enum AppMsg {
         session: SessionId,
         /// Jobs running.
         running: usize,
+        /// Jobs paused.
+        paused: usize,
         /// Jobs in the Completed list.
         completed: usize,
         /// Jobs in the Failed list.
         failed: usize,
     },
+    /// A session gave up its unfinished transfers (see `QuitDiscarding`).
+    TransfersDiscarded(SessionId),
+    /// Quit, after giving up the unfinished transfers and deleting their partial files.
+    QuitDiscarding(&'static str),
     /// Look for a newer release: asked for (Help > Check for Updates) or automatic.
     CheckForUpdates { asked: bool },
     /// The look for a newer release ended: the newer release, none, or an error.
@@ -347,8 +357,14 @@ pub struct App {
     bottom_panel: gtk::Notebook,
     /// The main window, for dialogs.
     window: gtk::ApplicationWindow,
-    /// Transfers running in all sessions; shared with the window's close handler.
+    /// Transfers running in all sessions.
     running_transfers: Rc<Cell<usize>>,
+    /// Transfers running or paused in all sessions; shared with the window's close
+    /// handler, which asks before quitting while there are any.
+    unfinished_transfers: Rc<Cell<usize>>,
+    /// Quitting after giving up the unfinished transfers: the sessions still deleting
+    /// partial files, and the reason to quit with.
+    discarding: Option<(usize, &'static str)>,
     /// Set once quitting is decided, so closing the window no longer asks.
     quitting: Rc<Cell<bool>>,
     /// Start this program (the updated AppImage) once the app has closed.
@@ -527,11 +543,12 @@ impl SimpleComponent for App {
 
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
         let running_transfers = Rc::new(Cell::new(0));
+        let unfinished_transfers = Rc::new(Cell::new(0));
         let quitting = Rc::new(Cell::new(false));
         {
-            // Closing the window while transfers run asks first (see `AppMsg::Quit`).
+            // Closing the window with unfinished transfers asks first (see `AppMsg::Quit`).
             let (running, quitting, sender) = (
-                Rc::clone(&running_transfers),
+                Rc::clone(&unfinished_transfers),
                 Rc::clone(&quitting),
                 sender.clone(),
             );
@@ -597,6 +614,8 @@ impl SimpleComponent for App {
             bottom_panel: bottom_panel.clone(),
             window: root.clone(),
             running_transfers,
+            unfinished_transfers,
+            discarding: None,
             quitting,
             restart_with: None,
             checking_for_updates: false,
@@ -808,7 +827,7 @@ impl SimpleComponent for App {
             #[cfg(debug_assertions)]
             AppMsg::GalleryDemo => {
                 if let Some(first) = self.sessions.first_mut() {
-                    first.show_counts(2, 1, 0);
+                    first.show_counts(2, 0, 1, 0);
                     // Two items of its local folder in use, to picture them in red.
                     let mut in_use: Vec<SidePath> = std::fs::read_dir(&first.local_dir)
                         .map(|entries| {
@@ -861,17 +880,44 @@ impl SimpleComponent for App {
                 self.save_config();
             }
             AppMsg::Quit(reason)
-                if self.running_transfers.get() > 0
+                if self.unfinished_transfers.get() > 0
+                    && self.discarding.is_none()
                     && !QUIT_SIGNALS.iter().any(|&(_, signal)| signal == reason) =>
             {
-                self.confirm_stopping_transfers(
-                    self.running_transfers.get(),
-                    "Quit",
-                    "Quit ShuttleSCP?",
-                    "Quit",
-                    &sender,
-                    move || AppMsg::QuitNow(reason),
-                );
+                self.ask_quit(reason, &sender);
+            }
+            AppMsg::QuitDiscarding(reason) => {
+                // Each session with unfinished transfers gives them up; the app quits once
+                // all have, or after DISCARD_TIMEOUT (a server that does not answer must
+                // not keep it open).
+                let busy: Vec<usize> = (0..self.sessions.len())
+                    .filter(|&index| self.sessions[index].running + self.sessions[index].paused > 0)
+                    .collect();
+                if busy.is_empty() {
+                    self.quit(reason);
+                    return;
+                }
+                tracing::info!("deleting the partial files of unfinished transfers, then quitting");
+                self.discarding = Some((busy.len(), reason));
+                for index in busy {
+                    self.sessions[index]
+                        .transfers
+                        .emit(TransferPanelMsg::DiscardAll);
+                }
+                let sender = sender.clone();
+                glib::timeout_add_local_once(DISCARD_TIMEOUT, move || {
+                    sender.input(AppMsg::QuitNow(reason));
+                });
+            }
+            AppMsg::TransfersDiscarded(session) => {
+                tracing::info!("session {session}: unfinished transfers given up");
+                if let Some((left, reason)) = self.discarding {
+                    if left <= 1 {
+                        self.quit(reason);
+                    } else {
+                        self.discarding = Some((left - 1, reason));
+                    }
+                }
             }
             AppMsg::Quit(reason) | AppMsg::QuitNow(reason) => self.quit(reason),
             AppMsg::LogLevelSelected(level) => {
@@ -915,14 +961,14 @@ impl SimpleComponent for App {
             AppMsg::TransferCounts {
                 session,
                 running,
+                paused,
                 completed,
                 failed,
             } => {
                 if let Some(session) = self.session_mut(session) {
-                    session.show_counts(running, completed, failed);
+                    session.show_counts(running, paused, completed, failed);
                 }
-                let total = self.sessions.iter().map(|session| session.running).sum();
-                self.running_transfers.set(total);
+                self.count_transfers();
             }
             AppMsg::PathsInUse {
                 session,
@@ -1143,8 +1189,29 @@ impl App {
             }
         }
         tracing::info!("closed session {id}");
-        let total = self.sessions.iter().map(|session| session.running).sum();
-        self.running_transfers.set(total);
+        self.count_transfers();
+    }
+
+    /// Total the sessions' running and unfinished (running or paused) transfers.
+    fn count_transfers(&self) {
+        let running = self.sessions.iter().map(|session| session.running).sum();
+        let paused: usize = self.sessions.iter().map(|session| session.paused).sum();
+        self.running_transfers.set(running);
+        self.unfinished_transfers.set(running + paused);
+    }
+
+    /// Ask what to do with the unfinished transfers before quitting: keep them to resume
+    /// later, or give them up and delete their partial files.
+    fn ask_quit(&self, reason: &'static str, sender: &ComponentSender<Self>) {
+        let running = self.running_transfers.get();
+        let paused = self.unfinished_transfers.get().saturating_sub(running);
+        let sender = sender.clone();
+        quit_dialog::ask(self.window.upcast_ref(), running, paused, move |choice| {
+            sender.input(match choice {
+                QuitChoice::Keep => AppMsg::QuitNow(reason),
+                QuitChoice::Discard => AppMsg::QuitDiscarding(reason),
+            });
+        });
     }
 
     /// Bring every session's tabs up to date, and File > Disconnect to the current one.

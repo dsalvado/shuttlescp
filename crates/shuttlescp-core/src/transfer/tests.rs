@@ -615,6 +615,30 @@ async fn a_site_to_site_job_without_its_destination_does_not_start() {
     assert_eq!(summary.error.as_deref(), Some("not connected to a server"));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn giving_up_a_job_deletes_its_partial_files_only() {
+    // Arrange: an interrupted copy of the tree left top.txt.filepart; one.txt finished.
+    let (_temp, src, dst) = setup();
+    std::fs::write(dst.join("top.txt.filepart"), &big_content()[..300_000]).expect("write");
+    std::fs::create_dir(dst.join("a")).expect("create");
+    std::fs::write(dst.join("a/one.txt"), "one").expect("write");
+    // Both folders are local here, so the job copies within one side.
+    let job = same_side_job(
+        JobKind::Copy,
+        vec![src.join("a"), src.join("top.txt")],
+        &dst,
+    );
+
+    // Act
+    let removed = discard_partials(job, None, None).await.expect("discard");
+
+    // Assert: the partial copy is gone; finished files and the sources stay.
+    assert_eq!(removed, 1);
+    assert!(!dst.join("top.txt.filepart").exists());
+    assert!(dst.join("a/one.txt").exists());
+    assert!(src.join("top.txt").exists());
+}
+
 #[test]
 fn jobs_writing_the_same_files_conflict() {
     let upload = |sources: &[&str], dest: &str| Job {

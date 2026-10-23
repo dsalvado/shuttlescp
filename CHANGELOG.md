@@ -28,6 +28,9 @@ becomes its release notes on GitHub.
 
 ### Changed
 
+- Quitting with unfinished transfers, running or paused, asks what to do with them:
+  keep them (and their partial files) to resume the next time you connect, or delete
+  their partial files and quit. Paused transfers used to be dropped without a word.
 - The right-click menu names where files go: "Upload to <server>", "Download to this
   computer", site to site "Copy to <server>", and "Move to ...".
 

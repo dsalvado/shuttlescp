@@ -103,6 +103,8 @@ pub struct Session {
     transfer_tabs: TransferTabs,
     /// Transfers running.
     pub running: usize,
+    /// Transfers paused (they too are unfinished when the app quits).
+    pub paused: usize,
     /// Paths on the server that running transfers use, for a remote pane opened later.
     remote_in_use: Vec<SidePath>,
     /// Site to site: the left pane's server.
@@ -222,14 +224,17 @@ impl Session {
                 },
                 TransferPanelOutput::Counts {
                     running,
+                    paused,
                     completed,
                     failed,
                 } => AppMsg::TransferCounts {
                     session: id,
                     running,
+                    paused,
                     completed,
                     failed,
                 },
+                TransferPanelOutput::Discarded => AppMsg::TransfersDiscarded(id),
             },
         );
         let (completed_page, failed_page) = transfers.model().history_pages();
@@ -257,6 +262,7 @@ impl Session {
             transfer_pages,
             transfer_tabs,
             running: 0,
+            paused: 0,
             remote_in_use: Vec::new(),
             left_server: left.map(|(site, remote)| LeftServer {
                 name: site.display_name(),
@@ -470,8 +476,9 @@ impl Session {
     }
 
     /// Show the job counts on the transfer tabs.
-    pub fn show_counts(&mut self, running: usize, completed: usize, failed: usize) {
+    pub fn show_counts(&mut self, running: usize, paused: usize, completed: usize, failed: usize) {
         self.running = running;
+        self.paused = paused;
         if let Some(relay) = &self.relay {
             relay.set_active(running > 0);
         }

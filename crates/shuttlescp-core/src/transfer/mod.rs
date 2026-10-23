@@ -660,6 +660,59 @@ pub async fn run(
     summary
 }
 
+/// Delete the partial files (see [`PARTIAL_SUFFIX`]) an unfinished job left at its
+/// destination, when the user gives it up rather than resuming it later. The job is
+/// planned again to find them; sources it already moved away are passed over.
+///
+/// # Arguments
+///
+/// * `job` - The unfinished job (stopped: a running one would write them again)
+/// * `remote`, `dest_remote` - Its connections, as for [`run`]
+///
+/// # Returns
+///
+/// How many partial files were deleted
+///
+/// # Errors
+///
+/// Returns a message if the job cannot be planned (e.g. not connected)
+pub async fn discard_partials(
+    mut job: Job,
+    remote: Option<Remote>,
+    dest_remote: Option<Remote>,
+) -> Result<usize, String> {
+    if job.kind == JobKind::Delete {
+        return Ok(0);
+    }
+    let endpoint = |side: Side| match side {
+        Side::Local => Some(Endpoint::Local),
+        Side::Remote => remote.clone().map(Endpoint::Remote),
+    };
+    let dest = if job.between_servers {
+        dest_remote.map(Endpoint::Remote)
+    } else {
+        endpoint(job.dest_side())
+    };
+    let (Some(src), Some(dst)) = (endpoint(job.side), dest) else {
+        return Err(String::from("not connected to a server"));
+    };
+    // As when resuming: sources already moved are not an error.
+    job.resume = true;
+    let items = plan::plan(&job, &src, Some(&dst)).await?;
+    let mut removed = 0;
+    for item in items.iter().filter(|item| item.partial > 0) {
+        let partial = endpoint::partial_path(&item.dest);
+        match dst.remove_file(&partial).await {
+            Ok(()) => {
+                tracing::info!("deleted the partial copy {partial}");
+                removed += 1;
+            }
+            Err(error) => tracing::warn!("{error}"),
+        }
+    }
+    Ok(removed)
+}
+
 /// A summary for a job that could not start.
 fn failed_to_start(error: &str) -> JobSummary {
     JobSummary {

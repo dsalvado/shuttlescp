@@ -59,6 +59,9 @@ const DONE_ICON: &str = "object-select-symbolic";
 const FAILED_ICON: &str = "dialog-error-symbolic";
 /// Icon of a cancelled or skipped item.
 const STOPPED_ICON: &str = "process-stop-symbolic";
+/// How long giving up all jobs waits for the cancelled copies to stop before deleting
+/// what they left.
+const DISCARD_SETTLE: Duration = Duration::from_millis(800);
 /// Name of the panel's action group, used by the row buttons.
 const ACTION_GROUP: &str = "transfers";
 
@@ -251,6 +254,10 @@ pub enum TransferPanelMsg {
     ResumeInterrupted,
     /// Forget the jobs interrupted in an earlier session.
     DiscardInterrupted,
+    /// Give up every unfinished job (running or paused) before the app quits: stop
+    /// them, forget their records and delete their partial files; then report
+    /// [`TransferPanelOutput::Discarded`].
+    DiscardAll,
 }
 
 /// Notifications sent to the main window.
@@ -275,10 +282,14 @@ pub enum TransferPanelOutput {
         /// From the right pane's server to the left pane's.
         to_left: bool,
     },
+    /// [`TransferPanelMsg::DiscardAll`] is done.
+    Discarded,
     /// The number of jobs in the lists changed.
     Counts {
         /// Jobs still running.
         running: usize,
+        /// Jobs paused, waiting in the Queue to be resumed.
+        paused: usize,
         /// Jobs in the Completed list.
         completed: usize,
         /// Jobs in the Failed list.
@@ -406,8 +417,8 @@ pub struct TransferPanel {
     clear_buttons: [gtk::Button; 2],
     banner: gtk::Box,
     banner_text: gtk::Label,
-    /// Counts last reported to the main window: running, completed, failed.
-    counts: (usize, usize, usize),
+    /// Counts last reported to the main window: running, paused, completed, failed.
+    counts: (usize, usize, usize, usize),
     /// Paths in use last reported to the main window: local, remote.
     in_use: (Vec<SidePath>, Vec<SidePath>),
     /// Directions of running site-to-site jobs last reported: to the right, to the left.
@@ -526,7 +537,7 @@ impl Component for TransferPanel {
             clear_buttons,
             banner: gtk::Box::default(),
             banner_text: gtk::Label::default(),
-            counts: (0, 0, 0),
+            counts: (0, 0, 0, 0),
             in_use: (Vec::new(), Vec::new()),
             relaying: (false, false),
             last_target_refresh: None,
@@ -603,6 +614,7 @@ impl Component for TransferPanel {
             TransferPanelMsg::ResumeItem { job: id, item } => {
                 self.pause_item(id, item, false);
             }
+            TransferPanelMsg::DiscardAll => self.discard_all(&sender),
             TransferPanelMsg::Retry(id) => self.retry(id, &sender),
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
             TransferPanelMsg::Clear(kind) => self.clear(kind),
@@ -725,29 +737,7 @@ impl TransferPanel {
             .filter(|other| other.is_running() || other.paused)
             .find(|other| other.job.conflicts_with(&job))
             .map(|other| other.job.title());
-        // The server the sources are on and, site to site, the one copies go to (with
-        // their names, for the job's title).
-        let (remote, dest_remote, route) = match &self.connection {
-            Some(connection) => {
-                let right = (connection.remote.clone(), connection.name.clone());
-                let left = connection
-                    .left
-                    .as_ref()
-                    .map(|left| (left.remote.clone(), left.name.clone()));
-                let (from, to) = if job.left_server {
-                    (left, Some(right))
-                } else {
-                    (Some(right), left)
-                };
-                let to = to.filter(|_| job.between_servers);
-                let route = from
-                    .as_ref()
-                    .zip(to.as_ref())
-                    .map(|(from, to)| (from.1.clone(), to.1.clone()));
-                (from.map(|from| from.0), to.map(|to| to.0), route)
-            }
-            None => (None, None, None),
-        };
+        let (remote, dest_remote, route) = self.connections_for(&job);
         // Record jobs that use the server, so they can be resumed if interrupted (site to
         // site, with both sites). A new job replaces earlier interrupted records over the
         // same files.
@@ -1043,6 +1033,82 @@ impl TransferPanel {
         self.connection = connection;
     }
 
+    /// The connections a job uses: the server its sources are on and, site to site, the
+    /// one copies go to, with their names (for the job's title).
+    fn connections_for(
+        &self,
+        job: &Job,
+    ) -> (Option<Remote>, Option<Remote>, Option<(String, String)>) {
+        match &self.connection {
+            Some(connection) => {
+                let right = (connection.remote.clone(), connection.name.clone());
+                let left = connection
+                    .left
+                    .as_ref()
+                    .map(|left| (left.remote.clone(), left.name.clone()));
+                let (from, to) = if job.left_server {
+                    (left, Some(right))
+                } else {
+                    (Some(right), left)
+                };
+                let to = to.filter(|_| job.between_servers);
+                let route = from
+                    .as_ref()
+                    .zip(to.as_ref())
+                    .map(|(from, to)| (from.1.clone(), to.1.clone()));
+                (from.map(|from| from.0), to.map(|to| to.0), route)
+            }
+            None => (None, None, None),
+        }
+    }
+
+    /// Give up every unfinished job (see [`TransferPanelMsg::DiscardAll`]).
+    fn discard_all(&mut self, sender: &ComponentSender<Self>) {
+        let unfinished: Vec<Job> = {
+            let mut shared = self.shared.borrow_mut();
+            let mut unfinished = Vec::new();
+            for job in shared.jobs.values_mut() {
+                if !job.is_running() && !job.paused {
+                    continue;
+                }
+                // A cancelled file deletes its own partial copy; the rest go below.
+                job.user_cancelled = true;
+                job.paused = false;
+                job.cancel.cancel();
+                if let Some(key) = job.pending_key.take() {
+                    self.pending.remove(&key);
+                }
+                unfinished.push(job.job.clone());
+            }
+            unfinished
+        };
+        self.save_pending();
+        let work: Vec<_> = unfinished
+            .into_iter()
+            .map(|job| {
+                let (remote, dest_remote, _) = self.connections_for(&job);
+                (job, remote, dest_remote)
+            })
+            .collect();
+        tracing::info!("giving up {} unfinished transfers", work.len());
+        let done = sender.output_sender().clone();
+        relm4::spawn(async move {
+            if !work.is_empty() {
+                // Let the cancelled copies stop (each at its next chunk) first.
+                relm4::tokio::time::sleep(DISCARD_SETTLE).await;
+            }
+            for (job, remote, dest_remote) in work {
+                let title = job.title();
+                match transfer::discard_partials(job, remote, dest_remote).await {
+                    Ok(removed) => tracing::info!("{title}: {removed} partial files deleted"),
+                    Err(error) => tracing::warn!("{title}: partial files not deleted: {error}"),
+                }
+            }
+            // Fails only if the panel is gone, when nobody waits for this.
+            let _ = done.send(TransferPanelOutput::Discarded);
+        });
+    }
+
     /// Show (or hide) the banner offering the interrupted transfers.
     fn show_interrupted(&self) {
         let count = self.interrupted.len();
@@ -1295,6 +1361,11 @@ impl TransferPanel {
                 |list: ListKind| shared.jobs.values().filter(|job| job.list == list).count();
             (
                 shared.jobs.values().filter(|job| job.is_running()).count(),
+                shared
+                    .jobs
+                    .values()
+                    .filter(|job| job.paused && !job.is_running())
+                    .count(),
                 count(ListKind::Completed),
                 count(ListKind::Failed),
             )
@@ -1356,8 +1427,9 @@ impl TransferPanel {
             self.counts = counts;
             let _ = sender.output(TransferPanelOutput::Counts {
                 running: counts.0,
-                completed: counts.1,
-                failed: counts.2,
+                paused: counts.1,
+                completed: counts.2,
+                failed: counts.3,
             });
         }
     }
