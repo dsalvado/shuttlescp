@@ -810,3 +810,14 @@ label.in-transfer {
     border-radius: 0 6px 6px 6px;
     background-color: alpha(currentColor, 0.03);
 }
+
+/* A file pane's title bar: which machine the pane shows (file_pane.rs). */
+.pane-title {
+    padding: 2px 6px;
+    font-weight: bold;
+    font-size: smaller;
+    border-bottom: 1px solid alpha(currentColor, 0.12);
+}
+.pane-title image {
+    color: alpha(currentColor, 0.7);
+}

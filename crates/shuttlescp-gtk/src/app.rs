@@ -1842,7 +1842,7 @@ fn restart_after_exit(installer: &Path) {
 
 /// This computer's name, for the titles of sessions that are not connected. The UI
 /// gallery uses a made-up one, so its pictures can be shared.
-fn computer_name() -> String {
+pub fn computer_name() -> String {
     #[cfg(debug_assertions)]
     if std::env::var_os(crate::ui_gallery::ENV_VAR).is_some() {
         return String::from("my-computer");

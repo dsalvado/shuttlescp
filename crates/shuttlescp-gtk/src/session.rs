@@ -158,15 +158,17 @@ impl Session {
         } = init;
         // The left pane shows this computer, or site to site the left server.
         let left_init = match &left {
-            Some((_, remote)) => FilePaneInit {
+            Some((site, remote)) => FilePaneInit {
                 start_dir: SidePath::Remote(remote.home().clone()),
                 last_dir_on_disk: BTreeMap::new(),
                 remote: Some(remote.clone()),
+                title: site.display_name(),
             },
             None => FilePaneInit {
                 start_dir: SidePath::Local(start_dir.clone()),
                 last_dir_on_disk,
                 remote: None,
+                title: format!("This computer \u{b7} {}", crate::app::computer_name()),
             },
         };
         let local_pane = FilePane::builder()
@@ -381,6 +383,7 @@ impl Session {
                 start_dir: SidePath::Remote(start_dir.clone()),
                 last_dir_on_disk: BTreeMap::new(),
                 remote: Some(remote.clone()),
+                title: site.display_name(),
             })
             .forward(sender.input_sender(), move |output| {
                 pane_message(id, Side::Remote, output)

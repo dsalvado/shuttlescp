@@ -176,6 +176,8 @@ pub struct FilePaneInit {
     pub last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
     /// Browse this server instead of the local disks.
     pub remote: Option<Remote>,
+    /// Shown in the pane's title bar: the server's site ("me@host"), or this computer.
+    pub title: String,
 }
 
 /// Notifications a [`FilePane`] sends to its parent.
@@ -607,6 +609,24 @@ impl Component for FilePane {
             set_spacing: 2,
             set_margin_all: 2,
 
+            // Title bar: which machine this pane shows (see style.css).
+            gtk::Box {
+                set_orientation: gtk::Orientation::Horizontal,
+                set_spacing: 6,
+                add_css_class: "pane-title",
+                set_tooltip_text: Some(&title),
+
+                gtk::Image {
+                    set_icon_name: Some(title_icon),
+                },
+                gtk::Label {
+                    set_label: &title,
+                    set_xalign: 0.0,
+                    set_hexpand: true,
+                    set_ellipsize: gtk::pango::EllipsizeMode::Middle,
+                },
+            },
+
             gtk::Box {
                 set_orientation: gtk::Orientation::Horizontal,
                 set_spacing: 2,
@@ -682,7 +702,13 @@ impl Component for FilePane {
             start_dir,
             last_dir_on_disk,
             remote,
+            title,
         } = init;
+        let title_icon = if remote.is_some() {
+            "network-server-symbolic"
+        } else {
+            "computer-symbolic"
+        };
         let mut entries = TypedColumnView::<Row, gtk::MultiSelection>::new();
         entries.append_column::<NameColumn>();
         entries.append_column::<SizeColumn>();
