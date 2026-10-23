@@ -197,6 +197,8 @@
 
   ol li { margin-bottom: 6px; }
   footer { margin-top: 40px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding-top: 16px; }
+  .listed { display: inline-block; margin-bottom: 12px; }
+  .listed img { display: block; width: 244px; max-width: 100%; height: auto; }
 </style>
 <!-- Visit counts (Umami on the author's own server: no cookies, no personal data). -->
 <script defer src="https://analytics.dsalvado.ca/script.js"
@@ -335,6 +337,11 @@ cargo run --release</code></pre>
     details.</p>
 
   <footer>
+    <!-- AlternativeTo's badge, served from this site so visits stay off third-party servers. -->
+    <a class="listed" data-umami-event="alternativeto" target="_blank" rel="noopener"
+       href="https://alternativeto.net/software/shuttlescp/about/?utm_source=badge&amp;utm_medium=referral">
+      <img src="alternativeto-badge.svg" width="406" height="73" alt="ShuttleSCP on AlternativeTo">
+    </a><br>
     Made by David Salvador · <a href="https://dsalvado.ca">dsalvado.ca</a><br>
     ShuttleSCP is free software under the
     <a href="https://github.com/dsalvado/shuttlescp/blob/master/LICENSE">GNU GPL, version 3 or later</a>.
