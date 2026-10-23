@@ -43,6 +43,8 @@ const INDENT: i32 = 18;
 const END_SLOT_WIDTH: i32 = 48;
 /// A finished job flashes (green, or red if it failed) in the Queue this long...
 const FLASH_FOR: Duration = Duration::from_millis(900);
+/// ...or this long when it ended with an error, so the message can be read.
+const ERROR_FLASH_FOR: Duration = Duration::from_secs(4);
 /// ...then fades out this long (matching style.css) before moving to Completed or Failed.
 const FADE_FOR: Duration = Duration::from_millis(450);
 /// The Completed list keeps this many jobs; older ones are dropped.
@@ -1244,7 +1246,7 @@ impl TransferPanel {
     /// The whole job finished: it flashes green (or red), fades, and moves to
     /// Completed (or Failed).
     fn job_finished(&mut self, id: u64, summary: JobSummary, sender: &ComponentSender<Self>) {
-        let forget = {
+        let (forget, flash_for) = {
             let mut shared = self.shared.borrow_mut();
             let Some(job) = shared.jobs.get_mut(&id) else {
                 return;
@@ -1262,10 +1264,15 @@ impl TransferPanel {
             let forget = (summary.is_complete() || job.user_cancelled)
                 .then(|| job.pending_key.clone())
                 .flatten();
+            let flash_for = if summary.error.is_some() {
+                ERROR_FLASH_FOR
+            } else {
+                FLASH_FOR
+            };
             job.summary = Some(summary);
             job.flashing = true;
             refresh_job(&shared, id);
-            forget
+            (forget, flash_for)
         };
         if let Some(key) = forget {
             self.pending.remove(&key);
@@ -1273,10 +1280,10 @@ impl TransferPanel {
         }
         for (delay, message) in [
             (
-                FLASH_FOR,
+                flash_for,
                 TransferPanelMsg::Fade as fn(u64) -> TransferPanelMsg,
             ),
-            (FLASH_FOR + FADE_FOR, TransferPanelMsg::Shelve),
+            (flash_for + FADE_FOR, TransferPanelMsg::Shelve),
         ] {
             let sender = sender.clone();
             glib::timeout_add_local_once(delay, move || sender.input(message(id)));

@@ -612,7 +612,15 @@ impl RelayPicture {
             .build();
         // The panes' title bars run across the top of this column too, so the right
         // pane's does not start out of nowhere.
-        let strip = gtk::Box::builder().css_classes(["pane-title"]).build();
+        // Placed and sized like the panes' title bars (their 2 px margin, an icon and a
+        // label), so their lines meet.
+        let strip = gtk::Box::builder()
+            .css_classes(["pane-title"])
+            .margin_top(2)
+            .build();
+        let spacer = gtk::Image::from_icon_name("computer-symbolic");
+        spacer.set_opacity(0.0);
+        strip.append(&spacer);
         strip.append(&gtk::Label::new(Some(" ")));
         root.append(&strip);
         let picture = gtk::Box::builder()
