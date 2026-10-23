@@ -7,6 +7,33 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- **Site to site:** copy and move files between two servers, through this computer
+  (like `scp -3`), in any combination of SFTP, SCP and FTP/FTPS. The Login dialog has a
+  new Site to site tab: pick a saved site for each pane and log in. The session tab is
+  titled "left ⇄ right", and between the panes a picture of this computer shows arrows
+  for the way files are going and two disk-style lights (green receiving, amber
+  sending) that blink while transfers run. Transfers are titled "Copy report.pdf:
+  left → right", can be paused, stopped and resumed like any other, and are offered for
+  resuming after a restart when the same two sites are connected again.
+
+### Fixed
+
+- Two transfers could write the same files at once: starting the same transfer again
+  after an interrupted one left two resumable records, and resuming both ran them side
+  by side over the same partial files. A transfer over files that another unfinished
+  one (running or paused) is changing now does not start (it goes to Failed, to retry
+  later), and a new transfer replaces older interrupted records over the same files.
+
+### Changed
+
+- Quitting with unfinished transfers, running or paused, asks what to do with them:
+  keep them (and their partial files) to resume the next time you connect, or delete
+  their partial files and quit. Paused transfers used to be dropped without a word.
+- The right-click menu names where files go: "Upload to <server>", "Download to this
+  computer", site to site "Copy to <server>", and "Move to ...".
+
 ## [0.14.0] - 2026-10-22
 
 ### Changed

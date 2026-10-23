@@ -42,6 +42,11 @@ const PASSWORD_ICON: &str = "dialog-password-symbolic";
 /// File name suggested for exports.
 const EXPORT_FILE_NAME: &str = "shuttlescp-sites.json";
 
+/// Name of the Direct tab's page.
+const DIRECT_TAB: &str = "direct";
+/// Name of the Site to site tab's page.
+const SITE_TO_SITE_TAB: &str = "site-to-site";
+
 /// What the site list has picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -120,8 +125,17 @@ pub enum LoginMsg {
     Abandoned,
     /// The "Show at startup" box was ticked or cleared.
     ShowAtStartupToggled(bool),
-    /// Connect to the selected site.
+    /// Connect to the selected site (Direct), or to both picked sites (Site to site).
     Login,
+    /// The Direct or Site to site tab was brought forward.
+    TabShown(LoginTab),
+    /// A site was picked in one of the site-to-site lists.
+    PairSitePicked {
+        /// 0 for the left pane's list, 1 for the right pane's.
+        pane: usize,
+        /// What was clicked.
+        selection: Selection,
+    },
     /// The user trusts this new host key: remember it and connect.
     TrustHostKey(Box<HostKey>),
     /// The user trusts this server's TLS certificate: remember it and connect.
@@ -156,6 +170,47 @@ pub enum LoginOutput {
         /// The open SFTP session.
         remote: Remote,
     },
+    /// Logged in to two sites, for copying between them: `left` for the left pane and
+    /// `right` for the right one.
+    ConnectedPair {
+        /// The left pane's site and its connection.
+        left: (Site, Remote),
+        /// The right pane's site and its connection.
+        right: (Site, Remote),
+    },
+}
+
+/// The Login dialog's two tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginTab {
+    /// This computer and one server: today's login.
+    Direct,
+    /// Two servers, for copying between them through this computer.
+    SiteToSite,
+}
+
+/// The lines of the details under a site-to-site list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairDetail {
+    Protocol,
+    Address,
+    User,
+    Login,
+}
+
+/// A site-to-site login under way: the two sites are connected one after the other.
+struct PairLogin {
+    /// The left pane's site, then the right pane's.
+    sites: [Site; 2],
+    /// The left site's connection, once it is open.
+    left: Option<Remote>,
+}
+
+impl PairLogin {
+    /// The site being connected now.
+    fn current(&self) -> &Site {
+        &self.sites[usize::from(self.left.is_some())]
+    }
 }
 
 /// Results of background work, delivered back to the dialog.
@@ -225,9 +280,89 @@ pub struct LoginDialog {
     chooser: Option<gtk::FileChooserNative>,
     /// Whether the dialog opens when the app starts (saved by the main window).
     show_at_startup: bool,
+    /// The tab in front.
+    tab: LoginTab,
+    /// The site-to-site lists (left pane, right pane), and the site picked in each.
+    pair_lists: [SiteList; 2],
+    pair_picks: [Option<usize>; 2],
+    /// A site-to-site login under way.
+    pair_login: Option<PairLogin>,
+    /// The tabs, to bring Direct forward each time the dialog opens.
+    tabs: Option<gtk::Stack>,
 }
 
 impl LoginDialog {
+    /// The site a login under way is for: the current one of a pair, or the picked one.
+    fn login_site(&self) -> Option<&Site> {
+        self.pair_login
+            .as_ref()
+            .map_or_else(|| self.selected_site(), |pair| Some(pair.current()))
+    }
+
+    /// The two sites picked on the Site to site tab, if both are.
+    fn pair_sites(&self) -> Option<[Site; 2]> {
+        let [left, right] = self.pair_picks;
+        Some([
+            self.book.sites.get(left?)?.clone(),
+            self.book.sites.get(right?)?.clone(),
+        ])
+    }
+
+    /// One line of the details under a site-to-site list, for the picked site: its
+    /// protocol (and FTP encryption), address, user, and how it logs in. Blank until a
+    /// site is picked.
+    fn pair_detail(&self, pane: usize, detail: PairDetail) -> String {
+        let Some(site) = self.pair_picks[pane].and_then(|index| self.book.sites.get(index)) else {
+            return String::new();
+        };
+        match detail {
+            PairDetail::Protocol if site.protocol == Protocol::Ftp => {
+                format!("FTP \u{b7} {}", site.ftp.encryption.label())
+            }
+            PairDetail::Protocol => site.protocol.label().to_owned(),
+            PairDetail::Address => format!("{}:{}", site.host, site.port),
+            PairDetail::User => site.user.clone(),
+            PairDetail::Login => {
+                let key = site
+                    .ssh
+                    .key_file
+                    .as_ref()
+                    .filter(|_| site.protocol != Protocol::Ftp)
+                    .map(|path| {
+                        path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        )
+                    });
+                let agent = site.protocol != Protocol::Ftp && site.ssh.use_agent;
+                let mut ways = Vec::new();
+                if let Some(key) = key {
+                    ways.push(format!("key file {key}"));
+                }
+                if agent {
+                    ways.push(String::from("SSH agent"));
+                }
+                if site.password_saved {
+                    ways.push(String::from("saved password"));
+                }
+                if ways.is_empty() {
+                    String::from("no saved password")
+                } else {
+                    ways.join(", then ")
+                }
+            }
+        }
+    }
+
+    /// Refill both site-to-site lists, keeping their picks.
+    fn fill_pair_lists(&self) {
+        for (list, pick) in self.pair_lists.iter().zip(self.pair_picks) {
+            list.fill(
+                &self.book.sites,
+                pick.map_or(Selection::Nothing, Selection::Saved),
+            );
+        }
+    }
     /// The saved site currently picked, if any.
     fn selected_site(&self) -> Option<&Site> {
         match self.selection {
@@ -295,9 +430,13 @@ impl LoginDialog {
         !self.host.text().trim().is_empty()
     }
 
-    /// Whether Login applies: a saved site is picked and nothing else is going on.
+    /// Whether Login applies: on the Direct tab, a saved site is picked and nothing else
+    /// is going on; site to site, both sites are picked and nothing is going on.
     fn can_login(&self) -> bool {
-        self.saved_site_idle()
+        match self.tab {
+            LoginTab::Direct => self.saved_site_idle(),
+            LoginTab::SiteToSite => !self.busy && self.pair_sites().is_some(),
+        }
     }
 
     /// Start connecting to the picked site in the background, with the typed password
@@ -308,13 +447,15 @@ impl LoginDialog {
     /// * `sender` - Used to run the connection attempt
     /// * `approved_key` - A host key the user has just agreed to trust
     fn start_login(&mut self, sender: &ComponentSender<Self>, approved_key: Option<HostKey>) {
-        if !self.can_login() {
+        if self.busy || (self.pair_login.is_none() && !self.can_login()) {
             return;
         }
-        let Some(site) = self.selected_site().cloned() else {
+        let Some(site) = self.login_site().cloned() else {
             return;
         };
-        let typed = (!self.password.text().is_empty())
+        // Site to site uses saved passwords and keys only (the password field belongs to
+        // the Direct tab).
+        let typed = (self.pair_login.is_none() && !self.password.text().is_empty())
             .then(|| SecretString::from(self.password.text().as_str()));
         let passphrase = self
             .pending_passphrase
@@ -590,331 +731,557 @@ impl Component for LoginDialog {
             set_modal: true,
             // Closing only hides the dialog, so it can be shown again from the menu.
             set_hide_on_close: true,
-            set_default_size: (760, 470),
+            set_default_size: (760, 500),
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_spacing: 12,
                 set_margin_all: 12,
 
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Horizontal,
-                    set_spacing: 14,
+                // The two ways to connect, as tabs: Direct (this computer and a server)
+                // and Site to site (two servers).
+                #[name = "tab_switcher"]
+                gtk::StackSwitcher {
+                    add_css_class: "login-tabs",
+                    set_halign: gtk::Align::Start,
+                    #[watch]
+                    set_sensitive: !model.busy && !model.editing,
+                },
+                // Each tab's page sits in one outlined area under the tab buttons, so the
+                // buttons and what they show read as one group (see style.css).
+                #[name = "tabs"]
+                gtk::Stack {
                     set_vexpand: true,
+                    add_css_class: "login-tabs-page",
+                    set_transition_type: gtk::StackTransitionType::None,
 
-                    // Left: saved sites, with the buttons that act on the picked one.
-                    gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-                        set_spacing: 4,
-
-                        gtk::ScrolledWindow {
-                            set_width_request: 230,
+                        add_child = &gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 14,
                             set_vexpand: true,
-                            set_hscrollbar_policy: gtk::PolicyType::Never,
-                            add_css_class: "frame",
-                            // Finish with Save or Cancel before picking another entry.
-                            #[watch]
-                            set_sensitive: !model.editing && !model.busy,
 
-                            #[local_ref]
-                            site_list_box -> gtk::ListBox {},
-                        },
-                        gtk::Box {
-                            set_orientation: gtk::Orientation::Horizontal,
-                            set_spacing: 4,
-                            set_homogeneous: true,
-
-                            gtk::Button {
-                                set_label: "Edit",
-                                #[watch]
-                                set_sensitive: model.saved_site_idle(),
-                                connect_clicked => LoginMsg::Edit,
-                            },
-                            gtk::Button {
-                                set_label: "Delete",
-                                add_css_class: "destructive-action",
-                                #[watch]
-                                set_sensitive: model.saved_site_idle(),
-                                connect_clicked => LoginMsg::Delete,
-                            },
-                        },
-                    },
-
-                    // Right: the session details and their Save / Cancel buttons, grouped
-                    // in a dashed outline (drawn by the "session-group" style). It fills
-                    // the height of the site list column so the two sides line up, with
-                    // Save / Cancel level with Edit / Delete.
-                    gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-                        set_spacing: 8,
-                        set_hexpand: true,
-                        add_css_class: "session-group",
-
-                        gtk::Label {
-                            set_label: "Session",
-                            set_xalign: 0.0,
-                            add_css_class: "heading",
-                        },
-
-                        // File protocol.
-                        gtk::Box {
-                            set_orientation: gtk::Orientation::Vertical,
-                            set_spacing: 2,
-
-                            gtk::Label {
-                                set_label: "File protocol:",
-                                set_xalign: 0.0,
-                            },
-                            gtk::Box {
-                                set_orientation: gtk::Orientation::Horizontal,
-                                set_spacing: 8,
-
-                                gtk::DropDown::from_strings(&protocol_labels) {
-                                    set_halign: gtk::Align::Start,
-                                    // Read-only until "New Site" or Edit.
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    #[watch]
-                                    set_selected: model.protocol.index(),
-                                    connect_selected_notify[sender] => move |dropdown| {
-                                        sender.input(LoginMsg::ProtocolSelected(dropdown.selected()));
-                                    },
-                                },
-                                // FTP only: encryption and passive mode.
-                                gtk::DropDown::from_strings(&encryption_labels) {
-                                    set_tooltip_text: Some("How the FTP connection is encrypted"),
-                                    #[watch]
-                                    set_visible: model.protocol == Protocol::Ftp,
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    #[watch]
-                                    set_selected: model.ftp.encryption.index(),
-                                    connect_selected_notify[sender] => move |dropdown| {
-                                        sender.input(LoginMsg::EncryptionSelected(dropdown.selected()));
-                                    },
-                                },
-                                gtk::CheckButton::with_label("Passive mode") {
-                                    set_tooltip_text: Some(
-                                        "The client opens the data connections (works through \
-                                         firewalls and NAT). Untick for active mode.",
-                                    ),
-                                    #[watch]
-                                    set_visible: model.protocol == Protocol::Ftp,
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    #[watch]
-                                    set_active: model.ftp.passive,
-                                    connect_toggled[sender] => move |check| {
-                                        sender.input(LoginMsg::PassiveToggled(check.is_active()));
-                                    },
-                                },
-                            },
-                        },
-
-                        // Host name (wide) and port number (short).
-                        gtk::Box {
-                            set_orientation: gtk::Orientation::Horizontal,
-                            set_spacing: 12,
-
+                            // Left: saved sites, with the buttons that act on the picked one.
                             gtk::Box {
                                 set_orientation: gtk::Orientation::Vertical,
-                                set_spacing: 2,
+                                set_spacing: 4,
+
+                                gtk::ScrolledWindow {
+                                    set_width_request: 230,
+                                    set_vexpand: true,
+                                    set_hscrollbar_policy: gtk::PolicyType::Never,
+                                    add_css_class: "frame",
+                                    // Finish with Save or Cancel before picking another entry.
+                                    #[watch]
+                                    set_sensitive: !model.editing && !model.busy,
+
+                                    #[local_ref]
+                                    site_list_box -> gtk::ListBox {},
+                                },
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 4,
+                                    set_homogeneous: true,
+
+                                    gtk::Button {
+                                        set_label: "Edit",
+                                        #[watch]
+                                        set_sensitive: model.saved_site_idle(),
+                                        connect_clicked => LoginMsg::Edit,
+                                    },
+                                    gtk::Button {
+                                        set_label: "Delete",
+                                        add_css_class: "destructive-action",
+                                        #[watch]
+                                        set_sensitive: model.saved_site_idle(),
+                                        connect_clicked => LoginMsg::Delete,
+                                    },
+                                },
+                            },
+
+                            // Right: the session details and their Save / Cancel buttons, grouped
+                            // in a dashed outline (drawn by the "session-group" style). It fills
+                            // the height of the site list column so the two sides line up, with
+                            // Save / Cancel level with Edit / Delete.
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 8,
                                 set_hexpand: true,
+                                add_css_class: "session-group",
 
                                 gtk::Label {
-                                    set_label: "Host name:",
+                                    set_label: "Session",
                                     set_xalign: 0.0,
+                                    add_css_class: "heading",
                                 },
-                                gtk::Entry::with_buffer(&model.host) {
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    connect_changed => LoginMsg::FormEdited,
-                                },
-                            },
-                            gtk::Box {
-                                set_orientation: gtk::Orientation::Vertical,
-                                set_spacing: 2,
 
-                                gtk::Label {
-                                    set_label: "Port:",
-                                    set_xalign: 0.0,
+                                // File protocol.
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_spacing: 2,
+
+                                    gtk::Label {
+                                        set_label: "File protocol:",
+                                        set_xalign: 0.0,
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+
+                                        gtk::DropDown::from_strings(&protocol_labels) {
+                                            set_halign: gtk::Align::Start,
+                                            // Read-only until "New Site" or Edit.
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_selected: model.protocol.index(),
+                                            connect_selected_notify[sender] => move |dropdown| {
+                                                sender.input(LoginMsg::ProtocolSelected(dropdown.selected()));
+                                            },
+                                        },
+                                        // FTP only: encryption and passive mode.
+                                        gtk::DropDown::from_strings(&encryption_labels) {
+                                            set_tooltip_text: Some("How the FTP connection is encrypted"),
+                                            #[watch]
+                                            set_visible: model.protocol == Protocol::Ftp,
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_selected: model.ftp.encryption.index(),
+                                            connect_selected_notify[sender] => move |dropdown| {
+                                                sender.input(LoginMsg::EncryptionSelected(dropdown.selected()));
+                                            },
+                                        },
+                                        gtk::CheckButton::with_label("Passive mode") {
+                                            set_tooltip_text: Some(
+                                                "The client opens the data connections (works through \
+                                                 firewalls and NAT). Untick for active mode.",
+                                            ),
+                                            #[watch]
+                                            set_visible: model.protocol == Protocol::Ftp,
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_active: model.ftp.passive,
+                                            connect_toggled[sender] => move |check| {
+                                                sender.input(LoginMsg::PassiveToggled(check.is_active()));
+                                            },
+                                        },
+                                    },
                                 },
-                                gtk::SpinButton::with_range(1.0, 65535.0, 1.0) {
-                                    set_digits: 0,
-                                    // Room for five digits ("65535") and no more.
-                                    set_width_chars: 5,
-                                    add_css_class: "port",
+
+                                // Host name (wide) and port number (short).
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 12,
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
+                                        set_hexpand: true,
+
+                                        gtk::Label {
+                                            set_label: "Host name:",
+                                            set_xalign: 0.0,
+                                        },
+                                        gtk::Entry::with_buffer(&model.host) {
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            connect_changed => LoginMsg::FormEdited,
+                                        },
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
+
+                                        gtk::Label {
+                                            set_label: "Port:",
+                                            set_xalign: 0.0,
+                                        },
+                                        gtk::SpinButton::with_range(1.0, 65535.0, 1.0) {
+                                            set_digits: 0,
+                                            // Room for five digits ("65535") and no more.
+                                            set_width_chars: 5,
+                                            add_css_class: "port",
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_value: f64::from(model.port),
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(LoginMsg::PortChanged(spin.value_as_int()));
+                                            },
+                                        },
+                                    },
+                                },
+
+                                // User name and password, side by side at equal widths.
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 12,
+                                    set_homogeneous: true,
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
+
+                                        gtk::Label {
+                                            set_label: "User name:",
+                                            set_xalign: 0.0,
+                                        },
+                                        gtk::Entry::with_buffer(&model.user) {
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                        },
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
+
+                                        gtk::Label {
+                                            set_label: "Password:",
+                                            set_xalign: 0.0,
+                                        },
+                                        gtk::Entry::with_buffer(&model.password) {
+                                            set_visibility: false,
+                                            set_input_purpose: gtk::InputPurpose::Password,
+                                            // Usable for a picked saved site too, to log in with a
+                                            // password that is not saved.
+                                            #[watch]
+                                            set_sensitive: model.editing || model.selected_site().is_some(),
+                                            #[watch]
+                                            set_placeholder_text: Some(model.password_placeholder()),
+                                            // Enter in the password field logs in.
+                                            connect_activate => LoginMsg::Login,
+                                            set_secondary_icon_name: Some(SHOW_PASSWORD_ICON),
+                                            set_secondary_icon_tooltip_text: Some("Show password"),
+                                            connect_icon_press => move |entry, _| {
+                                                // Spelled out because `Widget` also has an `is_visible`.
+                                                let show = !EntryExt::is_visible(entry);
+                                                entry.set_visibility(show);
+                                                entry.set_secondary_icon_name(Some(if show {
+                                                    HIDE_PASSWORD_ICON
+                                                } else {
+                                                    SHOW_PASSWORD_ICON
+                                                }));
+                                            },
+                                        },
+                                        gtk::CheckButton {
+                                            set_label: Some("Save password"),
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            set_tooltip_text: Some(
+                                                "Keep the password in the desktop keyring (encrypted \
+                                                 with your login password)"
+                                            ),
+                                            #[watch]
+                                            set_active: model.save_password,
+                                            connect_toggled[sender] => move |check| {
+                                                sender.input(LoginMsg::SavePasswordToggled(check.is_active()));
+                                            },
+                                        },
+                                    },
+                                },
+
+                                // SSH keys (SFTP and SCP): a private key file, tried first, and the
+                                // keys of the desktop's SSH agent; the password comes after them.
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_spacing: 2,
                                     #[watch]
-                                    set_sensitive: model.editing,
-                                    #[watch]
-                                    set_value: f64::from(model.port),
-                                    connect_value_changed[sender] => move |spin| {
-                                        sender.input(LoginMsg::PortChanged(spin.value_as_int()));
+                                    set_visible: model.protocol != Protocol::Ftp,
+
+                                    gtk::Label {
+                                        set_label: "Private key file:",
+                                        set_xalign: 0.0,
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+
+                                        gtk::Entry::with_buffer(&model.key_file) {
+                                            set_hexpand: true,
+                                            set_placeholder_text: Some("None (OpenSSH or PuTTY .ppk key)"),
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            connect_changed => LoginMsg::FormEdited,
+                                        },
+                                        gtk::Button {
+                                            set_label: "Browse...",
+                                            set_tooltip_text: Some("Choose a private key file"),
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            connect_clicked => LoginMsg::BrowseKeyFile,
+                                        },
+                                        gtk::CheckButton {
+                                            set_label: Some("Use SSH agent"),
+                                            set_tooltip_text: Some(
+                                                "Also try the keys held by the desktop's SSH agent \
+                                                 (as ssh does)"
+                                            ),
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_active: model.use_agent,
+                                            connect_toggled[sender] => move |check| {
+                                                sender.input(LoginMsg::UseAgentToggled(check.is_active()));
+                                            },
+                                        },
+                                    },
+                                },
+
+                                // Saved-password indicator (left; stays readable while the fields
+                                // are disabled) and Save / Cancel (right), along the bottom edge.
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 4,
+                                    set_vexpand: true,
+                                    set_valign: gtk::Align::End,
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 4,
+                                        set_hexpand: true,
+                                        #[watch]
+                                        set_visible: model.selected_site().is_some(),
+
+                                        gtk::Image {
+                                            set_icon_name: Some(PASSWORD_ICON),
+                                        },
+                                        gtk::Label {
+                                            set_xalign: 0.0,
+                                            #[watch]
+                                            set_label: model.password_status(),
+                                        },
+                                    },
+                                    // Keeps the buttons right-aligned when the indicator is hidden.
+                                    gtk::Box {
+                                        set_hexpand: true,
+                                        #[watch]
+                                        set_visible: model.selected_site().is_none(),
+                                    },
+
+                                    gtk::Button {
+                                        set_label: "Save",
+                                        #[watch]
+                                        set_sensitive: model.editing && model.can_save(),
+                                        connect_clicked => LoginMsg::Save,
+                                    },
+                                    gtk::Button {
+                                        set_label: "Cancel",
+                                        #[watch]
+                                        set_sensitive: model.editing,
+                                        connect_clicked => LoginMsg::Cancel,
                                     },
                                 },
                             },
+                        } -> {
+                            set_name: DIRECT_TAB,
+                            set_title: "Direct",
                         },
 
-                        // User name and password, side by side at equal widths.
-                        gtk::Box {
-                            set_orientation: gtk::Orientation::Horizontal,
-                            set_spacing: 12,
-                            set_homogeneous: true,
-
-                            gtk::Box {
-                                set_orientation: gtk::Orientation::Vertical,
-                                set_spacing: 2,
-
-                                gtk::Label {
-                                    set_label: "User name:",
-                                    set_xalign: 0.0,
-                                },
-                                gtk::Entry::with_buffer(&model.user) {
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                },
-                            },
-                            gtk::Box {
-                                set_orientation: gtk::Orientation::Vertical,
-                                set_spacing: 2,
-
-                                gtk::Label {
-                                    set_label: "Password:",
-                                    set_xalign: 0.0,
-                                },
-                                gtk::Entry::with_buffer(&model.password) {
-                                    set_visibility: false,
-                                    set_input_purpose: gtk::InputPurpose::Password,
-                                    // Usable for a picked saved site too, to log in with a
-                                    // password that is not saved.
-                                    #[watch]
-                                    set_sensitive: model.editing || model.selected_site().is_some(),
-                                    #[watch]
-                                    set_placeholder_text: Some(model.password_placeholder()),
-                                    // Enter in the password field logs in.
-                                    connect_activate => LoginMsg::Login,
-                                    set_secondary_icon_name: Some(SHOW_PASSWORD_ICON),
-                                    set_secondary_icon_tooltip_text: Some("Show password"),
-                                    connect_icon_press => move |entry, _| {
-                                        // Spelled out because `Widget` also has an `is_visible`.
-                                        let show = !EntryExt::is_visible(entry);
-                                        entry.set_visibility(show);
-                                        entry.set_secondary_icon_name(Some(if show {
-                                            HIDE_PASSWORD_ICON
-                                        } else {
-                                            SHOW_PASSWORD_ICON
-                                        }));
-                                    },
-                                },
-                                gtk::CheckButton {
-                                    set_label: Some("Save password"),
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    set_tooltip_text: Some(
-                                        "Keep the password in the desktop keyring (encrypted \
-                                         with your login password)"
-                                    ),
-                                    #[watch]
-                                    set_active: model.save_password,
-                                    connect_toggled[sender] => move |check| {
-                                        sender.input(LoginMsg::SavePasswordToggled(check.is_active()));
-                                    },
-                                },
-                            },
-                        },
-
-                        // SSH keys (SFTP and SCP): a private key file, tried first, and the
-                        // keys of the desktop's SSH agent; the password comes after them.
-                        gtk::Box {
+                        // Site to site: a saved site for each pane; copies between them
+                        // pass through this computer.
+                        add_child = &gtk::Box {
                             set_orientation: gtk::Orientation::Vertical,
-                            set_spacing: 2,
-                            #[watch]
-                            set_visible: model.protocol != Protocol::Ftp,
+                            set_spacing: 8,
 
                             gtk::Label {
-                                set_label: "Private key file:",
+                                set_label: "Copies between the two servers are transferred through \
+                                            this computer. Pick a saved site for each connection, \
+                                            then Login.",
                                 set_xalign: 0.0,
+                                set_wrap: true,
+                                add_css_class: "dim-label",
                             },
                             gtk::Box {
                                 set_orientation: gtk::Orientation::Horizontal,
-                                set_spacing: 8,
+                                set_spacing: 14,
+                                set_homogeneous: true,
+                                set_vexpand: true,
 
-                                gtk::Entry::with_buffer(&model.key_file) {
-                                    set_hexpand: true,
-                                    set_placeholder_text: Some("None (OpenSSH or PuTTY .ppk key)"),
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    connect_changed => LoginMsg::FormEdited,
-                                },
-                                gtk::Button {
-                                    set_label: "Browse...",
-                                    set_tooltip_text: Some("Choose a private key file"),
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    connect_clicked => LoginMsg::BrowseKeyFile,
-                                },
-                                gtk::CheckButton {
-                                    set_label: Some("Use SSH agent"),
-                                    set_tooltip_text: Some(
-                                        "Also try the keys held by the desktop's SSH agent \
-                                         (as ssh does)"
-                                    ),
-                                    #[watch]
-                                    set_sensitive: model.editing,
-                                    #[watch]
-                                    set_active: model.use_agent,
-                                    connect_toggled[sender] => move |check| {
-                                        sender.input(LoginMsg::UseAgentToggled(check.is_active()));
-                                    },
-                                },
-                            },
-                        },
-
-                        // Saved-password indicator (left; stays readable while the fields
-                        // are disabled) and Save / Cancel (right), along the bottom edge.
-                        gtk::Box {
-                            set_orientation: gtk::Orientation::Horizontal,
-                            set_spacing: 4,
-                            set_vexpand: true,
-                            set_valign: gtk::Align::End,
-
+                            // The left pane's site: a list of saved sites, and a summary
+                            // of the picked one.
                             gtk::Box {
-                                set_orientation: gtk::Orientation::Horizontal,
+                                set_orientation: gtk::Orientation::Vertical,
                                 set_spacing: 4,
                                 set_hexpand: true,
-                                #[watch]
-                                set_visible: model.selected_site().is_some(),
 
-                                gtk::Image {
-                                    set_icon_name: Some(PASSWORD_ICON),
-                                },
                                 gtk::Label {
+                                    set_label: "Connection 1",
+                                    set_tooltip_text: Some("Shown in the left pane"),
                                     set_xalign: 0.0,
+                                    add_css_class: "heading",
+                                },
+                                // A short list: room below for the picked site's details.
+                                gtk::ScrolledWindow {
+                                    set_height_request: 150,
+                                    set_hscrollbar_policy: gtk::PolicyType::Never,
+                                    add_css_class: "frame",
                                     #[watch]
-                                    set_label: model.password_status(),
+                                    set_sensitive: !model.busy,
+
+                                    #[local_ref]
+                                    left_list_box -> gtk::ListBox {},
+                                },
+                                // The picked site's details.
+                                gtk::Grid {
+                                    set_column_spacing: 10,
+                                    set_row_spacing: 3,
+                                    set_vexpand: true,
+                                    set_valign: gtk::Align::Start,
+                                    add_css_class: "site-details",
+                                    attach[0, 0, 1, 1] = &gtk::Label {
+                                        set_label: "Protocol:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 0, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::Protocol),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Protocol)),
+                                    },
+                                    attach[0, 1, 1, 1] = &gtk::Label {
+                                        set_label: "Address:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 1, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::Address),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Address)),
+                                    },
+                                    attach[0, 2, 1, 1] = &gtk::Label {
+                                        set_label: "User:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 2, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::User),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::User)),
+                                    },
+                                    attach[0, 3, 1, 1] = &gtk::Label {
+                                        set_label: "Login:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 3, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(0, PairDetail::Login),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Login)),
+                                    },
                                 },
                             },
-                            // Keeps the buttons right-aligned when the indicator is hidden.
-                            gtk::Box {
-                                set_hexpand: true,
-                                #[watch]
-                                set_visible: model.selected_site().is_none(),
-                            },
 
-                            gtk::Button {
-                                set_label: "Save",
-                                #[watch]
-                                set_sensitive: model.editing && model.can_save(),
-                                connect_clicked => LoginMsg::Save,
+                            // The right pane's site: a list of saved sites, and a summary
+                            // of the picked one.
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 4,
+                                set_hexpand: true,
+
+                                gtk::Label {
+                                    set_label: "Connection 2",
+                                    set_tooltip_text: Some("Shown in the right pane"),
+                                    set_xalign: 0.0,
+                                    add_css_class: "heading",
+                                },
+                                // A short list: room below for the picked site's details.
+                                gtk::ScrolledWindow {
+                                    set_height_request: 150,
+                                    set_hscrollbar_policy: gtk::PolicyType::Never,
+                                    add_css_class: "frame",
+                                    #[watch]
+                                    set_sensitive: !model.busy,
+
+                                    #[local_ref]
+                                    right_list_box -> gtk::ListBox {},
+                                },
+                                // The picked site's details.
+                                gtk::Grid {
+                                    set_column_spacing: 10,
+                                    set_row_spacing: 3,
+                                    set_vexpand: true,
+                                    set_valign: gtk::Align::Start,
+                                    add_css_class: "site-details",
+                                    attach[0, 0, 1, 1] = &gtk::Label {
+                                        set_label: "Protocol:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 0, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::Protocol),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Protocol)),
+                                    },
+                                    attach[0, 1, 1, 1] = &gtk::Label {
+                                        set_label: "Address:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 1, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::Address),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Address)),
+                                    },
+                                    attach[0, 2, 1, 1] = &gtk::Label {
+                                        set_label: "User:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 2, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::User),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::User)),
+                                    },
+                                    attach[0, 3, 1, 1] = &gtk::Label {
+                                        set_label: "Login:",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dim-label",
+                                    },
+                                    attach[1, 3, 1, 1] = &gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_label: &model.pair_detail(1, PairDetail::Login),
+                                        #[watch]
+                                        set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Login)),
+                                    },
+                                },
                             },
-                            gtk::Button {
-                                set_label: "Cancel",
-                                #[watch]
-                                set_sensitive: model.editing,
-                                connect_clicked => LoginMsg::Cancel,
                             },
+                        } -> {
+                            set_name: SITE_TO_SITE_TAB,
+                            set_title: "Site to site",
                         },
-                    },
                 },
 
                 gtk::Box {
@@ -991,9 +1358,19 @@ impl Component for LoginDialog {
         let click_sender = sender.clone();
         let double_click_sender = sender.clone();
         let site_list = SiteList::new(
+            true,
             move |selection| click_sender.input(LoginMsg::SiteClicked(selection)),
             move |selection| double_click_sender.input(LoginMsg::SiteDoubleClicked(selection)),
         );
+        let pair_list = |pane: usize| {
+            let sender = sender.clone();
+            SiteList::new(
+                false,
+                move |selection| sender.input(LoginMsg::PairSitePicked { pane, selection }),
+                |_| {},
+            )
+        };
+        let pair_lists = [pair_list(0), pair_list(1)];
 
         let mut model = Self {
             book,
@@ -1015,13 +1392,37 @@ impl Component for LoginDialog {
             busy: false,
             chooser: None,
             show_at_startup,
+            tab: LoginTab::Direct,
+            pair_lists,
+            pair_picks: [None, None],
+            pair_login: None,
+            tabs: None,
         };
         model.select(Selection::Nothing);
+        model.fill_pair_lists();
 
         let protocol_labels: Vec<&str> = Protocol::ALL.iter().map(|p| p.label()).collect();
         let encryption_labels: Vec<&str> = FtpEncryption::ALL.iter().map(|e| e.label()).collect();
         let site_list_box = model.site_list.widget();
+        let left_list_box = model.pair_lists[0].widget();
+        let right_list_box = model.pair_lists[1].widget();
         let widgets = view_output!();
+        widgets.tab_switcher.set_stack(Some(&widgets.tabs));
+        model.tabs = Some(widgets.tabs.clone());
+        {
+            let sender = sender.clone();
+            widgets
+                .tabs
+                .connect_visible_child_name_notify(move |stack| {
+                    sender.input(LoginMsg::TabShown(
+                        if stack.visible_child_name().as_deref() == Some(SITE_TO_SITE_TAB) {
+                            LoginTab::SiteToSite
+                        } else {
+                            LoginTab::Direct
+                        },
+                    ));
+                });
+        }
         // The same title bar and compact controls as the other dialogs.
         dialog::style_window(&root, "Login");
         ComponentParts { model, widgets }
@@ -1036,6 +1437,13 @@ impl Component for LoginDialog {
                     Selection::Nothing | Selection::NewSite => Selection::Nothing,
                 };
                 self.select(keep);
+                self.pair_login = None;
+                // Always open on Direct, the usual way in.
+                if let Some(tabs) = &self.tabs {
+                    tabs.set_visible_child_name(DIRECT_TAB);
+                }
+                self.tab = LoginTab::Direct;
+                self.fill_pair_lists();
                 self.status.clear();
                 root.present();
             }
@@ -1138,7 +1546,35 @@ impl Component for LoginDialog {
                 self.pending_passphrase = Some(answer);
                 self.start_login(&sender, None);
             }
-            LoginMsg::Login => self.start_login(&sender, None),
+            LoginMsg::Login => {
+                self.pair_login = None;
+                self.pending_passphrase = None;
+                if self.tab == LoginTab::SiteToSite
+                    && let Some(sites) = self.pair_sites()
+                {
+                    tracing::info!(
+                        "connecting site to site: {} and {}",
+                        sites[0].display_name(),
+                        sites[1].display_name()
+                    );
+                    self.pair_login = Some(PairLogin { sites, left: None });
+                }
+                self.start_login(&sender, None);
+            }
+            LoginMsg::TabShown(tab) => {
+                if !self.busy {
+                    self.tab = tab;
+                    self.status.clear();
+                }
+            }
+            LoginMsg::PairSitePicked { pane, selection } => {
+                if !self.busy
+                    && let Selection::Saved(index) = selection
+                {
+                    self.pair_picks[pane] = Some(index);
+                    self.fill_pair_lists();
+                }
+            }
             LoginMsg::TrustHostKey(key) => self.start_login(&sender, Some(*key)),
             LoginMsg::TrustCertificate {
                 host,
@@ -1246,6 +1682,10 @@ impl Component for LoginDialog {
                     Ok((site, remote)) => {
                         self.status.clear();
                         self.password.set_text("");
+                        let pair_left = self
+                            .pair_login
+                            .as_ref()
+                            .is_some_and(|pair| pair.left.is_none());
                         // The passphrase opened the key: save it if asked to.
                         if let Some(pending) = self.pending_passphrase.take()
                             && pending.save
@@ -1265,14 +1705,32 @@ impl Component for LoginDialog {
                                 }
                             });
                         }
+                        if pair_left {
+                            // The left site is open: now the right one.
+                            if let Some(pair) = &mut self.pair_login {
+                                pair.left = Some(remote);
+                            }
+                            self.start_login(&sender, None);
+                            return;
+                        }
+                        let output = match self.pair_login.take() {
+                            Some(PairLogin {
+                                sites: [left_site, _],
+                                left: Some(left),
+                            }) => LoginOutput::ConnectedPair {
+                                left: (left_site, left),
+                                right: (site, remote),
+                            },
+                            Some(_) | None => LoginOutput::Connected { site, remote },
+                        };
                         // Sending fails only if the main window is gone; nothing to do then.
-                        let _ = sender.output(LoginOutput::Connected { site, remote });
+                        let _ = sender.output(output);
                         root.close();
                     }
                     Err(ConnectError::UnknownHostKey { fingerprint, key }) => {
                         self.status = String::from("Waiting for you to check the server's key");
                         let host = self
-                            .selected_site()
+                            .login_site()
                             .map_or_else(String::new, |s| s.host.clone());
                         let question = format!("Trust the server {host}?");
                         let detail = format!(
@@ -1352,7 +1810,17 @@ impl Component for LoginDialog {
                     Err(error) => {
                         tracing::warn!("login failed: {error}");
                         self.pending_passphrase = None;
-                        self.status = error.to_string();
+                        // Site to site, say which site, and drop the other's connection.
+                        self.status = match self.pair_login.take() {
+                            Some(pair) if matches!(error, ConnectError::PasswordRequired) => {
+                                format!(
+                                    "{} needs a password: save it on the Direct tab, or use SSH keys",
+                                    pair.current().display_name()
+                                )
+                            }
+                            Some(pair) => format!("{}: {error}", pair.current().display_name()),
+                            None => error.to_string(),
+                        };
                     }
                 }
             }
@@ -1474,6 +1942,8 @@ impl Component for LoginDialog {
 /// The site list: "New Site" followed by every saved site.
 struct SiteList {
     list: gtk::ListBox,
+    /// Whether row 0 is "New Site" (the Direct tab's list; not the site-to-site ones).
+    with_new_site: bool,
 }
 
 impl SiteList {
@@ -1486,6 +1956,7 @@ impl SiteList {
     /// * `on_double_click` - Called with the double-clicked entry (after its first click
     ///   has reached `on_click`)
     fn new(
+        with_new_site: bool,
         on_click: impl Fn(Selection) + 'static,
         on_double_click: impl Fn(Selection) + 'static,
     ) -> Self {
@@ -1497,7 +1968,9 @@ impl SiteList {
             .activate_on_single_click(true)
             .css_classes(["site-list"])
             .build();
-        list.connect_row_activated(move |_, row| on_click(selection_for_row(row.index())));
+        list.connect_row_activated(move |_, row| {
+            on_click(selection_for_row(row.index(), with_new_site));
+        });
 
         // Watch for double-clicks without taking the clicks away from the list: the
         // capture phase sees each press before the list does, and the gesture never
@@ -1512,11 +1985,14 @@ impl SiteList {
             // `y` is a fractional pixel position; rows are found by whole pixels.
             let row = weak_list.upgrade().and_then(|list| list.row_at_y(y as i32));
             if let Some(row) = row {
-                on_double_click(selection_for_row(row.index()));
+                on_double_click(selection_for_row(row.index(), with_new_site));
             }
         });
         list.add_controller(double_click);
-        Self { list }
+        Self {
+            list,
+            with_new_site,
+        }
     }
 
     /// The list widget, for placing in a layout.
@@ -1533,8 +2009,10 @@ impl SiteList {
     /// * `selection` - Entry to highlight
     fn fill(&self, sites: &[Site], selection: Selection) {
         self.list.remove_all();
-        self.list
-            .append(&site_row(NEW_SITE_ICON, NEW_SITE_LABEL, false));
+        if self.with_new_site {
+            self.list
+                .append(&site_row(NEW_SITE_ICON, NEW_SITE_LABEL, false));
+        }
         for site in sites {
             self.list.append(&site_row(
                 SITE_ICON,
@@ -1542,10 +2020,11 @@ impl SiteList {
                 site.password_saved,
             ));
         }
+        let first_site = usize::from(self.with_new_site);
         let row = match selection {
             Selection::Nothing => None,
-            Selection::NewSite => Some(0),
-            Selection::Saved(index) => index.checked_add(1),
+            Selection::NewSite => self.with_new_site.then_some(0),
+            Selection::Saved(index) => index.checked_add(first_site),
         }
         .and_then(|row| i32::try_from(row).ok())
         .and_then(|row| self.list.row_at_index(row));
@@ -1555,17 +2034,19 @@ impl SiteList {
     }
 }
 
-/// Map a list row position to what it picks: row 0 is "New Site", row `n` is saved site
-/// `n - 1`.
+/// Map a list row position to what it picks: with a "New Site" row, row 0 is "New Site"
+/// and row `n` is saved site `n - 1`; without one, row `n` is saved site `n`.
 ///
 /// # Arguments
 ///
 /// * `row` - Row position as GTK reports it (negative when the row is not in a list)
-fn selection_for_row(row: i32) -> Selection {
-    match usize::try_from(row) {
-        Ok(0) => Selection::NewSite,
-        Ok(row) => Selection::Saved(row - 1),
-        Err(_) => Selection::Nothing,
+/// * `with_new_site` - Whether the list starts with "New Site"
+fn selection_for_row(row: i32, with_new_site: bool) -> Selection {
+    match (usize::try_from(row), with_new_site) {
+        (Ok(0), true) => Selection::NewSite,
+        (Ok(row), true) => Selection::Saved(row - 1),
+        (Ok(row), false) => Selection::Saved(row),
+        (Err(_), _) => Selection::Nothing,
     }
 }
 
@@ -1638,9 +2119,16 @@ mod tests {
 
     #[test]
     fn selection_for_row_maps_rows_after_new_site() {
-        assert_eq!(selection_for_row(0), Selection::NewSite);
-        assert_eq!(selection_for_row(1), Selection::Saved(0));
-        assert_eq!(selection_for_row(4), Selection::Saved(3));
-        assert_eq!(selection_for_row(-1), Selection::Nothing);
+        assert_eq!(selection_for_row(0, true), Selection::NewSite);
+        assert_eq!(selection_for_row(1, true), Selection::Saved(0));
+        assert_eq!(selection_for_row(4, true), Selection::Saved(3));
+        assert_eq!(selection_for_row(-1, true), Selection::Nothing);
+    }
+
+    #[test]
+    fn selection_for_row_maps_rows_without_new_site() {
+        assert_eq!(selection_for_row(0, false), Selection::Saved(0));
+        assert_eq!(selection_for_row(4, false), Selection::Saved(4));
+        assert_eq!(selection_for_row(-1, false), Selection::Nothing);
     }
 }

@@ -118,8 +118,11 @@ pub enum FilePaneMsg {
     },
     /// Copy, move or delete the selected items (from the context menu or a key).
     Request(JobKind),
-    /// Whether there is somewhere to copy to (for the local pane: a connected server).
-    PeerAvailable(bool),
+    /// The other pane, which copies go to (`None`: nowhere to copy to, e.g. the local
+    /// pane before a server is connected). Names the menu's Upload / Move items.
+    Peer(Option<Peer>),
+    /// The server's own name arrived: show it after the site in the title bar.
+    ServerName(String),
     /// Ask for a name and create a folder in the current folder.
     NewFolder,
     /// Ask for a new name for the selected item.
@@ -175,6 +178,8 @@ pub struct FilePaneInit {
     pub last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
     /// Browse this server instead of the local disks.
     pub remote: Option<Remote>,
+    /// Shown in the pane's title bar: the server's site ("me@host"), or this computer.
+    pub title: String,
 }
 
 /// Notifications a [`FilePane`] sends to its parent.
@@ -327,6 +332,8 @@ enum Row {
 pub struct FilePane {
     /// Directory whose contents are currently displayed.
     current_dir: SidePath,
+    /// The title bar's text: the site (or this computer), and the server's own name.
+    title: String,
     /// Most recently requested directory; listings for anything else are stale.
     requested_dir: SidePath,
     entries: TypedColumnView<Row, gtk::MultiSelection>,
@@ -359,6 +366,49 @@ struct PaneActions {
     move_: gio::SimpleAction,
     delete: gio::SimpleAction,
     rename: gio::SimpleAction,
+    /// The menu section holding the copy and move items, renamed after the other pane.
+    transfer_section: gio::Menu,
+}
+
+/// The other pane of a session, as this pane's menu names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    /// "this computer", or the server's name.
+    pub name: String,
+    /// It is a server (so a server pane copies to it, rather than downloading).
+    pub is_server: bool,
+}
+
+/// The menu's copy and move items: "Upload to <server>", "Download to this computer",
+/// "Copy to <server>" (server to server) and "Move to ...", or plain "Upload" /
+/// "Download" and "Move" with nowhere to copy to.
+///
+/// # Arguments
+///
+/// * `this_is_server` - This pane shows a server
+/// * `peer` - The other pane
+fn transfer_labels(this_is_server: bool, peer: Option<&Peer>) -> (String, String) {
+    let verb = match (this_is_server, peer.is_some_and(|peer| peer.is_server)) {
+        (false, _) => "_Upload",
+        (true, false) => "_Download",
+        (true, true) => "_Copy",
+    };
+    match peer {
+        // An underscore marks the keyboard shortcut letter: one in a name is doubled to
+        // show as itself.
+        Some(peer) => {
+            let name = peer.name.replace('_', "__");
+            (format!("{verb} to {name}"), format!("_Move to {name}"))
+        }
+        None => (verb.to_owned(), String::from("_Move")),
+    }
+}
+
+/// Fill the menu's transfer section with its copy and move items.
+fn fill_transfer_section(section: &gio::Menu, labels: &(String, String)) {
+    section.remove_all();
+    section.append(Some(&labels.0), Some("pane.copy"));
+    section.append(Some(&labels.1), Some("pane.move"));
 }
 
 impl FilePane {
@@ -563,6 +613,26 @@ impl Component for FilePane {
             set_spacing: 2,
             set_margin_all: 2,
 
+            // Title bar: which machine this pane shows (see style.css).
+            gtk::Box {
+                set_orientation: gtk::Orientation::Horizontal,
+                set_spacing: 6,
+                add_css_class: "pane-title",
+                #[watch]
+                set_tooltip_text: Some(&model.title),
+
+                gtk::Image {
+                    set_icon_name: Some(title_icon),
+                },
+                gtk::Label {
+                    #[watch]
+                    set_label: &model.title,
+                    set_xalign: 0.0,
+                    set_hexpand: true,
+                    set_ellipsize: gtk::pango::EllipsizeMode::Middle,
+                },
+            },
+
             gtk::Box {
                 set_orientation: gtk::Orientation::Horizontal,
                 set_spacing: 2,
@@ -638,7 +708,13 @@ impl Component for FilePane {
             start_dir,
             last_dir_on_disk,
             remote,
+            title,
         } = init;
+        let title_icon = if remote.is_some() {
+            "network-server-symbolic"
+        } else {
+            "computer-symbolic"
+        };
         let mut entries = TypedColumnView::<Row, gtk::MultiSelection>::new();
         entries.append_column::<NameColumn>();
         entries.append_column::<SizeColumn>();
@@ -702,6 +778,7 @@ impl Component for FilePane {
 
         let mut model = Self {
             current_dir: start_dir.clone(),
+            title: title.clone(),
             requested_dir: start_dir.clone(),
             entries,
             status: String::new(),
@@ -839,7 +916,21 @@ impl Component for FilePane {
                 tracing::debug!("{kind:?} requested for {} items", paths.len());
                 let _ = sender.output(FilePaneOutput::Request { kind, paths });
             }
-            FilePaneMsg::PeerAvailable(available) => self.peer_available = available,
+            FilePaneMsg::ServerName(name) => {
+                // Not when the site already says it ("me@docker01" and "docker01").
+                let site_host = self.title.rsplit('@').next().unwrap_or_default();
+                let site_host = site_host.split(':').next().unwrap_or_default();
+                if !name.eq_ignore_ascii_case(site_host) {
+                    self.title = format!("{} \u{b7} {name}", self.title);
+                }
+            }
+            FilePaneMsg::Peer(peer) => {
+                self.peer_available = peer.is_some();
+                fill_transfer_section(
+                    &self.actions.transfer_section,
+                    &transfer_labels(self.remote.is_some(), peer.as_ref()),
+                );
+            }
             FilePaneMsg::NewFolder => Self::ask_name(
                 root,
                 NamePrompt {
@@ -1026,11 +1117,17 @@ fn context_menu(
         group.add_action(&action);
         action
     };
+    let transfer_section = gio::Menu::new();
+    fill_transfer_section(
+        &transfer_section,
+        &transfer_labels(side == Side::Remote, None),
+    );
     let actions = PaneActions {
         copy: add("copy", || FilePaneMsg::Request(JobKind::Copy)),
         move_: add("move", || FilePaneMsg::Request(JobKind::Move)),
         delete: add("delete", || FilePaneMsg::Request(JobKind::Delete)),
         rename: add("rename", || FilePaneMsg::Rename),
+        transfer_section: transfer_section.clone(),
     };
     add("new-folder", || FilePaneMsg::NewFolder);
     add("refresh", || FilePaneMsg::Refresh);
@@ -1079,13 +1176,6 @@ fn context_menu(
     group.add_action(&drop_action);
     root.insert_action_group(ACTION_GROUP, Some(&group));
 
-    let (copy_label, move_label) = match side {
-        Side::Local => ("_Upload", "_Move"),
-        Side::Remote => ("_Download", "_Move"),
-    };
-    let transfer_section = gio::Menu::new();
-    transfer_section.append(Some(copy_label), Some("pane.copy"));
-    transfer_section.append(Some(move_label), Some("pane.move"));
     let edit_section = gio::Menu::new();
     edit_section.append(Some("_New Folder…"), Some("pane.new-folder"));
     edit_section.append(Some("_Rename…"), Some("pane.rename"));
@@ -1868,6 +1958,37 @@ impl RelmColumn for ModifiedColumn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_items_name_where_copies_go() {
+        let server = |name: &str| Peer {
+            name: name.to_owned(),
+            is_server: true,
+        };
+        let computer = Peer {
+            name: String::from("this computer"),
+            is_server: false,
+        };
+        let labels = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+        assert_eq!(
+            transfer_labels(false, Some(&server("files.example.com"))),
+            labels("_Upload to files.example.com", "_Move to files.example.com")
+        );
+        assert_eq!(
+            transfer_labels(true, Some(&computer)),
+            labels("_Download to this computer", "_Move to this computer")
+        );
+        assert_eq!(
+            transfer_labels(true, Some(&server("vm"))),
+            labels("_Copy to vm", "_Move to vm")
+        );
+        // An underscore in a name shows as itself, not as a shortcut.
+        assert_eq!(
+            transfer_labels(true, Some(&server("db_01"))).0,
+            "_Copy to db__01"
+        );
+        assert_eq!(transfer_labels(false, None), labels("_Upload", "_Move"));
+    }
     use shuttlescp_core::path::RemotePath;
 
     #[test]

@@ -103,6 +103,14 @@ pub struct Job {
     /// Copies go to another folder on the same side (e.g. a file dragged onto a folder
     /// in its own pane) instead of to the other side.
     pub same_side: bool,
+    /// Site to site: the sources are on one server and copies go to another server
+    /// (`side` is [`Side::Remote`] and so is `dest_dir`). The data passes through this
+    /// computer, as with `scp -3`; [`run`] gets both connections.
+    pub between_servers: bool,
+    /// In a site-to-site session (two servers, one per pane), the server the job's
+    /// sources are on is the left pane's; otherwise the right pane's, the only server of
+    /// an ordinary session.
+    pub left_server: bool,
     /// Continue an earlier, interrupted run of this job: files already copied (same
     /// size and date at the destination) are not copied again or asked about, and
     /// sources already moved away are passed over.
@@ -113,19 +121,19 @@ impl Job {
     /// Short description, e.g. "Upload report.pdf to /home/me" or "Delete 3 items from
     /// the server".
     pub fn title(&self) -> String {
-        let what = match self.sources.as_slice() {
-            [single] => single.file_name().map_or_else(
-                || single.to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            ),
-            many => format!("{} items", many.len()),
-        };
+        let what = self.subject();
         let dest = &self.dest_dir;
         let on_server = match self.side {
             Side::Local => "",
             Side::Remote => " on the server",
         };
         match (self.kind, self.side) {
+            (JobKind::Copy, _) if self.between_servers => {
+                format!("Copy {what} to {dest} on the other server")
+            }
+            (JobKind::Move, _) if self.between_servers => {
+                format!("Move {what} to {dest} on the other server")
+            }
             (JobKind::Copy, _) if self.same_side => format!("Copy {what} to {dest}{on_server}"),
             (JobKind::Move, _) if self.same_side => format!("Move {what} to {dest}{on_server}"),
             (JobKind::Copy, Side::Local) => format!("Upload {what} to {dest}"),
@@ -134,6 +142,61 @@ impl Job {
             (JobKind::Move, Side::Remote) => format!("Move {what} to this computer, {dest}"),
             (JobKind::Delete, Side::Local) => format!("Delete {what} from this computer"),
             (JobKind::Delete, Side::Remote) => format!("Delete {what} from the server"),
+        }
+    }
+
+    /// The pane the sources are in (left is [`Side::Local`], right [`Side::Remote`]). In
+    /// an ordinary session that is `side`; site to site, both panes are servers and
+    /// [`Job::left_server`] says which.
+    pub fn source_pane(&self) -> Side {
+        if self.left_server {
+            Side::Local
+        } else {
+            self.side
+        }
+    }
+
+    /// The pane copies go to (left is [`Side::Local`], right [`Side::Remote`]): the
+    /// other pane, or the same one for a [`Job::same_side`] job or a delete.
+    pub fn dest_pane(&self) -> Side {
+        if self.kind == JobKind::Delete || self.same_side {
+            self.source_pane()
+        } else {
+            self.source_pane().other()
+        }
+    }
+
+    /// The pane whose files the job changes: where copies go, or what a delete removes
+    /// (left is [`Side::Local`], right [`Side::Remote`]).
+    pub fn changed_pane(&self) -> Side {
+        if self.kind == JobKind::Delete {
+            self.source_pane()
+        } else {
+            self.dest_pane()
+        }
+    }
+
+    /// Whether the two jobs (of one session) would change the same files: in the same
+    /// pane, a path one changes is a path the other changes, or inside it, or holds it.
+    /// Two such jobs must not run at once: they would write the same partial files.
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        self.changed_pane() == other.changed_pane()
+            && self.paths_in_use().iter().any(|mine| {
+                other
+                    .paths_in_use()
+                    .iter()
+                    .any(|theirs| mine.starts_with(theirs) || theirs.starts_with(mine))
+            })
+    }
+
+    /// What the job acts on, for titles: the name of its one source, or "3 items".
+    pub fn subject(&self) -> String {
+        match self.sources.as_slice() {
+            [single] => single.file_name().map_or_else(
+                || single.to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            many => format!("{} items", many.len()),
         }
     }
 
@@ -159,8 +222,9 @@ impl Job {
     }
 
     /// Where copies go: the other side, or the same side for a [`Job::same_side`] job.
+    /// Site to site, both are servers ([`Side::Remote`]).
     pub fn dest_side(&self) -> Side {
-        if self.same_side {
+        if self.same_side || self.between_servers {
             self.side
         } else {
             self.side.other()
@@ -178,6 +242,10 @@ struct JobRecord {
     dest_dir: PathBuf,
     #[serde(default)]
     same_side: bool,
+    #[serde(default)]
+    between_servers: bool,
+    #[serde(default)]
+    left_server: bool,
     #[serde(default)]
     resume: bool,
 }
@@ -208,6 +276,8 @@ impl From<JobRecord> for Job {
             sources: Vec::new(),
             dest_dir: SidePath::Local(PathBuf::new()),
             same_side: record.same_side,
+            between_servers: record.between_servers,
+            left_server: record.left_server,
             resume: record.resume,
         };
         job.sources = record
@@ -228,6 +298,8 @@ impl From<Job> for JobRecord {
             sources: job.sources.into_iter().map(JobRecord::saved).collect(),
             dest_dir: JobRecord::saved(job.dest_dir),
             same_side: job.same_side,
+            between_servers: job.between_servers,
+            left_server: job.left_server,
             resume: job.resume,
         }
     }
@@ -524,7 +596,10 @@ type Sink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
 /// # Arguments
 ///
 /// * `job` - What to do
-/// * `remote` - The server connection; needed unless the job only deletes local files
+/// * `remote` - The server connection; needed unless the job only deletes local files.
+///   Site to site, the connection to the server the sources are on
+/// * `dest_remote` - Site to site ([`Job::between_servers`]), the connection to the
+///   server copies go to; otherwise unused
 /// * `cancel` - Lets the caller stop the job
 /// * `on_event` - Receives progress; called from background tasks, so it must be cheap
 ///   and thread-safe (e.g. send to a channel)
@@ -535,6 +610,7 @@ type Sink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
 pub async fn run(
     job: Job,
     remote: Option<Remote>,
+    dest_remote: Option<Remote>,
     cancel: CancelFlag,
     on_event: impl Fn(TransferEvent) + Send + Sync + 'static,
 ) -> JobSummary {
@@ -544,12 +620,17 @@ pub async fn run(
         Side::Local => Some(Endpoint::Local),
         Side::Remote => remote.clone().map(Endpoint::Remote),
     };
+    let dest = if job.between_servers {
+        dest_remote.map(Endpoint::Remote)
+    } else {
+        endpoint(job.dest_side())
+    };
     let summary = match endpoint(job.side) {
         None => failed_to_start("not connected to a server"),
-        Some(source) => {
-            let dest = endpoint(job.dest_side());
-            execute(&job, source, dest, &cancel, &sink).await
+        Some(_) if job.between_servers && dest.is_none() => {
+            failed_to_start("not connected to the server copies go to")
         }
+        Some(source) => execute(&job, source, dest, &cancel, &sink).await,
     };
     let seconds = started.elapsed().as_secs_f64();
     let amount = if job.kind == JobKind::Delete || summary.bytes == 0 {
@@ -577,6 +658,59 @@ pub async fn run(
     );
     sink(TransferEvent::JobFinished(summary.clone()));
     summary
+}
+
+/// Delete the partial files (see [`PARTIAL_SUFFIX`]) an unfinished job left at its
+/// destination, when the user gives it up rather than resuming it later. The job is
+/// planned again to find them; sources it already moved away are passed over.
+///
+/// # Arguments
+///
+/// * `job` - The unfinished job (stopped: a running one would write them again)
+/// * `remote`, `dest_remote` - Its connections, as for [`run`]
+///
+/// # Returns
+///
+/// How many partial files were deleted
+///
+/// # Errors
+///
+/// Returns a message if the job cannot be planned (e.g. not connected)
+pub async fn discard_partials(
+    mut job: Job,
+    remote: Option<Remote>,
+    dest_remote: Option<Remote>,
+) -> Result<usize, String> {
+    if job.kind == JobKind::Delete {
+        return Ok(0);
+    }
+    let endpoint = |side: Side| match side {
+        Side::Local => Some(Endpoint::Local),
+        Side::Remote => remote.clone().map(Endpoint::Remote),
+    };
+    let dest = if job.between_servers {
+        dest_remote.map(Endpoint::Remote)
+    } else {
+        endpoint(job.dest_side())
+    };
+    let (Some(src), Some(dst)) = (endpoint(job.side), dest) else {
+        return Err(String::from("not connected to a server"));
+    };
+    // As when resuming: sources already moved are not an error.
+    job.resume = true;
+    let items = plan::plan(&job, &src, Some(&dst)).await?;
+    let mut removed = 0;
+    for item in items.iter().filter(|item| item.partial > 0) {
+        let partial = endpoint::partial_path(&item.dest);
+        match dst.remove_file(&partial).await {
+            Ok(()) => {
+                tracing::info!("deleted the partial copy {partial}");
+                removed += 1;
+            }
+            Err(error) => tracing::warn!("{error}"),
+        }
+    }
+    Ok(removed)
 }
 
 /// A summary for a job that could not start.

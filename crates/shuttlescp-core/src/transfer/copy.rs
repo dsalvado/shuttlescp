@@ -575,6 +575,9 @@ async fn copy_contents(
     let failed = ItemOutcome::Failed;
     let mut reader = src.open_at(&item.source, offset).await.map_err(failed)?;
     let mut writer = dst.open_write_at(partial, offset).await.map_err(failed)?;
+    // No read-ahead queue of our own: the SFTP library already keeps several requests in
+    // flight, and measured site to site (2026-10, 25 ms each way) a queue made copies
+    // about 10% slower. See the live_relay_speed test.
     let mut buffer = vec![0; CHUNK_BYTES];
     let mut done = offset;
     if offset > 0 {

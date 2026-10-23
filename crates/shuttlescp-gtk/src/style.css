@@ -769,3 +769,68 @@ label.in-transfer {
     border: 1px solid alpha(@theme_selected_bg_color, 0.7);
     border-radius: 2px;
 }
+
+/* Site to site: the picture of this computer between the two server panes (session.rs,
+   RelayPicture), with two lights like a disk's. Dim at rest; while transfers run the
+   green one (receiving) and the amber one (sending) blink, half a beat apart. GTK skips
+   the blinking when the desktop turns animations off. */
+.relay-picture {
+    padding: 0 8px;
+}
+/* The bar on the picture's right, matching the divider on its left. */
+separator.relay-divider {
+    min-width: 6px;
+    background-color: alpha(currentColor, 0.12);
+}
+.relay image {
+    color: alpha(currentColor, 0.7);
+}
+.relay-light {
+    min-width: 7px;
+    min-height: 7px;
+    border-radius: 50%;
+    background-color: alpha(currentColor, 0.18);
+}
+.relay-lights.active .relay-light.receive {
+    background-color: #33c56b;
+    animation: relay-blink 0.7s ease-in-out infinite alternate;
+}
+.relay-lights.active .relay-light.send {
+    background-color: #f0a020;
+    animation: relay-blink 0.7s ease-in-out 0.35s infinite alternate;
+}
+@keyframes relay-blink {
+    from { opacity: 1; }
+    to { opacity: 0.25; }
+}
+
+/* The Login dialog's tabs (Direct, Site to site): the page sits in an outlined area
+   right under the tab buttons, so each tab and what it shows read as one group. */
+.login-tabs {
+    margin-bottom: -1px;
+}
+.login-tabs-page {
+    padding: 10px;
+    border: 1px solid alpha(currentColor, 0.15);
+    border-radius: 0 6px 6px 6px;
+    background-color: alpha(currentColor, 0.03);
+}
+
+/* A file pane's title bar: which machine the pane shows (file_pane.rs). */
+.pane-title {
+    padding: 2px 6px;
+    font-weight: bold;
+    font-size: smaller;
+    border-bottom: 1px solid alpha(currentColor, 0.12);
+}
+.pane-title image {
+    color: alpha(currentColor, 0.7);
+}
+
+/* The picked site's details under each Site to site list (login_dialog.rs). */
+.site-details {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background-color: alpha(currentColor, 0.04);
+}

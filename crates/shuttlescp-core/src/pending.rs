@@ -17,8 +17,12 @@ use crate::transfer::Job;
 pub struct PendingJob {
     /// Identifies this entry (it stays the same when the job is resumed).
     pub key: String,
-    /// The site it transfers to or from.
+    /// The site it transfers to or from (site to site, the right pane's site).
     pub site_id: String,
+    /// Site to site, the left pane's site: the job needs both connected again, in the
+    /// same panes. Older files have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_site_id: Option<String>,
     /// What it does.
     pub job: Job,
 }
@@ -70,11 +74,22 @@ impl PendingTransfers {
         self.jobs.len() != before
     }
 
-    /// The unfinished jobs of a site, oldest first.
+    /// The unfinished jobs of a site, oldest first (not those it shared with another
+    /// site, site to site).
     pub fn for_site<'a>(&'a self, site_id: &'a str) -> impl Iterator<Item = &'a PendingJob> {
-        self.jobs
-            .iter()
-            .filter(move |pending| pending.site_id == site_id)
+        self.for_sites(None, site_id)
+    }
+
+    /// The unfinished jobs of a site, or (with `left_site_id`) of a site-to-site pair in
+    /// those panes, oldest first.
+    pub fn for_sites<'a>(
+        &'a self,
+        left_site_id: Option<&'a str>,
+        site_id: &'a str,
+    ) -> impl Iterator<Item = &'a PendingJob> {
+        self.jobs.iter().filter(move |pending| {
+            pending.site_id == site_id && pending.left_site_id.as_deref() == left_site_id
+        })
     }
 }
 
@@ -84,16 +99,19 @@ mod tests {
     use crate::path::{RemotePath, SidePath};
     use crate::transfer::{JobKind, Side};
 
-    fn pending(key: &str, site: &str) -> PendingJob {
+    fn pending_job(key: &str, site: &str) -> PendingJob {
         PendingJob {
             key: key.to_owned(),
             site_id: site.to_owned(),
+            left_site_id: None,
             job: Job {
                 kind: JobKind::Copy,
                 side: Side::Local,
                 sources: vec![SidePath::Local(PathBuf::from("/data/a"))],
                 dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
+                between_servers: false,
+                left_server: false,
                 resume: false,
             },
         }
@@ -102,9 +120,9 @@ mod tests {
     #[test]
     fn add_replaces_by_key_and_for_site_filters() {
         let mut list = PendingTransfers::default();
-        list.add(pending("k1", "site-a"));
-        list.add(pending("k2", "site-b"));
-        list.add(pending("k1", "site-a"));
+        list.add(pending_job("k1", "site-a"));
+        list.add(pending_job("k2", "site-b"));
+        list.add(pending_job("k1", "site-a"));
 
         assert_eq!(list.for_site("site-a").count(), 1);
         assert!(list.remove("k1"));
@@ -113,11 +131,41 @@ mod tests {
     }
 
     #[test]
+    fn site_to_site_records_belong_to_their_pair_only() {
+        let mut pending = PendingTransfers::default();
+        pending.add(pending_job("one", "right"));
+        pending.add(PendingJob {
+            left_site_id: Some(String::from("left")),
+            ..pending_job("pair", "right")
+        });
+
+        let keys =
+            |jobs: Vec<&PendingJob>| jobs.iter().map(|job| job.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(pending.for_site("right").collect()), ["one"]);
+        assert_eq!(
+            keys(pending.for_sites(Some("left"), "right").collect()),
+            ["pair"]
+        );
+        assert!(
+            pending.for_sites(Some("right"), "left").next().is_none(),
+            "panes swapped"
+        );
+
+        // Saved with the left site, read back the same; older records have none.
+        let json = serde_json::to_string(&pending).expect("save");
+        assert_eq!(
+            serde_json::from_str::<PendingTransfers>(&json).expect("load"),
+            pending
+        );
+        assert!(!json.contains(r#""left_site_id":null"#));
+    }
+
+    #[test]
     fn save_then_load_round_trips_and_garbage_loads_empty() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("state/pending.json");
         let mut list = PendingTransfers::default();
-        list.add(pending("k1", "site-a"));
+        list.add(pending_job("k1", "site-a"));
 
         list.save(&path).expect("save");
         assert_eq!(PendingTransfers::load(&path), list);

@@ -181,6 +181,15 @@ impl Remote {
         &self.0.host
     }
 
+    /// The server's own name, if it will say (SSH accounts that may run commands; not
+    /// FTP). For showing next to the address the user entered.
+    pub async fn server_name(&self) -> Option<String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.server_name().await,
+            Backend::Ftp(_) => None,
+        }
+    }
+
     /// The user's home folder on the server, where browsing starts.
     pub fn home(&self) -> &RemotePath {
         &self.0.home

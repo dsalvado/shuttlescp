@@ -43,6 +43,8 @@ const INDENT: i32 = 18;
 const END_SLOT_WIDTH: i32 = 48;
 /// A finished job flashes (green, or red if it failed) in the Queue this long...
 const FLASH_FOR: Duration = Duration::from_millis(900);
+/// ...or this long when it ended with an error, so the message can be read.
+const ERROR_FLASH_FOR: Duration = Duration::from_secs(4);
 /// ...then fades out this long (matching style.css) before moving to Completed or Failed.
 const FADE_FOR: Duration = Duration::from_millis(450);
 /// The Completed list keeps this many jobs; older ones are dropped.
@@ -59,6 +61,9 @@ const DONE_ICON: &str = "object-select-symbolic";
 const FAILED_ICON: &str = "dialog-error-symbolic";
 /// Icon of a cancelled or skipped item.
 const STOPPED_ICON: &str = "process-stop-symbolic";
+/// How long giving up all jobs waits for the cancelled copies to stop before deleting
+/// what they left.
+const DISCARD_SETTLE: Duration = Duration::from_millis(800);
 /// Name of the panel's action group, used by the row buttons.
 const ACTION_GROUP: &str = "transfers";
 
@@ -127,15 +132,40 @@ impl PendingStore {
         self.claimed.borrow().contains(key)
     }
 
-    /// A site's records that no panel shows: its interrupted jobs.
-    fn unclaimed_for_site(&self, site_id: &str) -> Vec<PendingJob> {
+    /// A site's records that no panel shows: its interrupted jobs. With
+    /// `left_site_id`, those of that site-to-site pair instead.
+    fn unclaimed_for_site(&self, left_site_id: Option<&str>, site_id: &str) -> Vec<PendingJob> {
         let claimed = self.claimed.borrow();
         self.transfers
             .borrow()
-            .for_site(site_id)
+            .for_sites(left_site_id, site_id)
             .filter(|pending| !claimed.contains(&pending.key))
             .cloned()
             .collect()
+    }
+
+    /// Forget the unclaimed records of these sites that `job` replaces: earlier
+    /// interrupted runs over the same files (`job` continues their partial files).
+    ///
+    /// # Returns
+    ///
+    /// The keys forgotten
+    fn supersede(&self, left_site_id: Option<&str>, site_id: &str, job: &Job) -> Vec<String> {
+        let replaced: Vec<String> = {
+            let claimed = self.claimed.borrow();
+            self.transfers
+                .borrow()
+                .for_sites(left_site_id, site_id)
+                .filter(|pending| !claimed.contains(&pending.key))
+                .filter(|pending| pending.job.conflicts_with(job))
+                .map(|pending| pending.key.clone())
+                .collect()
+        };
+        for key in &replaced {
+            tracing::info!("an unfinished transfer is replaced by a new one over the same files");
+            self.transfers.borrow_mut().remove(key);
+        }
+        replaced
     }
 
     /// Write the file, logging (not failing) on error.
@@ -153,6 +183,22 @@ pub struct PanelConnection {
     pub site_id: String,
     /// The open session.
     pub remote: Remote,
+    /// The server's name, for the titles of site-to-site jobs.
+    pub name: String,
+    /// In a site-to-site session, the left pane's server (the fields above are the right
+    /// pane's).
+    pub left: Option<LeftConnection>,
+}
+
+/// The left pane's server of a site-to-site session.
+#[derive(Debug, Clone)]
+pub struct LeftConnection {
+    /// Id of its site, recorded with unfinished jobs next to the right one's.
+    pub site_id: String,
+    /// The open session.
+    pub remote: Remote,
+    /// The server's name, for the titles of site-to-site jobs.
+    pub name: String,
 }
 
 /// Messages handled by the transfers panel.
@@ -210,6 +256,10 @@ pub enum TransferPanelMsg {
     ResumeInterrupted,
     /// Forget the jobs interrupted in an earlier session.
     DiscardInterrupted,
+    /// Give up every unfinished job (running or paused) before the app quits: stop
+    /// them, forget their records and delete their partial files; then report
+    /// [`TransferPanelOutput::Discarded`].
+    DiscardAll,
 }
 
 /// Notifications sent to the main window.
@@ -222,15 +272,26 @@ pub enum TransferPanelOutput {
     TargetChanged(Side),
     /// The files and folders running jobs use changed: the panes show them as busy.
     InUse {
-        /// On this computer.
+        /// In the left pane: on this computer (site to site, on the left server).
         local: Vec<SidePath>,
-        /// On the server.
+        /// In the right pane: on the server.
         remote: Vec<SidePath>,
     },
+    /// Which ways running site-to-site jobs copy: left to right, right to left.
+    Relaying {
+        /// From the left pane's server to the right pane's.
+        to_right: bool,
+        /// From the right pane's server to the left pane's.
+        to_left: bool,
+    },
+    /// [`TransferPanelMsg::DiscardAll`] is done.
+    Discarded,
     /// The number of jobs in the lists changed.
     Counts {
         /// Jobs still running.
         running: usize,
+        /// Jobs paused, waiting in the Queue to be resumed.
+        paused: usize,
         /// Jobs in the Completed list.
         completed: usize,
         /// Jobs in the Failed list.
@@ -298,6 +359,8 @@ struct JobState {
     shelved: u64,
     /// Its first bytes arrived (and the pane it writes to was asked to refresh).
     writing: bool,
+    /// Site to site, the names of the servers it copies from and to, for its title.
+    route: Option<(String, String)>,
 }
 
 impl JobState {
@@ -356,10 +419,12 @@ pub struct TransferPanel {
     clear_buttons: [gtk::Button; 2],
     banner: gtk::Box,
     banner_text: gtk::Label,
-    /// Counts last reported to the main window: running, completed, failed.
-    counts: (usize, usize, usize),
+    /// Counts last reported to the main window: running, paused, completed, failed.
+    counts: (usize, usize, usize, usize),
     /// Paths in use last reported to the main window: local, remote.
     in_use: (Vec<SidePath>, Vec<SidePath>),
+    /// Directions of running site-to-site jobs last reported: to the right, to the left.
+    relaying: (bool, bool),
     /// When the panes were last asked to refresh for a job's progress.
     last_target_refresh: Option<Instant>,
     /// Counter giving each shelved job its place in time.
@@ -474,8 +539,9 @@ impl Component for TransferPanel {
             clear_buttons,
             banner: gtk::Box::default(),
             banner_text: gtk::Label::default(),
-            counts: (0, 0, 0),
+            counts: (0, 0, 0, 0),
             in_use: (Vec::new(), Vec::new()),
+            relaying: (false, false),
             last_target_refresh: None,
             next_shelf: 0,
         };
@@ -550,6 +616,7 @@ impl Component for TransferPanel {
             TransferPanelMsg::ResumeItem { job: id, item } => {
                 self.pause_item(id, item, false);
             }
+            TransferPanelMsg::DiscardAll => self.discard_all(&sender),
             TransferPanelMsg::Retry(id) => self.retry(id, &sender),
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
             TransferPanelMsg::Clear(kind) => self.clear(kind),
@@ -662,17 +729,40 @@ impl TransferPanel {
     fn start(&mut self, job: Job, pending_key: Option<String>, sender: &ComponentSender<Self>) {
         let id = self.next_id;
         self.next_id += 1;
-        let remote = self
-            .connection
-            .as_ref()
-            .map(|connection| connection.remote.clone());
-        // Record jobs that use the server, so they can be resumed if interrupted.
+        // Two jobs must never write the same files (their partial files would mix): one
+        // over files another unfinished job changes, running or paused, does not start.
+        let blocked_by = self
+            .shared
+            .borrow()
+            .jobs
+            .values()
+            .filter(|other| other.is_running() || other.paused)
+            .find(|other| other.job.conflicts_with(&job))
+            .map(|other| other.job.title());
+        let (remote, dest_remote, route) = self.connections_for(&job);
+        // Record jobs that use the server, so they can be resumed if interrupted (site to
+        // site, with both sites). A new job replaces earlier interrupted records over the
+        // same files.
         let pending_key = match (&self.connection, job.uses_server()) {
+            (_, _) if blocked_by.is_some() => pending_key,
             (Some(connection), true) => {
+                if pending_key.is_none() {
+                    let replaced = self.pending.supersede(
+                        connection.left.as_ref().map(|left| left.site_id.as_str()),
+                        &connection.site_id,
+                        &job,
+                    );
+                    if !replaced.is_empty() {
+                        self.interrupted
+                            .retain(|pending| !replaced.contains(&pending.key));
+                        self.show_interrupted();
+                    }
+                }
                 let key = pending_key.unwrap_or_else(new_site_id);
                 self.pending.add(PendingJob {
                     key: key.clone(),
                     site_id: connection.site_id.clone(),
+                    left_site_id: connection.left.as_ref().map(|left| left.site_id.clone()),
                     job: job.clone(),
                 });
                 self.save_pending();
@@ -704,6 +794,7 @@ impl TransferPanel {
                 fading: false,
                 shelved: 0,
                 writing: false,
+                route,
             },
         );
         self.store(ListKind::Queue).append(&row_object(RowKey {
@@ -711,12 +802,31 @@ impl TransferPanel {
             item: None,
         }));
 
+        if let Some(other) = blocked_by {
+            tracing::warn!(
+                "not starting {}: {other} is using the same files",
+                job.title()
+            );
+            self.job_finished(
+                id,
+                JobSummary {
+                    error: Some(format!(
+                        "Not started: \"{other}\" is using the same files. Retry once it has \
+                         finished."
+                    )),
+                    ..JobSummary::default()
+                },
+                sender,
+            );
+            return;
+        }
+
         // The job runs as its own task on the async runtime's worker threads; its events
         // come back to `update_cmd` on the UI thread.
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {
-                    transfer::run(job, remote, cancel, move |event| {
+                    transfer::run(job, remote, dest_remote, cancel, move |event| {
                         // Fails only once the panel is gone, when nobody needs the event.
                         let _ = out.send((id, event));
                     })
@@ -756,7 +866,7 @@ impl TransferPanel {
             if !new {
                 return;
             }
-            job.job.dest_side()
+            job.job.dest_pane()
         };
         if self
             .last_target_refresh
@@ -910,18 +1020,105 @@ impl TransferPanel {
         }
         self.interrupted.clear();
         if let Some(connection) = &connection {
-            self.interrupted = self.pending.unclaimed_for_site(&connection.site_id);
+            self.interrupted = self.pending.unclaimed_for_site(
+                connection.left.as_ref().map(|left| left.site_id.as_str()),
+                &connection.site_id,
+            );
         }
+        if !self.interrupted.is_empty() {
+            tracing::info!(
+                "{} interrupted transfers can be resumed",
+                self.interrupted.len()
+            );
+        }
+        self.show_interrupted();
+        self.connection = connection;
+    }
+
+    /// The connections a job uses: the server its sources are on and, site to site, the
+    /// one copies go to, with their names (for the job's title).
+    fn connections_for(
+        &self,
+        job: &Job,
+    ) -> (Option<Remote>, Option<Remote>, Option<(String, String)>) {
+        match &self.connection {
+            Some(connection) => {
+                let right = (connection.remote.clone(), connection.name.clone());
+                let left = connection
+                    .left
+                    .as_ref()
+                    .map(|left| (left.remote.clone(), left.name.clone()));
+                let (from, to) = if job.left_server {
+                    (left, Some(right))
+                } else {
+                    (Some(right), left)
+                };
+                let to = to.filter(|_| job.between_servers);
+                let route = from
+                    .as_ref()
+                    .zip(to.as_ref())
+                    .map(|(from, to)| (from.1.clone(), to.1.clone()));
+                (from.map(|from| from.0), to.map(|to| to.0), route)
+            }
+            None => (None, None, None),
+        }
+    }
+
+    /// Give up every unfinished job (see [`TransferPanelMsg::DiscardAll`]).
+    fn discard_all(&mut self, sender: &ComponentSender<Self>) {
+        let unfinished: Vec<Job> = {
+            let mut shared = self.shared.borrow_mut();
+            let mut unfinished = Vec::new();
+            for job in shared.jobs.values_mut() {
+                if !job.is_running() && !job.paused {
+                    continue;
+                }
+                // A cancelled file deletes its own partial copy; the rest go below.
+                job.user_cancelled = true;
+                job.paused = false;
+                job.cancel.cancel();
+                if let Some(key) = job.pending_key.take() {
+                    self.pending.remove(&key);
+                }
+                unfinished.push(job.job.clone());
+            }
+            unfinished
+        };
+        self.save_pending();
+        let work: Vec<_> = unfinished
+            .into_iter()
+            .map(|job| {
+                let (remote, dest_remote, _) = self.connections_for(&job);
+                (job, remote, dest_remote)
+            })
+            .collect();
+        tracing::info!("giving up {} unfinished transfers", work.len());
+        let done = sender.output_sender().clone();
+        relm4::spawn(async move {
+            if !work.is_empty() {
+                // Let the cancelled copies stop (each at its next chunk) first.
+                relm4::tokio::time::sleep(DISCARD_SETTLE).await;
+            }
+            for (job, remote, dest_remote) in work {
+                let title = job.title();
+                match transfer::discard_partials(job, remote, dest_remote).await {
+                    Ok(removed) => tracing::info!("{title}: {removed} partial files deleted"),
+                    Err(error) => tracing::warn!("{title}: partial files not deleted: {error}"),
+                }
+            }
+            // Fails only if the panel is gone, when nobody waits for this.
+            let _ = done.send(TransferPanelOutput::Discarded);
+        });
+    }
+
+    /// Show (or hide) the banner offering the interrupted transfers.
+    fn show_interrupted(&self) {
         let count = self.interrupted.len();
-        if count > 0 {
-            tracing::info!("{count} interrupted transfers can be resumed");
-        }
         self.banner.set_visible(count > 0);
         self.banner_text.set_label(&match count {
             1 => String::from("1 transfer was interrupted and can be resumed."),
             count => format!("{count} transfers were interrupted and can be resumed."),
         });
-        self.connection = connection;
     }
 
     /// Ask the user what to do about a file already at the destination.
@@ -1049,7 +1246,7 @@ impl TransferPanel {
     /// The whole job finished: it flashes green (or red), fades, and moves to
     /// Completed (or Failed).
     fn job_finished(&mut self, id: u64, summary: JobSummary, sender: &ComponentSender<Self>) {
-        let forget = {
+        let (forget, flash_for) = {
             let mut shared = self.shared.borrow_mut();
             let Some(job) = shared.jobs.get_mut(&id) else {
                 return;
@@ -1067,10 +1264,15 @@ impl TransferPanel {
             let forget = (summary.is_complete() || job.user_cancelled)
                 .then(|| job.pending_key.clone())
                 .flatten();
+            let flash_for = if summary.error.is_some() {
+                ERROR_FLASH_FOR
+            } else {
+                FLASH_FOR
+            };
             job.summary = Some(summary);
             job.flashing = true;
             refresh_job(&shared, id);
-            forget
+            (forget, flash_for)
         };
         if let Some(key) = forget {
             self.pending.remove(&key);
@@ -1078,10 +1280,10 @@ impl TransferPanel {
         }
         for (delay, message) in [
             (
-                FLASH_FOR,
+                flash_for,
                 TransferPanelMsg::Fade as fn(u64) -> TransferPanelMsg,
             ),
-            (FLASH_FOR + FADE_FOR, TransferPanelMsg::Shelve),
+            (flash_for + FADE_FOR, TransferPanelMsg::Shelve),
         ] {
             let sender = sender.clone();
             glib::timeout_add_local_once(delay, move || sender.input(message(id)));
@@ -1166,6 +1368,11 @@ impl TransferPanel {
                 |list: ListKind| shared.jobs.values().filter(|job| job.list == list).count();
             (
                 shared.jobs.values().filter(|job| job.is_running()).count(),
+                shared
+                    .jobs
+                    .values()
+                    .filter(|job| job.paused && !job.is_running())
+                    .count(),
                 count(ListKind::Completed),
                 count(ListKind::Failed),
             )
@@ -1183,16 +1390,18 @@ impl TransferPanel {
         self.clear_buttons[1].set_sensitive(counts.2 > 0);
         let in_use = {
             let shared = self.shared.borrow();
+            // By pane: site to site, both panes hold server paths.
             let mut in_use = (Vec::new(), Vec::new());
-            for path in shared
-                .jobs
-                .values()
-                .filter(|job| job.is_running())
-                .flat_map(|job| job.job.paths_in_use())
-            {
-                match path.side() {
-                    Side::Local => in_use.0.push(path),
-                    Side::Remote => in_use.1.push(path),
+            for job in shared.jobs.values().filter(|job| job.is_running()) {
+                let pane = if job.job.kind == JobKind::Delete {
+                    job.job.source_pane()
+                } else {
+                    job.job.dest_pane()
+                };
+                let paths = job.job.paths_in_use();
+                match pane {
+                    Side::Local => in_use.0.extend(paths),
+                    Side::Remote => in_use.1.extend(paths),
                 }
             }
             in_use
@@ -1204,12 +1413,30 @@ impl TransferPanel {
                 remote: in_use.1,
             });
         }
+        let relaying = {
+            let shared = self.shared.borrow();
+            let ways: Vec<bool> = shared
+                .jobs
+                .values()
+                .filter(|job| job.is_running() && job.job.between_servers)
+                .map(|job| job.job.left_server)
+                .collect();
+            (ways.contains(&true), ways.contains(&false))
+        };
+        if relaying != self.relaying {
+            self.relaying = relaying;
+            let _ = sender.output(TransferPanelOutput::Relaying {
+                to_right: relaying.0,
+                to_left: relaying.1,
+            });
+        }
         if counts != self.counts {
             self.counts = counts;
             let _ = sender.output(TransferPanelOutput::Counts {
                 running: counts.0,
-                completed: counts.1,
-                failed: counts.2,
+                paused: counts.1,
+                completed: counts.2,
+                failed: counts.3,
             });
         }
     }
@@ -1529,6 +1756,8 @@ fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
 fn job_row(job: &JobState, now: Instant) -> RowView {
     let deleting = job.job.kind == JobKind::Delete;
     let icon = match (job.job.kind, job.job.side) {
+        // Site to site: through this computer.
+        _ if job.route.is_some() => "computer-symbolic",
         (JobKind::Delete, _) => "user-trash-symbolic",
         _ if job.job.same_side => "go-next-symbolic",
         (_, Side::Local) => "go-up-symbolic",
@@ -1560,10 +1789,23 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         None => (job.meter.describe(job.done, job.total, now), false, None),
         Some(summary) => summary_text(job, summary),
     };
+    let title = match &job.route {
+        // "Copy report.pdf: left-server → right-server".
+        Some((from, to)) => format!(
+            "{} {}: {from} \u{2192} {to}",
+            if job.job.kind == JobKind::Move {
+                "Move"
+            } else {
+                "Copy"
+            },
+            job.job.subject()
+        ),
+        None => job.job.title(),
+    };
     let title = if job.job.resume {
-        format!("{} (resumed)", job.job.title())
+        format!("{title} (resumed)")
     } else {
-        job.job.title()
+        title
     };
     RowView {
         indent: 0,
@@ -1968,15 +2210,46 @@ mod tests {
         PendingJob {
             key: key.to_owned(),
             site_id: String::from("site"),
+            left_site_id: None,
             job: Job {
                 kind: JobKind::Copy,
                 side: Side::Local,
                 sources: vec![SidePath::Local(PathBuf::from("/data/a"))],
                 dest_dir: SidePath::Remote(RemotePath::new("/srv")),
                 same_side: false,
+                between_servers: false,
+                left_server: false,
                 resume: false,
             },
         }
+    }
+
+    #[test]
+    fn a_new_job_replaces_interrupted_records_over_the_same_files() {
+        // Arrange: two interrupted runs over /data/a, one over another file, and one over
+        // /data/a that a session shows (claimed).
+        let temp = tempfile::tempdir().expect("temp dir");
+        let store = PendingStore::load(temp.path().join("pending.json"));
+        store.transfers.borrow_mut().add(pending("old-1"));
+        store.transfers.borrow_mut().add(pending("old-2"));
+        let mut other = pending("other");
+        other.job.sources = vec![SidePath::Local(PathBuf::from("/data/z"))];
+        store.transfers.borrow_mut().add(other);
+        store.add(pending("shown"));
+
+        // Act: a new upload of /data/a to /srv.
+        let mut replaced = store.supersede(None, "site", &pending("new").job);
+
+        // Assert: the two unclaimed runs over /data/a go; the rest stay.
+        replaced.sort();
+        assert_eq!(replaced, ["old-1", "old-2"]);
+        let left: Vec<String> = store
+            .transfers
+            .borrow()
+            .for_site("site")
+            .map(|pending| pending.key.clone())
+            .collect();
+        assert_eq!(left, ["other", "shown"]);
     }
 
     #[test]
@@ -1992,7 +2265,7 @@ mod tests {
 
         // Act + Assert: only the earlier one is offered for resuming.
         let offered: Vec<String> = store
-            .unclaimed_for_site("site")
+            .unclaimed_for_site(None, "site")
             .into_iter()
             .map(|pending| pending.key)
             .collect();
@@ -2000,7 +2273,7 @@ mod tests {
 
         // Its session closes: the running one can be offered again.
         store.release("running");
-        assert_eq!(store.unclaimed_for_site("site").len(), 2);
+        assert_eq!(store.unclaimed_for_site(None, "site").len(), 2);
 
         // Both records reach the file, which every session shares.
         store.save();

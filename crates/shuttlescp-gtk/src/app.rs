@@ -27,6 +27,7 @@ use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
+use crate::quit_dialog::{self, QuitChoice};
 use crate::resize_grips;
 use crate::session::{self, Session, SessionId, SessionInit};
 use crate::theme;
@@ -61,6 +62,9 @@ const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// Wait this long after startup before looking for a newer release, so it never slows
 /// the start down.
 const UPDATE_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// Longest wait, when quitting, for the sessions to delete their unfinished transfers'
+/// partial files.
+const DISCARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// How long the transfers must have stopped before an update waiting for them restarts
 /// the app.
 const IDLE_RESTART_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
@@ -192,8 +196,32 @@ pub enum AppMsg {
         /// The open SFTP session.
         remote: Remote,
     },
+    /// The Login dialog connected to two sites, for copying between them.
+    ConnectedPair {
+        /// The left pane's site and connection.
+        left: (Site, Remote),
+        /// The right pane's site and connection.
+        right: (Site, Remote),
+    },
     /// A session's remote pane moved to another folder.
     RemoteDirChanged { session: SessionId, dir: RemotePath },
+    /// A server said its own name, for its pane's title bar.
+    ServerNamed {
+        session: SessionId,
+        /// The pane showing that server (left is `Side::Local`).
+        pane: Side,
+        name: String,
+    },
+    /// Which ways a site-to-site session's transfers are copying.
+    Relaying {
+        session: SessionId,
+        /// Left server to right server.
+        to_right: bool,
+        /// Right server to left server.
+        to_left: bool,
+    },
+    /// A site-to-site session's left pane (a server) moved to another folder.
+    LeftDirChanged { session: SessionId, dir: RemotePath },
     /// Another session tab was brought forward: its transfer lists follow.
     SessionSwitched,
     /// Another bottom panel tab was brought forward: its session follows.
@@ -257,11 +285,17 @@ pub enum AppMsg {
         session: SessionId,
         /// Jobs running.
         running: usize,
+        /// Jobs paused.
+        paused: usize,
         /// Jobs in the Completed list.
         completed: usize,
         /// Jobs in the Failed list.
         failed: usize,
     },
+    /// A session gave up its unfinished transfers (see `QuitDiscarding`).
+    TransfersDiscarded(SessionId),
+    /// Quit, after giving up the unfinished transfers and deleting their partial files.
+    QuitDiscarding(&'static str),
     /// Look for a newer release: asked for (Help > Check for Updates) or automatic.
     CheckForUpdates { asked: bool },
     /// The look for a newer release ended: the newer release, none, or an error.
@@ -330,8 +364,14 @@ pub struct App {
     bottom_panel: gtk::Notebook,
     /// The main window, for dialogs.
     window: gtk::ApplicationWindow,
-    /// Transfers running in all sessions; shared with the window's close handler.
+    /// Transfers running in all sessions.
     running_transfers: Rc<Cell<usize>>,
+    /// Transfers running or paused in all sessions; shared with the window's close
+    /// handler, which asks before quitting while there are any.
+    unfinished_transfers: Rc<Cell<usize>>,
+    /// Quitting after giving up the unfinished transfers: the sessions still deleting
+    /// partial files, and the reason to quit with.
+    discarding: Option<(usize, &'static str)>,
     /// Set once quitting is decided, so closing the window no longer asks.
     quitting: Rc<Cell<bool>>,
     /// Start this program (the updated AppImage) once the app has closed.
@@ -510,11 +550,12 @@ impl SimpleComponent for App {
 
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
         let running_transfers = Rc::new(Cell::new(0));
+        let unfinished_transfers = Rc::new(Cell::new(0));
         let quitting = Rc::new(Cell::new(false));
         {
-            // Closing the window while transfers run asks first (see `AppMsg::Quit`).
+            // Closing the window with unfinished transfers asks first (see `AppMsg::Quit`).
             let (running, quitting, sender) = (
-                Rc::clone(&running_transfers),
+                Rc::clone(&unfinished_transfers),
                 Rc::clone(&quitting),
                 sender.clone(),
             );
@@ -572,11 +613,16 @@ impl SimpleComponent for App {
                 .forward(sender.input_sender(), |output| match output {
                     LoginOutput::ShowAtStartupChanged(show) => AppMsg::ShowLoginAtStartup(show),
                     LoginOutput::Connected { site, remote } => AppMsg::Connected { site, remote },
+                    LoginOutput::ConnectedPair { left, right } => {
+                        AppMsg::ConnectedPair { left, right }
+                    }
                 }),
             disconnect_action,
             bottom_panel: bottom_panel.clone(),
             window: root.clone(),
             running_transfers,
+            unfinished_transfers,
+            discarding: None,
             quitting,
             restart_with: None,
             checking_for_updates: false,
@@ -588,7 +634,7 @@ impl SimpleComponent for App {
         new_tab.append(&gtk::Label::new(Some("New Connection")));
         new_tab.set_tooltip_text(Some("Connect to another server in a new tab"));
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
-        model.add_session(start_dir, window_size.width / 2, &sender);
+        model.add_session(start_dir, window_size.width / 2, None, &sender);
         // `#[local_ref]` in the view takes a reference.
         let session_notebook = &session_notebook;
         let widgets = view_output!();
@@ -636,6 +682,10 @@ impl SimpleComponent for App {
         if let Some(dir) = std::env::var_os(crate::ui_gallery::ENV_VAR) {
             let sender = sender.clone();
             let (demo_sender, focus_sender) = (sender.clone(), sender.clone());
+            // With two servers named, the gallery also pictures a site-to-site session.
+            if let Some(pair) = std::env::var_os(crate::ui_gallery::PAIR_VAR) {
+                crate::ui_gallery::connect_pair(&pair.to_string_lossy(), sender.clone());
+            }
             crate::ui_gallery::run(
                 &root,
                 dir.into(),
@@ -747,6 +797,7 @@ impl SimpleComponent for App {
             }
             AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
             AppMsg::Connected { site, remote } => self.connect(&site, remote, &sender),
+            AppMsg::ConnectedPair { left, right } => self.connect_pair(left, right, &sender),
             AppMsg::RemoteDirChanged { session, dir } => {
                 if let Some(connection) = self
                     .session_mut(session)
@@ -754,6 +805,33 @@ impl SimpleComponent for App {
                 {
                     tracing::debug!("remote pane now shows {dir}");
                     connection.dir = dir;
+                }
+            }
+            AppMsg::ServerNamed {
+                session,
+                pane,
+                name,
+            } => {
+                if let Some(session) = self.session(session) {
+                    session.name_server(pane, name);
+                }
+            }
+            AppMsg::Relaying {
+                session,
+                to_right,
+                to_left,
+            } => {
+                if let Some(session) = self.session(session) {
+                    session.show_relaying(to_right, to_left);
+                }
+            }
+            AppMsg::LeftDirChanged { session, dir } => {
+                if let Some(left) = self
+                    .session_mut(session)
+                    .and_then(|session| session.left_server.as_mut())
+                {
+                    tracing::debug!("left pane now shows {dir}");
+                    left.dir = dir;
                 }
             }
             AppMsg::SessionSwitched => {
@@ -769,7 +847,7 @@ impl SimpleComponent for App {
             #[cfg(debug_assertions)]
             AppMsg::GalleryDemo => {
                 if let Some(first) = self.sessions.first_mut() {
-                    first.show_counts(2, 1, 0);
+                    first.show_counts(2, 0, 1, 0);
                     // Two items of its local folder in use, to picture them in red.
                     let mut in_use: Vec<SidePath> = std::fs::read_dir(&first.local_dir)
                         .map(|entries| {
@@ -784,14 +862,20 @@ impl SimpleComponent for App {
                     first.show_in_use(in_use, Vec::new());
                 }
                 let start = self.sessions[0].local_dir.clone();
-                self.add_session(start, self.session_notebook.width() / 2, &sender);
+                self.add_session(start, self.session_notebook.width() / 2, None, &sender);
                 self.update_notice = Some(UpdateNotice::Available(Box::new(
                     crate::ui_gallery::sample_manifest(),
                 )));
             }
             AppMsg::Disconnect => {
                 if let Some(index) = self.current_index() {
-                    self.sessions[index].disconnect();
+                    // A site-to-site session is its two servers: disconnecting closes it.
+                    if self.sessions[index].left_server.is_some() {
+                        let id = self.sessions[index].id;
+                        sender.input(AppMsg::CloseSession(id));
+                    } else {
+                        self.sessions[index].disconnect();
+                    }
                 }
             }
             AppMsg::CloseSession(id) => {
@@ -816,17 +900,44 @@ impl SimpleComponent for App {
                 self.save_config();
             }
             AppMsg::Quit(reason)
-                if self.running_transfers.get() > 0
+                if self.unfinished_transfers.get() > 0
+                    && self.discarding.is_none()
                     && !QUIT_SIGNALS.iter().any(|&(_, signal)| signal == reason) =>
             {
-                self.confirm_stopping_transfers(
-                    self.running_transfers.get(),
-                    "Quit",
-                    "Quit ShuttleSCP?",
-                    "Quit",
-                    &sender,
-                    move || AppMsg::QuitNow(reason),
-                );
+                self.ask_quit(reason, &sender);
+            }
+            AppMsg::QuitDiscarding(reason) => {
+                // Each session with unfinished transfers gives them up; the app quits once
+                // all have, or after DISCARD_TIMEOUT (a server that does not answer must
+                // not keep it open).
+                let busy: Vec<usize> = (0..self.sessions.len())
+                    .filter(|&index| self.sessions[index].running + self.sessions[index].paused > 0)
+                    .collect();
+                if busy.is_empty() {
+                    self.quit(reason);
+                    return;
+                }
+                tracing::info!("deleting the partial files of unfinished transfers, then quitting");
+                self.discarding = Some((busy.len(), reason));
+                for index in busy {
+                    self.sessions[index]
+                        .transfers
+                        .emit(TransferPanelMsg::DiscardAll);
+                }
+                let sender = sender.clone();
+                glib::timeout_add_local_once(DISCARD_TIMEOUT, move || {
+                    sender.input(AppMsg::QuitNow(reason));
+                });
+            }
+            AppMsg::TransfersDiscarded(session) => {
+                tracing::info!("session {session}: unfinished transfers given up");
+                if let Some((left, reason)) = self.discarding {
+                    if left <= 1 {
+                        self.quit(reason);
+                    } else {
+                        self.discarding = Some((left - 1, reason));
+                    }
+                }
             }
             AppMsg::Quit(reason) | AppMsg::QuitNow(reason) => self.quit(reason),
             AppMsg::LogLevelSelected(level) => {
@@ -860,6 +971,8 @@ impl SimpleComponent for App {
                         sources: paths,
                         dest_dir,
                         same_side: from_this_pane,
+                        between_servers: false,
+                        left_server: false,
                         resume: false,
                     },
                 );
@@ -868,14 +981,14 @@ impl SimpleComponent for App {
             AppMsg::TransferCounts {
                 session,
                 running,
+                paused,
                 completed,
                 failed,
             } => {
                 if let Some(session) = self.session_mut(session) {
-                    session.show_counts(running, completed, failed);
+                    session.show_counts(running, paused, completed, failed);
                 }
-                let total = self.sessions.iter().map(|session| session.running).sum();
-                self.running_transfers.set(total);
+                self.count_transfers();
             }
             AppMsg::PathsInUse {
                 session,
@@ -974,6 +1087,7 @@ impl App {
         &mut self,
         start_dir: PathBuf,
         split_position: i32,
+        left: Option<(Site, Remote)>,
         sender: &ComponentSender<Self>,
     ) -> usize {
         let id = self.next_session;
@@ -993,6 +1107,7 @@ impl App {
             last_dir_on_disk: self.config.last_dir_on_disk().clone(),
             pending: Rc::clone(&self.pending),
             split_position,
+            left,
             sender,
         });
         // A session's transfer lists follow the log and the earlier sessions' lists.
@@ -1035,10 +1150,29 @@ impl App {
                         (session.local_dir.clone(), self.session_notebook.width() / 2)
                     },
                 );
-                self.add_session(start_dir, split, sender)
+                self.add_session(start_dir, split, None, sender)
             }
         };
         self.sessions[index].connect(site, remote, sender);
+        self.session_notebook
+            .set_current_page(u32::try_from(index).ok());
+    }
+
+    /// Open a site-to-site session in a new tab: `left` in the left pane, `right` in the
+    /// right one.
+    fn connect_pair(
+        &mut self,
+        left: (Site, Remote),
+        right: (Site, Remote),
+        sender: &ComponentSender<Self>,
+    ) {
+        let start_dir = self
+            .current()
+            .map_or_else(|| PathBuf::from("/"), |session| session.local_dir.clone());
+        let split = self.session_notebook.width() / 2;
+        let index = self.add_session(start_dir, split, Some(left), sender);
+        let (site, remote) = right;
+        self.sessions[index].connect(&site, remote, sender);
         self.session_notebook
             .set_current_page(u32::try_from(index).ok());
     }
@@ -1075,8 +1209,29 @@ impl App {
             }
         }
         tracing::info!("closed session {id}");
-        let total = self.sessions.iter().map(|session| session.running).sum();
-        self.running_transfers.set(total);
+        self.count_transfers();
+    }
+
+    /// Total the sessions' running and unfinished (running or paused) transfers.
+    fn count_transfers(&self) {
+        let running = self.sessions.iter().map(|session| session.running).sum();
+        let paused: usize = self.sessions.iter().map(|session| session.paused).sum();
+        self.running_transfers.set(running);
+        self.unfinished_transfers.set(running + paused);
+    }
+
+    /// Ask what to do with the unfinished transfers before quitting: keep them to resume
+    /// later, or give them up and delete their partial files.
+    fn ask_quit(&self, reason: &'static str, sender: &ComponentSender<Self>) {
+        let running = self.running_transfers.get();
+        let paused = self.unfinished_transfers.get().saturating_sub(running);
+        let sender = sender.clone();
+        quit_dialog::ask(self.window.upcast_ref(), running, paused, move |choice| {
+            sender.input(match choice {
+                QuitChoice::Keep => AppMsg::QuitNow(reason),
+                QuitChoice::Discard => AppMsg::QuitDiscarding(reason),
+            });
+        });
     }
 
     /// Bring every session's tabs up to date, and File > Disconnect to the current one.
@@ -1378,17 +1533,13 @@ impl App {
         };
         // A delete has no destination: it stays on the pane's side, so deleting local
         // files works without a connection.
-        let dest_side = if kind == JobKind::Delete {
+        let dest_pane = if kind == JobKind::Delete {
             side
         } else {
             side.other()
         };
-        let dest_dir = match dest_side {
-            Side::Local => SidePath::Local(current.local_dir.clone()),
-            Side::Remote => match &current.connection {
-                Some(connection) => SidePath::Remote(connection.dir.clone()),
-                None => return,
-            },
+        let Some(dest_dir) = current.pane_dir(dest_pane) else {
+            return;
         };
         let job = Job {
             kind,
@@ -1396,13 +1547,15 @@ impl App {
             sources: paths,
             dest_dir,
             same_side: false,
+            between_servers: false,
+            left_server: false,
             resume: false,
         };
         if kind != JobKind::Delete {
             self.start_job(session, job);
             return;
         }
-        let question = format!("{}?", job.title());
+        let question = format!("{}?", current.engine_job(job.clone()).title());
         let sender = sender.clone();
         confirm_dialog::ask(
             self.window.upcast_ref(),
@@ -1428,6 +1581,8 @@ impl App {
         let Some(index) = self.sessions.iter().position(|s| s.id == session) else {
             return;
         };
+        // Site to site, the job's sides become servers (see `Session::engine_job`).
+        let job = self.sessions[index].engine_job(job);
         tracing::info!("session {session}: starting: {}", job.title());
         self.show_transfers(index);
         self.sessions[index]
@@ -1707,7 +1862,7 @@ fn restart_after_exit(installer: &Path) {
 
 /// This computer's name, for the titles of sessions that are not connected. The UI
 /// gallery uses a made-up one, so its pictures can be shared.
-fn computer_name() -> String {
+pub fn computer_name() -> String {
     #[cfg(debug_assertions)]
     if std::env::var_os(crate::ui_gallery::ENV_VAR).is_some() {
         return String::from("my-computer");

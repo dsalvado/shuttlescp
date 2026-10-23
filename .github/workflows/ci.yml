@@ -58,6 +58,11 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # Site to site, against real servers: an SFTP and an FTP server in throwaway
+      # containers, every pairing copied, checked byte for byte and moved back.
+      - name: Site-to-site tests against SFTP and FTP servers
+        run: scripts/test-site-to-site.sh
+
   # Build the AppImage on every change too, exactly as a release would, and keep it as
   # an artifact (a file attached to the run, downloadable for 14 days from the run's
   # page). A problem in the packaging then shows before a release, not after.
