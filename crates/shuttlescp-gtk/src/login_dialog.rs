@@ -8,13 +8,19 @@
 //! `shuttlescp_core::session` and friends, run as background commands so the window never
 //! freezes, e.g. while the desktop asks to unlock the keyring. This file only presents it.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use relm4::RelmRemoveAllExt;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 use secrecy::{ExposeSecret, SecretString};
 
+use shuttlescp_core::format::format_modified;
+use shuttlescp_core::path::SidePath;
+use shuttlescp_core::pending::PendingJob;
 use shuttlescp_core::remote::{ConnectError, HostKey, Remote};
 use shuttlescp_core::secrets;
 use shuttlescp_core::session::{self, ExportReport, ImportReport, KeyringAction};
@@ -22,11 +28,13 @@ use shuttlescp_core::site_export::ExportFile;
 use shuttlescp_core::sites::{
     FtpEncryption, FtpOptions, Protocol, Site, SiteBook, SshAuth, new_site_id,
 };
+use shuttlescp_core::transfer::{self, JobKind, Side};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
 use crate::key_passphrase_dialog::{self, KeyPassphrase};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
+use crate::transfer_panel::PendingStore;
 
 /// Label of the first entry in the site list, which starts a new site.
 const NEW_SITE_LABEL: &str = "New Site";
@@ -46,6 +54,8 @@ const EXPORT_FILE_NAME: &str = "shuttlescp-sites.json";
 const DIRECT_TAB: &str = "direct";
 /// Name of the Site to site tab's page.
 const SITE_TO_SITE_TAB: &str = "site-to-site";
+/// Name of the Unfinished tab's page.
+const UNFINISHED_TAB: &str = "unfinished";
 
 /// What the site list has picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +146,19 @@ pub enum LoginMsg {
         /// What was clicked.
         selection: Selection,
     },
+    /// An unfinished transfer's box was ticked or cleared (by its record key).
+    UnfinishedTicked {
+        /// The record.
+        key: String,
+        /// Whether it is ticked now.
+        ticked: bool,
+    },
+    /// An unfinished transfer's line was picked: show its details.
+    UnfinishedPicked(Option<String>),
+    /// Log in to the ticked transfers' site(s) and resume them there.
+    ResumeUnfinished,
+    /// Delete the ticked transfers' partial files (logging in for it) and forget them.
+    DiscardUnfinished,
     /// The user trusts this new host key: remember it and connect.
     TrustHostKey(Box<HostKey>),
     /// The user trusts this server's TLS certificate: remember it and connect.
@@ -156,6 +179,18 @@ pub struct LoginInit {
     pub sites_path: PathBuf,
     /// Current "show the dialog at startup" preference.
     pub show_at_startup: bool,
+    /// The unfinished transfers' records, shared with the transfer panels.
+    pub pending: Rc<PendingStore>,
+}
+
+/// Transfers to resume in the session a login opens, picked on the Unfinished tab.
+#[derive(Debug, Clone)]
+pub struct Resume {
+    /// Their records' keys.
+    pub keys: Vec<String>,
+    /// The folder to show in each pane (left is [`Side::Local`]): where the first of
+    /// them was.
+    pub folders: Vec<(Side, SidePath)>,
 }
 
 /// Notifications the Login dialog sends to the main window.
@@ -169,6 +204,8 @@ pub enum LoginOutput {
         site: Site,
         /// The open SFTP session.
         remote: Remote,
+        /// Unfinished transfers to resume in it.
+        resume: Option<Resume>,
     },
     /// Logged in to two sites, for copying between them: `left` for the left pane and
     /// `right` for the right one.
@@ -177,6 +214,8 @@ pub enum LoginOutput {
         left: (Site, Remote),
         /// The right pane's site and its connection.
         right: (Site, Remote),
+        /// Unfinished transfers to resume in it.
+        resume: Option<Resume>,
     },
 }
 
@@ -187,6 +226,8 @@ pub enum LoginTab {
     Direct,
     /// Two servers, for copying between them through this computer.
     SiteToSite,
+    /// Transfers that did not finish, to resume or give up.
+    Unfinished,
 }
 
 /// The lines of the details under a site-to-site list.
@@ -198,19 +239,46 @@ enum PairDetail {
     Login,
 }
 
-/// A site-to-site login under way: the two sites are connected one after the other.
-struct PairLogin {
-    /// The left pane's site, then the right pane's.
-    sites: [Site; 2],
-    /// The left site's connection, once it is open.
-    left: Option<Remote>,
+/// The lines of the details under the Unfinished list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnfinishedDetail {
+    What,
+    From,
+    To,
+    Saved,
 }
 
-impl PairLogin {
+/// A login from the Site to site or Unfinished tab, with saved passwords and keys only:
+/// its sites are connected one after the other.
+struct GroupLogin {
+    /// One site, or site to site the left pane's then the right pane's.
+    sites: Vec<Site>,
+    /// The connections opened so far, in the same order.
+    opened: Vec<Remote>,
+    /// What to do once all are open.
+    then: AfterLogin,
+}
+
+impl GroupLogin {
     /// The site being connected now.
     fn current(&self) -> &Site {
-        &self.sites[usize::from(self.left.is_some())]
+        &self.sites[self.opened.len().min(self.sites.len() - 1)]
     }
+
+    /// Whether more sites follow the one being connected now.
+    fn more_to_open(&self) -> bool {
+        self.opened.len() + 1 < self.sites.len()
+    }
+}
+
+/// What a [`GroupLogin`] does once its sites are open.
+enum AfterLogin {
+    /// Open a session on them.
+    Open,
+    /// Open a session on them and resume these transfers there.
+    Resume(Resume),
+    /// Delete these transfers' partial files, forget them, and disconnect.
+    Discard(Vec<PendingJob>),
 }
 
 /// Results of background work, delivered back to the dialog.
@@ -244,6 +312,16 @@ pub enum LoginCmd {
     Imported(Result<ImportReport, String>),
     /// A login attempt finished.
     Connected(Result<(Site, Remote), ConnectError>),
+    /// Unfinished transfers were given up: `keys` had their partial files deleted
+    /// (`deleted` files in all); `failed` says which could not be, and why.
+    Discarded {
+        /// The records whose partial files are gone.
+        keys: Vec<String>,
+        /// How many partial files were deleted.
+        deleted: usize,
+        /// "title: reason" for each transfer that could not be cleaned up.
+        failed: Vec<String>,
+    },
 }
 
 /// State of the Login dialog.
@@ -286,8 +364,15 @@ pub struct LoginDialog {
     /// id: sites added or deleted on Direct move the others in the list.
     pair_lists: [SiteList; 2],
     pair_picks: [Option<String>; 2],
-    /// A site-to-site login under way.
-    pair_login: Option<PairLogin>,
+    /// A login from the Site to site or Unfinished tab under way.
+    group_login: Option<GroupLogin>,
+    /// The unfinished transfers' records (shared with the transfer panels), those the
+    /// Unfinished tab lists, the ones ticked and the one whose details show (by key).
+    pending: Rc<PendingStore>,
+    unfinished: Vec<PendingJob>,
+    unfinished_ticked: HashSet<String>,
+    unfinished_picked: Option<String>,
+    unfinished_list: gtk::ListBox,
     /// The tabs, to bring Direct forward each time the dialog opens.
     tabs: Option<gtk::Stack>,
 }
@@ -295,7 +380,7 @@ pub struct LoginDialog {
 impl LoginDialog {
     /// The site a login under way is for: the current one of a pair, or the picked one.
     fn login_site(&self) -> Option<&Site> {
-        self.pair_login
+        self.group_login
             .as_ref()
             .map_or_else(|| self.selected_site(), |pair| Some(pair.current()))
     }
@@ -360,6 +445,267 @@ impl LoginDialog {
                 }
             }
         }
+    }
+
+    /// Reread the unfinished transfers (sessions may have finished or recorded some) and
+    /// list them, keeping the ticks and the pick of those still there.
+    fn refresh_unfinished(&mut self, sender: &ComponentSender<Self>) {
+        self.unfinished = self.pending.unclaimed();
+        let keys: HashSet<&String> = self.unfinished.iter().map(|pending| &pending.key).collect();
+        self.unfinished_ticked.retain(|key| keys.contains(key));
+        if self
+            .unfinished_picked
+            .as_ref()
+            .is_some_and(|key| !keys.contains(key))
+        {
+            self.unfinished_picked = None;
+        }
+        // Row by row: relm4's `remove_all` takes the placeholder for a row and panics.
+        while let Some(row) = self.unfinished_list.row_at_index(0) {
+            self.unfinished_list.remove(&row);
+        }
+        for pending in &self.unfinished {
+            let row = unfinished_row(
+                pending,
+                &self.unfinished_route(pending),
+                self.unfinished_ticked.contains(&pending.key),
+                sender,
+            );
+            self.unfinished_list.append(&row);
+            if self.unfinished_picked.as_ref() == Some(&pending.key)
+                && let Some(row) = self
+                    .unfinished_list
+                    .last_child()
+                    .and_downcast::<gtk::ListBoxRow>()
+            {
+                self.unfinished_list.select_row(Some(&row));
+            }
+        }
+        self.show_unfinished_count();
+    }
+
+    /// Title the Unfinished tab with how many there are: "Unfinished (2)".
+    fn show_unfinished_count(&self) {
+        let Some(page) = self
+            .tabs
+            .as_ref()
+            .and_then(|tabs| Some(tabs.page(&tabs.child_by_name(UNFINISHED_TAB)?)))
+        else {
+            return;
+        };
+        page.set_title(&match self.unfinished.len() {
+            0 => String::from("Unfinished"),
+            count => format!("Unfinished ({count})"),
+        });
+    }
+
+    /// A site's name, or a note that it was deleted.
+    fn site_name(&self, site_id: &str) -> String {
+        self.book
+            .sites
+            .iter()
+            .find(|site| site.id == site_id)
+            .map_or_else(|| String::from("(deleted site)"), Site::display_name)
+    }
+
+    /// Where an unfinished transfer runs: "site", or site to site "left ⇄ right".
+    fn unfinished_route(&self, pending: &PendingJob) -> String {
+        match &pending.left_site_id {
+            Some(left) => format!(
+                "{} \u{21c4} {}",
+                self.site_name(left),
+                self.site_name(&pending.site_id)
+            ),
+            None => self.site_name(&pending.site_id),
+        }
+    }
+
+    /// The ticked transfers, oldest first.
+    fn ticked_unfinished(&self) -> Vec<PendingJob> {
+        self.unfinished
+            .iter()
+            .filter(|pending| self.unfinished_ticked.contains(&pending.key))
+            .cloned()
+            .collect()
+    }
+
+    /// The saved sites the ticked transfers need (site to site, the left pane's first),
+    /// if they all need the same ones and those still exist.
+    ///
+    /// # Errors
+    ///
+    /// Why Resume and Discard cannot log in for them (empty when nothing is ticked)
+    fn unfinished_sites(&self) -> Result<Vec<Site>, String> {
+        let ticked = self.ticked_unfinished();
+        let Some(first) = ticked.first() else {
+            return Err(String::new());
+        };
+        if ticked.iter().any(|pending| {
+            pending.site_id != first.site_id || pending.left_site_id != first.left_site_id
+        }) {
+            return Err(String::from(
+                "Tick transfers of one site (or one pair of sites) at a time.",
+            ));
+        }
+        first
+            .left_site_id
+            .iter()
+            .chain([&first.site_id])
+            .map(|id| {
+                self.book
+                    .sites
+                    .iter()
+                    .find(|site| &site.id == id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        String::from(
+                            "Its site was deleted, so it cannot be resumed. Discard \
+                             forgets it (delete any partial files by hand).",
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    /// The details of the picked unfinished transfer: what it did, from where to where,
+    /// and when it was saved. Blank until one is picked.
+    fn unfinished_detail(&self, detail: UnfinishedDetail) -> String {
+        let Some(pending) = self
+            .unfinished_picked
+            .as_ref()
+            .and_then(|key| self.unfinished.iter().find(|pending| &pending.key == key))
+        else {
+            return String::new();
+        };
+        let job = &pending.job;
+        // Which site each pane is: left is this computer or, site to site, a server.
+        let pane_name = |pane: Side| match (pane, &pending.left_site_id) {
+            (Side::Local, Some(left)) => self.site_name(left),
+            (Side::Local, None) => String::from("this computer"),
+            (Side::Remote, _) => self.site_name(&pending.site_id),
+        };
+        let folders = job.pane_folders();
+        let folder = |index: usize| {
+            folders
+                .get(index)
+                .map(|(pane, dir)| format!("{dir} ({})", pane_name(*pane)))
+                .unwrap_or_default()
+        };
+        match detail {
+            UnfinishedDetail::What => match job.kind {
+                JobKind::Copy => format!("Copy {}", job.subject()),
+                JobKind::Move => format!("Move {}", job.subject()),
+                JobKind::Delete => format!("Delete {}", job.subject()),
+            },
+            UnfinishedDetail::From => folder(0),
+            UnfinishedDetail::To => folder(1),
+            UnfinishedDetail::Saved => pending.saved_at.map_or_else(
+                || String::from("Unknown (saved by an older version)"),
+                |seconds| format_modified(UNIX_EPOCH + Duration::from_secs(seconds)),
+            ),
+        }
+    }
+
+    /// Log in to the ticked transfers' site(s), then resume them there or delete their
+    /// partial files. Ticked transfers whose site was deleted are just forgotten.
+    fn act_on_unfinished(&mut self, resume: bool, sender: &ComponentSender<Self>) {
+        if self.busy {
+            return;
+        }
+        let ticked = self.ticked_unfinished();
+        let sites = match self.unfinished_sites() {
+            Ok(sites) => sites,
+            Err(_) if !resume && !ticked.is_empty() && self.unfinished_orphaned(&ticked) => {
+                let keys: Vec<String> = ticked.into_iter().map(|pending| pending.key).collect();
+                tracing::info!("forgetting {} transfers of deleted sites", keys.len());
+                self.pending.forget(&keys);
+                self.status = String::from("Forgotten");
+                self.refresh_unfinished(sender);
+                return;
+            }
+            Err(reason) => {
+                self.status = reason;
+                return;
+            }
+        };
+        let then = if resume {
+            AfterLogin::Resume(Resume {
+                keys: ticked.iter().map(|pending| pending.key.clone()).collect(),
+                folders: ticked
+                    .first()
+                    .map(|pending| pending.job.pane_folders())
+                    .unwrap_or_default(),
+            })
+        } else {
+            AfterLogin::Discard(ticked)
+        };
+        tracing::info!(
+            "logging in to {} to {} unfinished transfers",
+            sites
+                .iter()
+                .map(Site::display_name)
+                .collect::<Vec<_>>()
+                .join(" and "),
+            if resume { "resume" } else { "discard" }
+        );
+        self.pending_passphrase = None;
+        self.group_login = Some(GroupLogin {
+            sites,
+            opened: Vec::new(),
+            then,
+        });
+        self.start_login(sender, None);
+    }
+
+    /// Whether every one of these transfers lost a site it needs (it was deleted).
+    fn unfinished_orphaned(&self, jobs: &[PendingJob]) -> bool {
+        let exists = |id: &String| self.book.sites.iter().any(|site| &site.id == id);
+        jobs.iter().all(|pending| {
+            !exists(&pending.site_id) || pending.left_site_id.as_ref().is_some_and(|id| !exists(id))
+        })
+    }
+
+    /// Delete the partial files of given-up transfers in the background, over the
+    /// connections just opened for it; they close once it is done.
+    ///
+    /// # Arguments
+    ///
+    /// * `jobs` - The transfers
+    /// * `left`, `right` - Site to site the left pane's server, and the right pane's (or
+    ///   the only) server
+    /// * `sender` - Receives [`LoginCmd::Discarded`]
+    fn discard_partials(
+        &mut self,
+        jobs: Vec<PendingJob>,
+        left: Option<Remote>,
+        right: Remote,
+        sender: &ComponentSender<Self>,
+    ) {
+        self.busy = true;
+        self.status = String::from("Deleting partial files...");
+        sender.oneshot_command(async move {
+            let (mut keys, mut deleted, mut failed) = (Vec::new(), 0, Vec::new());
+            for pending in jobs {
+                let title = pending.job.title();
+                let (from, to) = pending.job.connections(left.as_ref(), &right);
+                match transfer::discard_partials(pending.job, from, to).await {
+                    Ok(count) => {
+                        tracing::info!("{title}: {count} partial files deleted");
+                        deleted += count;
+                        keys.push(pending.key);
+                    }
+                    Err(error) => {
+                        tracing::warn!("{title}: partial files not deleted: {error}");
+                        failed.push(format!("{title}: {error}"));
+                    }
+                }
+            }
+            LoginCmd::Discarded {
+                keys,
+                deleted,
+                failed,
+            }
+        });
     }
 
     /// Refill both site-to-site lists from the site book, keeping their picks.
@@ -445,6 +791,8 @@ impl LoginDialog {
         match self.tab {
             LoginTab::Direct => self.saved_site_idle(),
             LoginTab::SiteToSite => !self.busy && self.pair_sites().is_some(),
+            // Its own Resume and Discard buttons log in.
+            LoginTab::Unfinished => false,
         }
     }
 
@@ -456,7 +804,7 @@ impl LoginDialog {
     /// * `sender` - Used to run the connection attempt
     /// * `approved_key` - A host key the user has just agreed to trust
     fn start_login(&mut self, sender: &ComponentSender<Self>, approved_key: Option<HostKey>) {
-        if self.busy || (self.pair_login.is_none() && !self.can_login()) {
+        if self.busy || (self.group_login.is_none() && !self.can_login()) {
             return;
         }
         let Some(site) = self.login_site().cloned() else {
@@ -464,7 +812,7 @@ impl LoginDialog {
         };
         // Site to site uses saved passwords and keys only (the password field belongs to
         // the Direct tab).
-        let typed = (self.pair_login.is_none() && !self.password.text().is_empty())
+        let typed = (self.group_login.is_none() && !self.password.text().is_empty())
             .then(|| SecretString::from(self.password.text().as_str()));
         let passphrase = self
             .pending_passphrase
@@ -1291,6 +1639,118 @@ impl Component for LoginDialog {
                             set_name: SITE_TO_SITE_TAB,
                             set_title: "Site to site",
                         },
+
+                        // Unfinished: transfers interrupted earlier, to resume (logging in
+                        // to their site and opening it where they were) or give up.
+                        add_child = &gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 8,
+
+                            gtk::Label {
+                                set_label: "Transfers that did not finish. Tick the ones to resume: \
+                                            ShuttleSCP logs in to their site with its saved password \
+                                            or keys and opens it where they were. Discard deletes \
+                                            their partial files instead.",
+                                set_xalign: 0.0,
+                                set_wrap: true,
+                                add_css_class: "dim-label",
+                            },
+                            gtk::ScrolledWindow {
+                                set_vexpand: true,
+                                set_hscrollbar_policy: gtk::PolicyType::Never,
+                                add_css_class: "frame",
+                                #[watch]
+                                set_sensitive: !model.busy,
+
+                                #[local_ref]
+                                unfinished_list_box -> gtk::ListBox {},
+                            },
+                            // The picked transfer's details.
+                            gtk::Grid {
+                                set_column_spacing: 10,
+                                set_row_spacing: 3,
+                                add_css_class: "site-details",
+                                attach[0, 0, 1, 1] = &gtk::Label {
+                                    set_label: "Transfer:",
+                                    set_xalign: 0.0,
+                                    add_css_class: "dim-label",
+                                },
+                                attach[1, 0, 1, 1] = &gtk::Label {
+                                    set_xalign: 0.0,
+                                    set_hexpand: true,
+                                    set_ellipsize: gtk::pango::EllipsizeMode::Middle,
+                                    #[watch]
+                                    set_label: &model.unfinished_detail(UnfinishedDetail::What),
+                                    #[watch]
+                                    set_tooltip_text: Some(&model.unfinished_detail(UnfinishedDetail::What)),
+                                },
+                                attach[0, 1, 1, 1] = &gtk::Label {
+                                    set_label: "From:",
+                                    set_xalign: 0.0,
+                                    add_css_class: "dim-label",
+                                },
+                                attach[1, 1, 1, 1] = &gtk::Label {
+                                    set_xalign: 0.0,
+                                    set_hexpand: true,
+                                    set_ellipsize: gtk::pango::EllipsizeMode::Middle,
+                                    #[watch]
+                                    set_label: &model.unfinished_detail(UnfinishedDetail::From),
+                                    #[watch]
+                                    set_tooltip_text: Some(&model.unfinished_detail(UnfinishedDetail::From)),
+                                },
+                                attach[0, 2, 1, 1] = &gtk::Label {
+                                    set_label: "To:",
+                                    set_xalign: 0.0,
+                                    add_css_class: "dim-label",
+                                },
+                                attach[1, 2, 1, 1] = &gtk::Label {
+                                    set_xalign: 0.0,
+                                    set_hexpand: true,
+                                    set_ellipsize: gtk::pango::EllipsizeMode::Middle,
+                                    #[watch]
+                                    set_label: &model.unfinished_detail(UnfinishedDetail::To),
+                                    #[watch]
+                                    set_tooltip_text: Some(&model.unfinished_detail(UnfinishedDetail::To)),
+                                },
+                                attach[0, 3, 1, 1] = &gtk::Label {
+                                    set_label: "Saved:",
+                                    set_xalign: 0.0,
+                                    add_css_class: "dim-label",
+                                },
+                                attach[1, 3, 1, 1] = &gtk::Label {
+                                    set_xalign: 0.0,
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_label: &model.unfinished_detail(UnfinishedDetail::Saved),
+                                },
+                            },
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 6,
+                                set_halign: gtk::Align::End,
+
+                                gtk::Button {
+                                    set_label: "Discard",
+                                    add_css_class: "destructive-action",
+                                    set_tooltip_text: Some("Log in, delete the ticked transfers' partial files, and forget them"),
+                                    #[watch]
+                                    set_sensitive: !model.busy && !model.unfinished_ticked.is_empty(),
+                                    connect_clicked => LoginMsg::DiscardUnfinished,
+                                },
+                                gtk::Button {
+                                    set_label: "Resume",
+                                    add_css_class: "suggested-action",
+                                    set_tooltip_text: Some("Log in and continue the ticked transfers where they stopped"),
+                                    #[watch]
+                                    set_sensitive: !model.busy && model.unfinished_sites().is_ok(),
+                                    connect_clicked => LoginMsg::ResumeUnfinished,
+                                },
+                            },
+                        } -> {
+                            set_name: UNFINISHED_TAB,
+                            // With the count once there are any (`show_unfinished_count`).
+                            set_title: "Unfinished",
+                        },
                 },
 
                 gtk::Box {
@@ -1357,6 +1817,7 @@ impl Component for LoginDialog {
         let LoginInit {
             sites_path,
             show_at_startup,
+            pending,
         } = init;
         let book = SiteBook::load(&sites_path).unwrap_or_else(|error| {
             tracing::warn!("{error}; starting with no saved sites");
@@ -1380,6 +1841,21 @@ impl Component for LoginDialog {
             )
         };
         let pair_lists = [pair_list(0), pair_list(1)];
+        // Clicking a line shows its details; its box ticks it for Resume or Discard.
+        let unfinished_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .build();
+        let nothing = gtk::Label::new(Some("No unfinished transfers"));
+        nothing.add_css_class("dim-label");
+        unfinished_list.set_placeholder(Some(&nothing));
+        {
+            let sender = sender.clone();
+            unfinished_list.connect_row_selected(move |_, row| {
+                sender.input(LoginMsg::UnfinishedPicked(
+                    row.map(|row| row.widget_name().to_string()),
+                ));
+            });
+        }
 
         let mut model = Self {
             book,
@@ -1404,30 +1880,38 @@ impl Component for LoginDialog {
             tab: LoginTab::Direct,
             pair_lists,
             pair_picks: [None, None],
-            pair_login: None,
+            group_login: None,
+            pending,
+            unfinished: Vec::new(),
+            unfinished_ticked: HashSet::new(),
+            unfinished_picked: None,
+            unfinished_list,
             tabs: None,
         };
         model.select(Selection::Nothing);
         model.fill_pair_lists();
+        model.refresh_unfinished(&sender);
 
         let protocol_labels: Vec<&str> = Protocol::ALL.iter().map(|p| p.label()).collect();
         let encryption_labels: Vec<&str> = FtpEncryption::ALL.iter().map(|e| e.label()).collect();
         let site_list_box = model.site_list.widget();
         let left_list_box = model.pair_lists[0].widget();
         let right_list_box = model.pair_lists[1].widget();
+        let unfinished_list_box = &model.unfinished_list;
         let widgets = view_output!();
         widgets.tab_switcher.set_stack(Some(&widgets.tabs));
         model.tabs = Some(widgets.tabs.clone());
+        model.show_unfinished_count();
         {
             let sender = sender.clone();
             widgets
                 .tabs
                 .connect_visible_child_name_notify(move |stack| {
                     sender.input(LoginMsg::TabShown(
-                        if stack.visible_child_name().as_deref() == Some(SITE_TO_SITE_TAB) {
-                            LoginTab::SiteToSite
-                        } else {
-                            LoginTab::Direct
+                        match stack.visible_child_name().as_deref() {
+                            Some(SITE_TO_SITE_TAB) => LoginTab::SiteToSite,
+                            Some(UNFINISHED_TAB) => LoginTab::Unfinished,
+                            _ => LoginTab::Direct,
                         },
                     ));
                 });
@@ -1446,13 +1930,14 @@ impl Component for LoginDialog {
                     Selection::Nothing | Selection::NewSite => Selection::Nothing,
                 };
                 self.select(keep);
-                self.pair_login = None;
+                self.group_login = None;
                 // Always open on Direct, the usual way in.
                 if let Some(tabs) = &self.tabs {
                     tabs.set_visible_child_name(DIRECT_TAB);
                 }
                 self.tab = LoginTab::Direct;
                 self.fill_pair_lists();
+                self.refresh_unfinished(&sender);
                 self.status.clear();
                 root.present();
             }
@@ -1556,7 +2041,7 @@ impl Component for LoginDialog {
                 self.start_login(&sender, None);
             }
             LoginMsg::Login => {
-                self.pair_login = None;
+                self.group_login = None;
                 self.pending_passphrase = None;
                 if self.tab == LoginTab::SiteToSite
                     && let Some(sites) = self.pair_sites()
@@ -1566,7 +2051,11 @@ impl Component for LoginDialog {
                         sites[0].display_name(),
                         sites[1].display_name()
                     );
-                    self.pair_login = Some(PairLogin { sites, left: None });
+                    self.group_login = Some(GroupLogin {
+                        sites: sites.to_vec(),
+                        opened: Vec::new(),
+                        then: AfterLogin::Open,
+                    });
                 }
                 self.start_login(&sender, None);
             }
@@ -1574,9 +2063,12 @@ impl Component for LoginDialog {
                 if !self.busy {
                     self.tab = tab;
                     self.status.clear();
-                    // Sites may have been added, changed or deleted on Direct.
-                    if tab == LoginTab::SiteToSite {
-                        self.fill_pair_lists();
+                    // Sites may have been added, changed or deleted on Direct, and
+                    // sessions may have recorded or finished transfers.
+                    match tab {
+                        LoginTab::SiteToSite => self.fill_pair_lists(),
+                        LoginTab::Unfinished => self.refresh_unfinished(&sender),
+                        LoginTab::Direct => {}
                     }
                 }
             }
@@ -1589,6 +2081,17 @@ impl Component for LoginDialog {
                     self.fill_pair_lists();
                 }
             }
+            LoginMsg::UnfinishedTicked { key, ticked } => {
+                if ticked {
+                    self.unfinished_ticked.insert(key);
+                } else {
+                    self.unfinished_ticked.remove(&key);
+                }
+                self.status.clear();
+            }
+            LoginMsg::UnfinishedPicked(key) => self.unfinished_picked = key,
+            LoginMsg::ResumeUnfinished => self.act_on_unfinished(true, &sender),
+            LoginMsg::DiscardUnfinished => self.act_on_unfinished(false, &sender),
             LoginMsg::TrustHostKey(key) => self.start_login(&sender, Some(*key)),
             LoginMsg::TrustCertificate {
                 host,
@@ -1690,16 +2193,36 @@ impl Component for LoginDialog {
         root: &Self::Root,
     ) {
         match message {
+            LoginCmd::Discarded {
+                keys,
+                deleted,
+                failed,
+            } => {
+                self.busy = false;
+                self.pending.forget(&keys);
+                self.refresh_unfinished(&sender);
+                self.status = match failed.first() {
+                    Some(reason) => format!("Not discarded: {reason}"),
+                    None => format!(
+                        "Discarded {}: {deleted} partial {} deleted",
+                        match keys.len() {
+                            1 => String::from("1 transfer"),
+                            count => format!("{count} transfers"),
+                        },
+                        if deleted == 1 { "file" } else { "files" }
+                    ),
+                };
+            }
             LoginCmd::Connected(result) => {
                 self.busy = false;
                 match result {
                     Ok((site, remote)) => {
                         self.status.clear();
                         self.password.set_text("");
-                        let pair_left = self
-                            .pair_login
+                        let more_to_open = self
+                            .group_login
                             .as_ref()
-                            .is_some_and(|pair| pair.left.is_none());
+                            .is_some_and(GroupLogin::more_to_open);
                         // The passphrase opened the key: save it if asked to.
                         if let Some(pending) = self.pending_passphrase.take()
                             && pending.save
@@ -1719,23 +2242,42 @@ impl Component for LoginDialog {
                                 }
                             });
                         }
-                        if pair_left {
+                        if more_to_open {
                             // The left site is open: now the right one.
-                            if let Some(pair) = &mut self.pair_login {
-                                pair.left = Some(remote);
+                            if let Some(group) = &mut self.group_login {
+                                group.opened.push(remote);
                             }
                             self.start_login(&sender, None);
                             return;
                         }
-                        let output = match self.pair_login.take() {
-                            Some(PairLogin {
-                                sites: [left_site, _],
-                                left: Some(left),
-                            }) => LoginOutput::ConnectedPair {
-                                left: (left_site, left),
+                        let (left, then) = match self.group_login.take() {
+                            Some(GroupLogin {
+                                sites,
+                                opened,
+                                then,
+                            }) => (sites.into_iter().zip(opened).next(), then),
+                            None => (None, AfterLogin::Open),
+                        };
+                        let resume = match then {
+                            AfterLogin::Open => None,
+                            AfterLogin::Resume(resume) => Some(resume),
+                            AfterLogin::Discard(jobs) => {
+                                let left = left.map(|(_, remote)| remote);
+                                self.discard_partials(jobs, left, remote, &sender);
+                                return;
+                            }
+                        };
+                        let output = match left {
+                            Some(left) => LoginOutput::ConnectedPair {
+                                left,
                                 right: (site, remote),
+                                resume,
                             },
-                            Some(_) | None => LoginOutput::Connected { site, remote },
+                            None => LoginOutput::Connected {
+                                site,
+                                remote,
+                                resume,
+                            },
                         };
                         // Sending fails only if the main window is gone; nothing to do then.
                         let _ = sender.output(output);
@@ -1825,7 +2367,7 @@ impl Component for LoginDialog {
                         tracing::warn!("login failed: {error}");
                         self.pending_passphrase = None;
                         // Site to site, say which site, and drop the other's connection.
-                        self.status = match self.pair_login.take() {
+                        self.status = match self.group_login.take() {
                             Some(pair) if matches!(error, ConnectError::PasswordRequired) => {
                                 format!(
                                     "{} needs a password: save it on the Direct tab, or use SSH keys",
@@ -2088,6 +2630,78 @@ fn site_row(icon: &str, name: &str, has_password: bool) -> gtk::Box {
         key.add_css_class("dim-label");
         row.append(&key);
     }
+    row
+}
+
+/// A line of the Unfinished list: a tick box, what the transfer does, and below it
+/// where it runs and when it was saved. The row is named after the record's key.
+///
+/// # Arguments
+///
+/// * `pending` - The unfinished transfer
+/// * `route` - Its site, or site to site "left ⇄ right"
+/// * `ticked` - Whether its box starts ticked
+/// * `sender` - Receives [`LoginMsg::UnfinishedTicked`]
+fn unfinished_row(
+    pending: &PendingJob,
+    route: &str,
+    ticked: bool,
+    sender: &ComponentSender<LoginDialog>,
+) -> gtk::ListBoxRow {
+    let job = &pending.job;
+    let title = match (&pending.left_site_id, job.kind) {
+        (Some(_), JobKind::Move) => format!("Move {}", job.subject()),
+        (Some(_), _) => format!("Copy {}", job.subject()),
+        (None, _) => job.title(),
+    };
+    let when = pending.saved_at.map_or_else(String::new, |seconds| {
+        format!(
+            " \u{b7} {}",
+            format_modified(UNIX_EPOCH + Duration::from_secs(seconds))
+        )
+    });
+    let check = gtk::CheckButton::builder()
+        .active(ticked)
+        .valign(gtk::Align::Center)
+        .tooltip_text("Resume or discard this transfer")
+        .build();
+    {
+        let (sender, key) = (sender.clone(), pending.key.clone());
+        check.connect_toggled(move |check| {
+            sender.input(LoginMsg::UnfinishedTicked {
+                key: key.clone(),
+                ticked: check.is_active(),
+            });
+        });
+    }
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
+    let subtitle = format!("{route}{when}");
+    for (label, class) in [
+        (title.as_str(), None),
+        (subtitle.as_str(), Some("dim-label")),
+    ] {
+        let label = gtk::Label::builder()
+            .label(label)
+            .tooltip_text(label)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .build();
+        if let Some(class) = class {
+            label.add_css_class(class);
+        }
+        text.append(&label);
+    }
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    line.append(&check);
+    line.append(&gtk::Image::from_icon_name(match job.kind {
+        JobKind::Delete => "user-trash-symbolic",
+        _ if pending.left_site_id.is_some() => "computer-symbolic",
+        _ if job.side == Side::Local => "go-up-symbolic",
+        _ => "go-down-symbolic",
+    }));
+    line.append(&text);
+    let row = gtk::ListBoxRow::builder().child(&line).build();
+    row.set_widget_name(&pending.key);
     row
 }
 

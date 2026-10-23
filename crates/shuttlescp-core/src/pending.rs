@@ -25,6 +25,19 @@ pub struct PendingJob {
     pub left_site_id: Option<String>,
     /// What it does.
     pub job: Job,
+    /// When it was recorded, in seconds since 1970 (UTC). Older files have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at: Option<u64>,
+}
+
+impl PendingJob {
+    /// The time now in seconds since 1970, for [`PendingJob::saved_at`].
+    pub fn now() -> Option<u64> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|since| since.as_secs())
+    }
 }
 
 /// All unfinished transfers.
@@ -74,6 +87,11 @@ impl PendingTransfers {
         self.jobs.len() != before
     }
 
+    /// Every unfinished job, oldest first.
+    pub fn all(&self) -> impl Iterator<Item = &PendingJob> {
+        self.jobs.iter()
+    }
+
     /// The unfinished jobs of a site, oldest first (not those it shared with another
     /// site, site to site).
     pub fn for_site<'a>(&'a self, site_id: &'a str) -> impl Iterator<Item = &'a PendingJob> {
@@ -114,6 +132,7 @@ mod tests {
                 left_server: false,
                 resume: false,
             },
+            saved_at: Some(1_761_000_000),
         }
     }
 

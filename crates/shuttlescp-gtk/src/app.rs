@@ -26,7 +26,7 @@ use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
 use crate::log_tail::log_tail;
-use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput};
+use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput, Resume};
 use crate::quit_dialog::{self, QuitChoice};
 use crate::resize_grips;
 use crate::session::{self, Session, SessionId, SessionInit};
@@ -195,6 +195,8 @@ pub enum AppMsg {
         site: Site,
         /// The open SFTP session.
         remote: Remote,
+        /// Unfinished transfers to resume in the new session.
+        resume: Option<Resume>,
     },
     /// The Login dialog connected to two sites, for copying between them.
     ConnectedPair {
@@ -202,6 +204,8 @@ pub enum AppMsg {
         left: (Site, Remote),
         /// The right pane's site and connection.
         right: (Site, Remote),
+        /// Unfinished transfers to resume in the new session.
+        resume: Option<Resume>,
     },
     /// A session's remote pane moved to another folder.
     RemoteDirChanged { session: SessionId, dir: RemotePath },
@@ -592,11 +596,14 @@ impl SimpleComponent for App {
             .at_least_min();
         let window_maximized = config.window_maximized();
         let session_notebook = gtk::Notebook::new();
+        // Shared by the transfer panels, which record and resume unfinished transfers,
+        // and the Login dialog, which lists them.
+        let pending = PendingStore::load(PendingTransfers::default_path());
         let mut model = Self {
             sessions: Vec::new(),
             next_session: 0,
             session_notebook: session_notebook.clone(),
-            pending: PendingStore::load(PendingTransfers::default_path()),
+            pending: Rc::clone(&pending),
             host: computer_name(),
             config,
             config_path,
@@ -609,13 +616,28 @@ impl SimpleComponent for App {
                 .launch(LoginInit {
                     sites_path: SiteBook::default_path(),
                     show_at_startup: show_login,
+                    pending,
                 })
                 .forward(sender.input_sender(), |output| match output {
                     LoginOutput::ShowAtStartupChanged(show) => AppMsg::ShowLoginAtStartup(show),
-                    LoginOutput::Connected { site, remote } => AppMsg::Connected { site, remote },
-                    LoginOutput::ConnectedPair { left, right } => {
-                        AppMsg::ConnectedPair { left, right }
-                    }
+                    LoginOutput::Connected {
+                        site,
+                        remote,
+                        resume,
+                    } => AppMsg::Connected {
+                        site,
+                        remote,
+                        resume,
+                    },
+                    LoginOutput::ConnectedPair {
+                        left,
+                        right,
+                        resume,
+                    } => AppMsg::ConnectedPair {
+                        left,
+                        right,
+                        resume,
+                    },
                 }),
             disconnect_action,
             bottom_panel: bottom_panel.clone(),
@@ -796,8 +818,16 @@ impl SimpleComponent for App {
                 self.save_config();
             }
             AppMsg::ShowLogin => self.login.emit(LoginMsg::Show),
-            AppMsg::Connected { site, remote } => self.connect(&site, remote, &sender),
-            AppMsg::ConnectedPair { left, right } => self.connect_pair(left, right, &sender),
+            AppMsg::Connected {
+                site,
+                remote,
+                resume,
+            } => self.connect(&site, remote, resume, &sender),
+            AppMsg::ConnectedPair {
+                left,
+                right,
+                resume,
+            } => self.connect_pair(left, right, resume, &sender),
             AppMsg::RemoteDirChanged { session, dir } => {
                 if let Some(connection) = self
                     .session_mut(session)
@@ -1138,7 +1168,13 @@ impl App {
 
     /// Show a newly connected server: in the current session if it is not connected,
     /// otherwise in a new session tab.
-    fn connect(&mut self, site: &Site, remote: Remote, sender: &ComponentSender<Self>) {
+    fn connect(
+        &mut self,
+        site: &Site,
+        remote: Remote,
+        resume: Option<Resume>,
+        sender: &ComponentSender<Self>,
+    ) {
         let index = match self.current_index() {
             Some(index) if self.sessions[index].connection.is_none() => index,
             current => {
@@ -1154,6 +1190,9 @@ impl App {
             }
         };
         self.sessions[index].connect(site, remote, sender);
+        if let Some(resume) = resume {
+            self.sessions[index].resume(resume);
+        }
         self.session_notebook
             .set_current_page(u32::try_from(index).ok());
     }
@@ -1164,6 +1203,7 @@ impl App {
         &mut self,
         left: (Site, Remote),
         right: (Site, Remote),
+        resume: Option<Resume>,
         sender: &ComponentSender<Self>,
     ) {
         let start_dir = self
@@ -1173,6 +1213,9 @@ impl App {
         let index = self.add_session(start_dir, split, Some(left), sender);
         let (site, remote) = right;
         self.sessions[index].connect(&site, remote, sender);
+        if let Some(resume) = resume {
+            self.sessions[index].resume(resume);
+        }
         self.session_notebook
             .set_current_page(u32::try_from(index).ok());
     }

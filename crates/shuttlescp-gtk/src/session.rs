@@ -29,6 +29,7 @@ use shuttlescp_core::transfer::{Job, JobKind, Side};
 
 use crate::app::{App, AppMsg, NOT_CONNECTED};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
+use crate::login_dialog::Resume;
 use crate::transfer_panel::{
     LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelMsg,
     TransferPanelOutput,
@@ -490,6 +491,20 @@ impl Session {
             }
             (Side::Remote, None) => {}
         }
+    }
+
+    /// Resume transfers picked on the Login dialog's Unfinished tab, with each pane in
+    /// the folder it showed for them. Call it right after connecting.
+    pub fn resume(&self, resume: Resume) {
+        for (pane, dir) in resume.folders {
+            match (pane, &self.connection) {
+                (Side::Local, _) => self.local_pane.emit(FilePaneMsg::GoTo(dir)),
+                (Side::Remote, Some(connection)) => connection.pane.emit(FilePaneMsg::GoTo(dir)),
+                (Side::Remote, None) => {}
+            }
+        }
+        self.transfers
+            .emit(TransferPanelMsg::ResumeChosen(resume.keys));
     }
 
     /// Show which ways site-to-site transfers are copying, as arrows by the picture of
