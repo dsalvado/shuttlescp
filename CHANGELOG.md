@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-23
+
 ### Added
 
 - **Site to site:** copy and move files between two servers, through this computer
@@ -17,6 +19,10 @@ becomes its release notes on GitHub.
   sending) that blink while transfers run. Transfers are titled "Copy report.pdf:
   left → right", can be paused, stopped and resumed like any other, and are offered for
   resuming after a restart when the same two sites are connected again.
+- Each file pane has a title bar naming what it shows: "This computer · <name>", or the
+  server, with its host name once logged in (SFTP and SCP).
+- The Site to site tab of the Login dialog shows the picked site's details under each
+  list.
 
 ### Fixed
 
@@ -33,6 +39,8 @@ becomes its release notes on GitHub.
   their partial files and quit. Paused transfers used to be dropped without a word.
 - The right-click menu names where files go: "Upload to <server>", "Download to this
   computer", site to site "Copy to <server>", and "Move to ...".
+- A transfer that fails stays in the Queue a few seconds, so its message can be read,
+  before moving to Failed.
 
 ## [0.14.0] - 2026-10-22
 
@@ -208,7 +216,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/dsalvado/shuttlescp/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/dsalvado/shuttlescp/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/dsalvado/shuttlescp/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/dsalvado/shuttlescp/compare/v0.11.0...v0.12.0
