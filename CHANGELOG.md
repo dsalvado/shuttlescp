@@ -11,8 +11,8 @@ becomes its release notes on GitHub.
 
 - Server folders open at once when revisited: each server folder's listing is saved
   (the 200 most recent per site, in the user's cache folder, readable only by the
-  user), and shown immediately the next time, marked "Saved list from ... · checking
-  for changes", until the fresh listing replaces it. If the server cannot be read, the
+  user), and shown immediately the next time, marked "Saved list from ... · gathering
+  information", until the fresh listing replaces it. If the server cannot be read, the
   saved list stays with a note saying so. A site's saved lists are deleted with it.
 
 ### Changed
@@ -21,11 +21,11 @@ becomes its release notes on GitHub.
   MLSD or MLST is no longer asked again for every folder, each symbolic link is checked
   with a single command (SFTP checks them all at once), and a newly opened session no
   longer reads its folders twice.
-- While a folder is being read, a spinner turns in the pane's title bar and the status
-  line says so. Over a pane with nothing to show yet, or a dimmed list while moving to
-  another folder, a panel says "Reading folder information..."; when reading a folder
-  again takes more than a couple of seconds, a note says "Still reading folder
-  information...". All appear only if reading takes more than a moment.
+- While a folder is being read, "Gathering information..." shows in the middle of the
+  pane with a spinner (when moving to another folder, over the old list, dimmed), and
+  the pane is read-only until the folder arrives. For a folder already shown (a
+  refresh), it appears only if reading takes more than a couple of seconds; otherwise
+  after a moment, so quick listings do not flicker.
 
 ### Fixed
 
