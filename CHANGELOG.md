@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- Transfer progress bars show which way files are going: they fill from the pane the
+  files come from, with an arrowhead at the leading edge, and while data is moving their
+  stripes slide toward the other pane (left to right from the left pane, right to left
+  from the right one).
+- Site-to-site transfer titles always name the left pane's server first, with the arrow
+  showing the way: "Copy report.pdf: left → right" or "Copy report.pdf: left ← right",
+  so a transfer reads the same however the list is ordered.
+
 ## [0.15.1] - 2026-10-23
 
 ### Fixed
