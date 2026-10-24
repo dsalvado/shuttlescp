@@ -13,6 +13,7 @@ use std::ffi::OsString;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use relm4::gtk::prelude::*;
 use relm4::gtk::{gdk, gio, glib, graphene};
@@ -23,6 +24,7 @@ use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::entry::{EntryKind, FileEntry};
 use shuttlescp_core::format::{format_modified, format_size};
+use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::local_fs;
 use shuttlescp_core::path::SidePath;
 use shuttlescp_core::remote::Remote;
@@ -189,6 +191,9 @@ pub struct FilePaneInit {
     pub remote: Option<Remote>,
     /// Shown in the pane's title bar: the server's site ("me@host"), or this computer.
     pub title: String,
+    /// The site's saved folder listings (server panes): a folder that has one is shown
+    /// at once while it is read again.
+    pub cache: Option<ListingCache>,
 }
 
 /// Notifications a [`FilePane`] sends to its parent.
@@ -367,6 +372,10 @@ pub struct FilePane {
     notice: Option<String>,
     /// Whether a listing has been shown yet (the start folder is not listed until then).
     listed: bool,
+    /// The site's saved listings (server panes only), and when the one shown was saved
+    /// while it is being read again.
+    cache: Option<ListingCache>,
+    saved_from: Option<SystemTime>,
     /// A listing has been asked for and has not arrived yet.
     loading: bool,
     /// Re-read the folder once that listing arrives ([`FilePaneMsg::RefreshAfterChange`]).
@@ -445,6 +454,20 @@ impl FilePane {
         self.requested_dir = dir.clone();
         self.loading = true;
         self.status = String::from("Gathering information...");
+        // Another folder (or the first): show its saved listing meanwhile, if any. A
+        // refresh keeps what is shown.
+        if (!self.listed || dir != self.current_dir)
+            && let (Some(cache), SidePath::Remote(path)) = (&self.cache, &dir)
+            && let Some(saved) = cache.load(path)
+        {
+            tracing::debug!("showing the saved listing of {dir}");
+            self.show_listing(dir.clone(), saved.entries, sender);
+            self.saved_from = Some(saved.saved_at);
+            self.status = format!(
+                "Saved list from {} \u{b7} gathering information...",
+                format_modified(saved.saved_at)
+            );
+        }
         match (&dir, self.remote.clone()) {
             (SidePath::Remote(remote_dir), Some(remote)) => {
                 let remote_dir = remote_dir.clone();
@@ -781,6 +804,7 @@ impl Component for FilePane {
             last_dir_on_disk,
             remote,
             title,
+            cache,
         } = init;
         let title_icon = if remote.is_some() {
             "network-server-symbolic"
@@ -851,6 +875,8 @@ impl Component for FilePane {
         let mut model = Self {
             current_dir: start_dir.clone(),
             listed: false,
+            cache,
+            saved_from: None,
             loading: false,
             refresh_after: false,
             title: title.clone(),
@@ -1149,46 +1175,17 @@ impl Component for FilePane {
         }
         match listing.result {
             Ok(entries) => {
-                let count = match entries.len() {
-                    1 => String::from("1 item"),
-                    count => format!("{count} items"),
-                };
-                self.status = match self.notice.take() {
-                    Some(notice) => format!("{notice} · {count}"),
-                    None => count,
-                };
-                // A refresh of the same folder keeps the selection and scroll position.
-                let kept = (listing.dir == self.current_dir).then(|| {
-                    (
-                        self.selected_paths(),
-                        self.entries.view.vadjustment().map(|scroll| scroll.value()),
-                    )
-                });
-                self.show_entries(&listing.dir, entries);
-                if let Some((selected, scrolled)) = kept {
-                    self.reselect(&selected);
-                    if let (Some(value), Some(scroll)) = (scrolled, self.entries.view.vadjustment())
-                    {
-                        // After the next layout, once the list has its new height.
-                        glib::idle_add_local_once(move || scroll.set_value(value));
-                    }
+                self.saved_from = None;
+                if let (Some(cache), SidePath::Remote(path)) = (&self.cache, &listing.dir) {
+                    let (cache, path, saved) = (cache.clone(), path.clone(), entries.clone());
+                    // Small, but a disk write: not on the UI thread.
+                    std::thread::spawn(move || {
+                        if let Err(error) = cache.store(&path, &saved) {
+                            tracing::debug!("cannot save the listing of {path}: {error}");
+                        }
+                    });
                 }
-                // Only local disks remember their last folder.
-                let disk_root = disks::disk_index(self.disk_picker.disks(), &listing.dir)
-                    .and_then(|index| self.disk_picker.disks().get(index))
-                    .and_then(|disk| disk.root().as_local())
-                    .map(Path::to_path_buf);
-                if let (Some(root), SidePath::Local(dir)) = (&disk_root, &listing.dir) {
-                    self.last_dir_on_disk.insert(root.clone(), dir.clone());
-                }
-                // Sending fails only when the parent is already gone, so there is no one
-                // left to notify; `let _ =` explicitly discards that result.
-                let _ = sender.output(FilePaneOutput::DirectoryChanged {
-                    dir: listing.dir.clone(),
-                    disk_root,
-                });
-                self.current_dir = listing.dir;
-                self.listed = true;
+                self.show_listing(listing.dir, entries, &sender);
             }
             // Sent elsewhere before anything was shown (e.g. to a resumed transfer's
             // folder, since deleted): show the start folder after all, with the error.
@@ -1196,6 +1193,15 @@ impl Component for FilePane {
                 tracing::warn!("{error}");
                 self.notice = Some(error);
                 self.request_listing(self.current_dir.clone(), &sender);
+            }
+            // Showing a saved listing: keep it, and say it could not be read again.
+            Err(error) if self.saved_from.is_some() => {
+                tracing::warn!("{error}");
+                self.status = format!(
+                    "Saved list from {}; could not check for changes: {error}",
+                    self.saved_from.map(format_modified).unwrap_or_default()
+                );
+                self.requested_dir = self.current_dir.clone();
             }
             Err(error) => {
                 tracing::warn!("{error}");
@@ -1205,6 +1211,58 @@ impl Component for FilePane {
         }
         // Also undoes a disk choice whose listing failed.
         self.disk_picker.show_dir(&self.current_dir);
+    }
+}
+
+impl FilePane {
+    /// Show `entries` as the listing of `dir`, with its item count (and the last
+    /// operation's note) in the status line. Showing the same folder again keeps the
+    /// selection and scroll position.
+    fn show_listing(
+        &mut self,
+        dir: SidePath,
+        entries: Vec<FileEntry>,
+        sender: &ComponentSender<Self>,
+    ) {
+        let count = match entries.len() {
+            1 => String::from("1 item"),
+            count => format!("{count} items"),
+        };
+        self.status = match self.notice.take() {
+            Some(notice) => format!("{notice} · {count}"),
+            None => count,
+        };
+        // A refresh of the same folder keeps the selection and scroll position.
+        let kept = (dir == self.current_dir).then(|| {
+            (
+                self.selected_paths(),
+                self.entries.view.vadjustment().map(|scroll| scroll.value()),
+            )
+        });
+        self.show_entries(&dir, entries);
+        if let Some((selected, scrolled)) = kept {
+            self.reselect(&selected);
+            if let (Some(value), Some(scroll)) = (scrolled, self.entries.view.vadjustment()) {
+                // After the next layout, once the list has its new height.
+                glib::idle_add_local_once(move || scroll.set_value(value));
+            }
+        }
+        // Only local disks remember their last folder.
+        let disk_root = disks::disk_index(self.disk_picker.disks(), &dir)
+            .and_then(|index| self.disk_picker.disks().get(index))
+            .and_then(|disk| disk.root().as_local())
+            .map(Path::to_path_buf);
+        if let (Some(root), SidePath::Local(local)) = (&disk_root, &dir) {
+            self.last_dir_on_disk.insert(root.clone(), local.clone());
+        }
+        // Sending fails only when the parent is already gone, so there is no one left to
+        // notify; `let _ =` explicitly discards that result.
+        let _ = sender.output(FilePaneOutput::DirectoryChanged {
+            dir: dir.clone(),
+            disk_root,
+        });
+        self.current_dir = dir;
+        self.listed = true;
     }
 }
 

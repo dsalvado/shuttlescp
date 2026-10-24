@@ -10,6 +10,7 @@
 //!   checks), browsing and file operations
 //! * [`transfer`] - copying, moving and deleting files and folders, with progress
 //! * [`pending`] - unfinished transfers, kept so they can be resumed
+//! * [`listing_cache`] - server folder listings saved between sessions
 //! * [`session`] - the login, export and import workflows
 //! * [`entry`] / [`local_fs`] / [`disks`] - files, local folders and disks
 //! * [`path`] - paths on this computer and on the server (which always use `/`)
@@ -22,6 +23,7 @@ pub mod config;
 pub mod disks;
 pub mod entry;
 pub mod format;
+pub mod listing_cache;
 pub mod local_fs;
 pub mod log_reader;
 pub mod logging;

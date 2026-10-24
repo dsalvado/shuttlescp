@@ -172,6 +172,16 @@ pub fn state_dir() -> PathBuf {
         .join("shuttlescp")
 }
 
+/// The app's folder for data it can rebuild (saved folder listings):
+/// `$XDG_CACHE_HOME/shuttlescp` on Linux (usually `~/.cache/shuttlescp`), the platform's
+/// cache folder elsewhere (e.g. `~/Library/Caches/shuttlescp` on macOS).
+pub fn cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
+        .unwrap_or_default()
+        .join("shuttlescp")
+}
+
 /// Folder name the app's folders had while it was called GuiSCP.
 const LEGACY_DIR_NAME: &str = "guiscp";
 

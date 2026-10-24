@@ -7,6 +7,14 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- Server folders open at once when revisited: each server folder's listing is saved
+  (the 200 most recent per site, in the user's cache folder, readable only by the
+  user), and shown immediately the next time, marked "Saved list from ... · gathering
+  information", until the fresh listing replaces it. If the server cannot be read, the
+  saved list stays with a note saying so. A site's saved lists are deleted with it.
+
 ### Changed
 
 - Faster folder listings on servers far away: an FTP server that does not support

@@ -22,6 +22,7 @@ use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 
 use shuttlescp_core::format::shorten_middle;
+use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::Site;
@@ -164,12 +165,14 @@ impl Session {
                 last_dir_on_disk: BTreeMap::new(),
                 remote: Some(remote.clone()),
                 title: site.display_name(),
+                cache: Some(ListingCache::for_site(&site.id)),
             },
             None => FilePaneInit {
                 start_dir: SidePath::Local(start_dir.clone()),
                 last_dir_on_disk,
                 remote: None,
                 title: format!("This computer \u{b7} {}", crate::app::computer_name()),
+                cache: None,
             },
         };
         let local_pane = FilePane::builder()
@@ -394,6 +397,7 @@ impl Session {
                 last_dir_on_disk: BTreeMap::new(),
                 remote: Some(remote.clone()),
                 title: site.display_name(),
+                cache: Some(ListingCache::for_site(&site.id)),
             })
             .forward(sender.input_sender(), move |output| {
                 pane_message(id, Side::Remote, output)
