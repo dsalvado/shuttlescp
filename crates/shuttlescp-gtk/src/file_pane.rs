@@ -438,7 +438,7 @@ impl FilePane {
         tracing::debug!("listing {dir}");
         self.requested_dir = dir.clone();
         self.loading = true;
-        self.status = String::from("Loading...");
+        self.status = String::from("Reading the folder...");
         match (&dir, self.remote.clone()) {
             (SidePath::Remote(remote_dir), Some(remote)) => {
                 let remote_dir = remote_dir.clone();
@@ -647,6 +647,13 @@ impl Component for FilePane {
                     set_hexpand: true,
                     set_ellipsize: gtk::pango::EllipsizeMode::Middle,
                 },
+                // Turns while a folder is being read; it fades in only if that takes a
+                // moment, so quick listings do not flicker (style.css).
+                gtk::Spinner {
+                    #[watch]
+                    set_spinning: model.loading,
+                    set_tooltip_text: Some("Reading the folder"),
+                },
             },
 
             gtk::Box {
@@ -679,10 +686,14 @@ impl Component for FilePane {
                 },
             },
 
-            // The list, with the selection box drawn over it.
+            // The list, with the selection box drawn over it. Dimmed while another
+            // folder is being read, so it is not taken for that folder (style.css).
             gtk::Overlay {
                 set_vexpand: true,
                 add_overlay: &selection_box,
+                add_css_class: "pane-list",
+                #[watch]
+                set_class_active: ("stale", model.loading && model.requested_dir != model.current_dir),
 
                 #[wrap(Some)]
                 set_child = &gtk::ScrolledWindow {
