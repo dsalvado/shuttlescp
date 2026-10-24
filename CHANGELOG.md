@@ -7,6 +7,11 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- The direction arrowhead on transfer progress bars stands out more: it is dark and
+  larger, on a slightly taller bar (the white one blended into the fill).
+
 ## [0.16.0] - 2026-10-23
 
 ### Added

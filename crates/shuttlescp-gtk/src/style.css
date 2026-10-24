@@ -431,17 +431,18 @@ button.tab-close {
 /* Which way files go (transfer_panel.rs sets the classes): the bar fills from the pane
    they come from, with an arrowhead at its leading edge, and while data moves
    (`flowing`) stripes slide the same way, one 12px tile per cycle so the loop is
-   seamless. GTK skips animations when they are turned off in the desktop settings. */
+   seamless. GTK skips animations when they are turned off in the desktop settings.
+   The arrowhead is dark on the light fill, and the bar a little taller, so it shows. */
 .transfer-panel progressbar.to-right > trough > progress,
 .transfer-panel progressbar.to-left > trough > progress {
-    min-height: 8px;
-    color: white;
+    min-height: 12px;
+    color: alpha(black, 0.8);
     background-repeat: no-repeat;
-    background-size: 16px 16px;
+    background-size: 24px 24px;
 }
 .transfer-panel progressbar.to-right > trough,
 .transfer-panel progressbar.to-left > trough {
-    min-height: 8px;
+    min-height: 12px;
 }
 .transfer-panel progressbar.to-right > trough > progress {
     background-image: -gtk-icontheme("pan-end-symbolic");
@@ -459,7 +460,7 @@ button.tab-close {
             alpha(white, 0.35) 25%, transparent 25%, transparent 50%,
             alpha(white, 0.35) 50%, alpha(white, 0.35) 75%, transparent 75%);
     background-repeat: no-repeat, repeat;
-    background-size: 16px 16px, 12px 12px;
+    background-size: 24px 24px, 12px 12px;
     animation: flow-right 0.6s linear infinite;
 }
 .transfer-panel progressbar.to-left.flowing > trough > progress {
@@ -468,7 +469,7 @@ button.tab-close {
             alpha(white, 0.35) 25%, transparent 25%, transparent 50%,
             alpha(white, 0.35) 50%, alpha(white, 0.35) 75%, transparent 75%);
     background-repeat: no-repeat, repeat;
-    background-size: 16px 16px, 12px 12px;
+    background-size: 24px 24px, 12px 12px;
     animation: flow-left 0.6s linear infinite;
 }
 /* GTK can draw a progress fill's background at its left end, ignoring a plain
