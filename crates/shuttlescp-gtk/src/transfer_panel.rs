@@ -1724,17 +1724,15 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.name, "heading", row.heading);
     widgets.bar.set_visible(row.fraction.is_some());
     widgets.bar.set_fraction(row.fraction.unwrap_or(0.0));
-    // The bar fills from the pane the files come from, and while data moves its stripes
-    // slide toward the other pane. Deletes and copies within a pane go nowhere.
+    // The bar fills from the pane the files come from, with an arrowhead at its leading
+    // edge, and while data moves its stripes slide toward the other pane (style.css).
+    // Deletes and copies within a pane go nowhere.
     let (from, to) = (job.job.source_pane(), job.job.dest_pane());
     let leftward = from == Side::Remote && to == Side::Local;
     widgets.bar.set_inverted(leftward);
-    set_class(
-        &widgets.bar,
-        "flow-right",
-        row.moving && from != to && !leftward,
-    );
-    set_class(&widgets.bar, "flow-left", row.moving && leftward);
+    set_class(&widgets.bar, "to-right", from != to && !leftward);
+    set_class(&widgets.bar, "to-left", leftward);
+    set_class(&widgets.bar, "flowing", row.moving && from != to);
     widgets.info.set_label(&row.info);
     widgets.info.set_tooltip_text(Some(&row.info));
     set_class(&widgets.info, "error", row.error);
@@ -1803,16 +1801,21 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         Some(summary) => summary_text(job, summary),
     };
     let title = match &job.route {
-        // "Copy report.pdf: left-server → right-server".
-        Some((from, to)) => format!(
-            "{} {}: {from} \u{2192} {to}",
-            if job.job.kind == JobKind::Move {
+        // The left pane's server first, whichever way the files go, like the panes:
+        // "Copy report.pdf: left-server → right-server" or "...: left-server ← right-server".
+        Some((from, to)) => {
+            let verb = if job.job.kind == JobKind::Move {
                 "Move"
             } else {
                 "Copy"
-            },
-            job.job.subject()
-        ),
+            };
+            let subject = job.job.subject();
+            if job.job.source_pane() == Side::Local {
+                format!("{verb} {subject}: {from} \u{2192} {to}")
+            } else {
+                format!("{verb} {subject}: {to} \u{2190} {from}")
+            }
+        }
         None => job.job.title(),
     };
     let title = if job.job.resume {
