@@ -444,7 +444,7 @@ impl FilePane {
         tracing::debug!("listing {dir}");
         self.requested_dir = dir.clone();
         self.loading = true;
-        self.status = String::from("Reading the folder...");
+        self.status = String::from("Gathering information...");
         match (&dir, self.remote.clone()) {
             (SidePath::Remote(remote_dir), Some(remote)) => {
                 let remote_dir = remote_dir.clone();
@@ -632,8 +632,41 @@ impl Component for FilePane {
     view! {
         gtk::Box {
             set_orientation: gtk::Orientation::Vertical,
-            set_spacing: 2,
             set_margin_all: 2,
+
+          // While a folder is being read, "Gathering information..." in the middle of
+          // the pane (style.css): soon when the list has nothing to show for it yet,
+          // after a couple of seconds when it already shows the folder (a refresh, or
+          // a saved listing). It takes no clicks.
+          gtk::Overlay {
+            set_vexpand: true,
+            add_overlay = &gtk::Box {
+                set_orientation: gtk::Orientation::Vertical,
+                set_spacing: 8,
+                set_halign: gtk::Align::Center,
+                set_valign: gtk::Align::Center,
+                set_can_target: false,
+                add_css_class: "pane-gathering",
+                #[watch]
+                set_class_active: ("soon", model.reading_unshown()),
+                #[watch]
+                set_class_active: ("late", model.loading && !model.reading_unshown()),
+
+                gtk::Spinner {
+                    set_width_request: 32,
+                    set_height_request: 32,
+                    #[watch]
+                    set_spinning: model.loading,
+                },
+                gtk::Label {
+                    set_label: "Gathering information...",
+                },
+            },
+
+          #[wrap(Some)]
+          set_child = &gtk::Box {
+            set_orientation: gtk::Orientation::Vertical,
+            set_spacing: 2,
 
             // Title bar: which machine this pane shows (see style.css).
             gtk::Box {
@@ -658,7 +691,7 @@ impl Component for FilePane {
                 gtk::Spinner {
                     #[watch]
                     set_spinning: model.loading,
-                    set_tooltip_text: Some("Reading the folder"),
+                    set_tooltip_text: Some("Gathering information"),
                 },
             },
 
@@ -692,51 +725,22 @@ impl Component for FilePane {
                 },
             },
 
-            // The list, with the selection box drawn over it, and notes while a folder
-            // is being read (style.css): over an empty or dimmed list, a spinner and
-            // "Reading folder information..."; over a list already shown (a refresh),
-            // after a couple of seconds, "Still reading...". Neither takes clicks.
+            // The list, with the selection box drawn over it.
             gtk::Overlay {
                 set_vexpand: true,
                 add_overlay: &selection_box,
-                add_overlay = &gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_spacing: 8,
-                    set_halign: gtk::Align::Center,
-                    set_valign: gtk::Align::Center,
-                    set_can_target: false,
-                    add_css_class: "pane-reading",
-                    #[watch]
-                    set_class_active: ("shown", model.reading_unshown()),
 
-                    gtk::Spinner {
-                        set_width_request: 32,
-                        set_height_request: 32,
-                        #[watch]
-                        set_spinning: model.reading_unshown(),
-                    },
-                    gtk::Label {
-                        set_label: "Reading folder information...",
-                    },
-                },
-                add_overlay = &gtk::Label {
-                    set_label: "Still reading folder information...",
-                    set_halign: gtk::Align::Center,
-                    set_valign: gtk::Align::Start,
-                    set_margin_top: 30,
-                    set_can_target: false,
-                    add_css_class: "pane-still-reading",
-                    #[watch]
-                    set_class_active: ("shown", model.loading && !model.reading_unshown()),
-                },
-
-                // Dimmed while another folder is being read, so it is not taken for it.
+                // Read-only while a folder is being read (it takes no pointer input, and
+                // `update` ignores what would act on it), and dimmed while another
+                // folder is, so it is not taken for that folder.
                 #[wrap(Some)]
                 set_child = &gtk::ScrolledWindow {
                     set_vexpand: true,
                     add_css_class: "pane-list",
                     #[watch]
                     set_class_active: ("stale", model.loading && model.requested_dir != model.current_dir),
+                    #[watch]
+                    set_can_target: !model.loading,
 
                     #[local_ref]
                     entries_view -> gtk::ColumnView {
@@ -762,6 +766,8 @@ impl Component for FilePane {
                 #[watch]
                 set_tooltip_text: Some(&model.status),
             },
+          },
+          },
         }
     }
 
@@ -873,6 +879,22 @@ impl Component for FilePane {
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
+        // Read-only while a folder is being read: nothing may act on a list that is about
+        // to change (keys and menu items still send these).
+        if self.loading
+            && matches!(
+                message,
+                FilePaneMsg::Activate(_)
+                    | FilePaneMsg::ContextMenu { .. }
+                    | FilePaneMsg::Dropped(_)
+                    | FilePaneMsg::Request(_)
+                    | FilePaneMsg::Rename
+                    | FilePaneMsg::NewFolder
+            )
+        {
+            tracing::debug!("ignoring {message:?}: the folder is being read");
+            return;
+        }
         match message {
             FilePaneMsg::Refresh => self.request_listing(self.current_dir.clone(), &sender),
             FilePaneMsg::RefreshIfIdle if self.loading => {
