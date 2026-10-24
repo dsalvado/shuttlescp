@@ -898,6 +898,41 @@ separator.relay-divider {
     background-color: alpha(currentColor, 0.03);
 }
 
+/* While a folder is being read (file_pane.rs): the title bar's spinner shows, and when
+   moving to another folder the list dims, both only after 0.3s so quick listings do not
+   flicker; they go away at once. A spinner is :checked while it spins. */
+.pane-title spinner {
+    opacity: 0;
+    min-width: 12px;
+    min-height: 12px;
+}
+.pane-title spinner:checked {
+    opacity: 1;
+    transition: opacity 150ms ease-in 300ms;
+}
+.pane-list.stale {
+    opacity: 0.45;
+    transition: opacity 150ms ease-in 300ms;
+}
+/* "Gathering information..." in the middle of a pane while a folder is being read
+   (file_pane.rs): after 0.3s when the list has nothing to show for it yet (`soon`),
+   after 2s when it already shows the folder (`late`), gone at once when it arrives. */
+.pane-gathering {
+    opacity: 0;
+    padding: 14px 20px;
+    border-radius: 8px;
+    background-color: alpha(@theme_bg_color, 0.94);
+    box-shadow: 0 1px 4px alpha(black, 0.2);
+}
+.pane-gathering.soon {
+    opacity: 1;
+    transition: opacity 150ms ease-in 300ms;
+}
+.pane-gathering.late {
+    opacity: 1;
+    transition: opacity 150ms ease-in 2s;
+}
+
 /* A file pane's title bar: which machine the pane shows (file_pane.rs). */
 .pane-title {
     padding: 2px 6px;
