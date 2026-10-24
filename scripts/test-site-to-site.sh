@@ -29,10 +29,16 @@ echo "==> Starting an SFTP server on port $SFTP_PORT and an FTP server on port $
 # SFTP: user test, password test, writable folders upload and upload/other.
 docker run -d --name "$NAME-sftp" -p "$SFTP_PORT:22" "$SFTP_IMAGE" \
     test:test:::upload,upload/other >/dev/null
-# FTP (vsftpd): user test, password test; passive data ports 21000-21010.
+# FTP (vsftpd): user test, password test; passive data ports 21000-21010. The image's
+# start script creates the user, then runs the command given. vsftpd is run in the
+# foreground as that command: left to the script, it starts in the background and the
+# script guesses its process id with pgrep, sometimes picking the parent that is about
+# to exit, which stops the container (about 1 start in 12). vsftpd applies its
+# arguments in order, so the options come after the config file they override.
 docker run -d --name "$NAME-ftp" -p "$FTP_PORT:21" -p 21000-21010:21000-21010 \
-    -e USERS="test|test" -e ADDRESS=127.0.0.1 -e MIN_PORT=21000 -e MAX_PORT=21010 \
-    "$FTP_IMAGE" >/dev/null
+    -e USERS="test|test" "$FTP_IMAGE" \
+    vsftpd /etc/vsftpd/vsftpd.conf -obackground=NO -opasv_min_port=21000 \
+    -opasv_max_port=21010 -opasv_address=127.0.0.1 >/dev/null
 # The FTP user's writable folders. This vsftpd does not confine users to their home,
 # so the user sees the real paths (its home is /ftp/test).
 docker exec "$NAME-ftp" sh -c 'mkdir -p /ftp/test/files/other && chown -R test /ftp/test/files'
