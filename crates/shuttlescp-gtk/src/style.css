@@ -914,6 +914,31 @@ separator.relay-divider {
     opacity: 0.45;
     transition: opacity 150ms ease-in 300ms;
 }
+/* Over the list while a folder it does not show yet is being read (file_pane.rs). */
+.pane-reading {
+    opacity: 0;
+    padding: 14px 20px;
+    border-radius: 8px;
+    background-color: alpha(@theme_bg_color, 0.92);
+    box-shadow: 0 1px 4px alpha(black, 0.2);
+}
+.pane-reading.shown {
+    opacity: 1;
+    transition: opacity 150ms ease-in 300ms;
+}
+/* Over a list already shown when reading it again takes more than a couple of seconds. */
+.pane-still-reading {
+    opacity: 0;
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: smaller;
+    background-color: alpha(@theme_selected_bg_color, 0.9);
+    color: @theme_selected_fg_color;
+}
+.pane-still-reading.shown {
+    opacity: 1;
+    transition: opacity 200ms ease-in 2s;
+}
 
 /* A file pane's title bar: which machine the pane shows (file_pane.rs). */
 .pane-title {

@@ -427,6 +427,12 @@ fn fill_transfer_section(section: &gio::Menu, labels: &(String, String)) {
 }
 
 impl FilePane {
+    /// Whether a folder is being read that the list does not show yet: the pane's first,
+    /// or another one it is moving to.
+    fn reading_unshown(&self) -> bool {
+        self.loading && (!self.listed || self.requested_dir != self.current_dir)
+    }
+
     /// Start listing `dir` in the background so a slow disk or network never freezes
     /// the UI: on a worker thread for local folders, as an async SFTP request for remote.
     ///
@@ -686,18 +692,51 @@ impl Component for FilePane {
                 },
             },
 
-            // The list, with the selection box drawn over it. Dimmed while another
-            // folder is being read, so it is not taken for that folder (style.css).
+            // The list, with the selection box drawn over it, and notes while a folder
+            // is being read (style.css): over an empty or dimmed list, a spinner and
+            // "Reading folder information..."; over a list already shown (a refresh),
+            // after a couple of seconds, "Still reading...". Neither takes clicks.
             gtk::Overlay {
                 set_vexpand: true,
                 add_overlay: &selection_box,
-                add_css_class: "pane-list",
-                #[watch]
-                set_class_active: ("stale", model.loading && model.requested_dir != model.current_dir),
+                add_overlay = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_spacing: 8,
+                    set_halign: gtk::Align::Center,
+                    set_valign: gtk::Align::Center,
+                    set_can_target: false,
+                    add_css_class: "pane-reading",
+                    #[watch]
+                    set_class_active: ("shown", model.reading_unshown()),
 
+                    gtk::Spinner {
+                        set_width_request: 32,
+                        set_height_request: 32,
+                        #[watch]
+                        set_spinning: model.reading_unshown(),
+                    },
+                    gtk::Label {
+                        set_label: "Reading folder information...",
+                    },
+                },
+                add_overlay = &gtk::Label {
+                    set_label: "Still reading folder information...",
+                    set_halign: gtk::Align::Center,
+                    set_valign: gtk::Align::Start,
+                    set_margin_top: 30,
+                    set_can_target: false,
+                    add_css_class: "pane-still-reading",
+                    #[watch]
+                    set_class_active: ("shown", model.loading && !model.reading_unshown()),
+                },
+
+                // Dimmed while another folder is being read, so it is not taken for it.
                 #[wrap(Some)]
                 set_child = &gtk::ScrolledWindow {
                     set_vexpand: true,
+                    add_css_class: "pane-list",
+                    #[watch]
+                    set_class_active: ("stale", model.loading && model.requested_dir != model.current_dir),
 
                     #[local_ref]
                     entries_view -> gtk::ColumnView {
