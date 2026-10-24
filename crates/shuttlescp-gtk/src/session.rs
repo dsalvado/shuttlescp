@@ -464,20 +464,31 @@ impl Session {
         self.remote_in_use = remote;
     }
 
-    /// Re-read the folder one pane shows.
+    /// Re-read the folder one pane shows: a transfer changed files in it.
     pub fn refresh_side(&self, side: Side) {
         match (side, &self.connection) {
-            (Side::Local, _) => self.local_pane.emit(FilePaneMsg::Refresh),
-            (Side::Remote, Some(connection)) => connection.pane.emit(FilePaneMsg::Refresh),
+            (Side::Local, _) => self.local_pane.emit(FilePaneMsg::RefreshAfterChange),
+            (Side::Remote, Some(connection)) => {
+                connection.pane.emit(FilePaneMsg::RefreshAfterChange);
+            }
             (Side::Remote, None) => {}
         }
     }
 
-    /// Re-read the folders both panes show.
-    pub fn refresh_panes(&self) {
-        self.local_pane.emit(FilePaneMsg::Refresh);
+    /// Re-read the folders both panes show: `changed` after transfers changed files
+    /// (read again even if a listing is on its way), otherwise to catch up (a listing on
+    /// its way will do).
+    pub fn refresh_panes(&self, changed: bool) {
+        let message = || {
+            if changed {
+                FilePaneMsg::RefreshAfterChange
+            } else {
+                FilePaneMsg::RefreshIfIdle
+            }
+        };
+        self.local_pane.emit(message());
         if let Some(connection) = &self.connection {
-            connection.pane.emit(FilePaneMsg::Refresh);
+            connection.pane.emit(message());
         }
     }
 

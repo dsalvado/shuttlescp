@@ -13,6 +13,7 @@ mod ftp;
 mod sftp;
 mod tls;
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
@@ -206,14 +207,19 @@ impl Remote {
     ///
     /// Returns a readable message if the folder cannot be read
     pub async fn list_dir(&self, dir: &RemotePath) -> Result<Vec<FileEntry>, String> {
+        let raw = self.read_dir_raw(dir).await?;
+        // Listings describe a link itself; ask where each leads to know whether it is a
+        // folder. Over a slow line these questions are most of a listing's time.
+        let links: Vec<String> = raw
+            .iter()
+            .filter(|(_, meta)| meta.is_symlink)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let folder_links = self.folder_links(dir, links).await;
         let mut entries = Vec::new();
-        for (name, meta) in self.read_dir_raw(dir).await? {
-            // Listings describe a link itself; ask for its target to know whether it
-            // leads to a folder.
+        for (name, meta) in raw {
             let is_dir = if meta.is_symlink {
-                self.stat(&dir.join(&name))
-                    .await
-                    .is_ok_and(|target| target.is_dir)
+                folder_links.contains(&name)
             } else {
                 meta.is_dir
             };
@@ -231,6 +237,38 @@ impl Remote {
         entries.sort_unstable_by(FileEntry::listing_order);
         tracing::trace!("read {} remote entries from {}", entries.len(), dir);
         Ok(entries)
+    }
+
+    /// Which of these symbolic links in `dir` lead to folders. SFTP asks about them all
+    /// at once (its requests overlap on one connection); FTP checks each with one CWD
+    /// on one connection, since more connections would each need a slow login.
+    async fn folder_links(&self, dir: &RemotePath, links: Vec<String>) -> HashSet<String> {
+        let mut folders = HashSet::new();
+        match &self.0.backend {
+            Backend::Sftp(_) => {
+                let mut checks = tokio::task::JoinSet::new();
+                for name in links {
+                    let (remote, path) = (self.clone(), dir.join(&name));
+                    checks.spawn(async move {
+                        let is_dir = remote.stat(&path).await.is_ok_and(|target| target.is_dir);
+                        (name, is_dir)
+                    });
+                }
+                while let Some(checked) = checks.join_next().await {
+                    if let Ok((name, true)) = checked {
+                        folders.insert(name);
+                    }
+                }
+            }
+            Backend::Ftp(ftp) => {
+                for name in links {
+                    if ftp.leads_to_folder(&dir.join(&name)).await {
+                        folders.insert(name);
+                    }
+                }
+            }
+        }
+        folders
     }
 
     /// Details of `path`, following a symbolic link to what it points to.

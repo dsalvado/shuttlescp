@@ -7,6 +7,21 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- Faster folder listings on servers far away: an FTP server that does not support
+  MLSD or MLST is no longer asked again for every folder, each symbolic link is checked
+  with a single command (SFTP checks them all at once), and a newly opened session no
+  longer reads its folders twice.
+
+### Fixed
+
+- On FTP servers without MLST (such as vsftpd), symbolic links to folders were listed
+  as files, and checking each one re-read the whole folder.
+- A pane refreshed while moving to another folder (e.g. when switching session tabs)
+  could cancel the move; after a transfer, a folder read just before it finished is
+  read again so new files show.
+
 ## [0.16.1] - 2026-10-23
 
 ### Changed

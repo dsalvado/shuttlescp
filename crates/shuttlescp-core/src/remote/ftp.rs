@@ -51,6 +51,10 @@ struct Settings {
     /// "TLS if available" found the server does not offer TLS: further connections
     /// go straight to plain FTP.
     plain_fallback: AtomicBool,
+    /// The server said it does not know MLSD (or MLST): further listings (or lookups)
+    /// go straight to the older way, saving a refused command each time.
+    no_mlsd: AtomicBool,
+    no_mlst: AtomicBool,
 }
 
 /// An FTP server: its settings and a pool of open connections.
@@ -134,6 +138,8 @@ pub(super) async fn connect(
         passive: site.ftp.passive,
         tls,
         plain_fallback: AtomicBool::new(false),
+        no_mlsd: AtomicBool::new(false),
+        no_mlst: AtomicBool::new(false),
     });
     tracing::info!(
         "connecting to {}:{} (FTP, {}, {} mode)",
@@ -354,19 +360,30 @@ impl Ftp {
 
     pub(super) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         let text = path_text(path);
-        let mlst_path = text.clone();
-        let found = self
-            .run(&format!("cannot read {text}"), &move |connection| {
-                let path = mlst_path.clone();
-                Box::pin(async move { connection.mlst(Some(path.as_str())).await })
-            })
-            .await;
+        let found = if self.settings.no_mlst.load(Ordering::Relaxed) {
+            None
+        } else {
+            let mlst_path = text.clone();
+            let found = self
+                .run(&format!("cannot read {text}"), &move |connection| {
+                    let path = mlst_path.clone();
+                    Box::pin(async move {
+                        unless_unsupported(connection.mlst(Some(path.as_str())).await)
+                    })
+                })
+                .await;
+            if matches!(found, Ok(None)) {
+                tracing::debug!("the server has no MLST; looking items up in listings from now on");
+                self.settings.no_mlst.store(true, Ordering::Relaxed);
+            }
+            found.ok().flatten()
+        };
         match found {
-            Ok(line) => ListParser::parse_mlst(&line)
+            Some(line) => ListParser::parse_mlst(&line)
                 .map(|file| meta(&file))
                 .map_err(|error| format!("cannot read {text}: {error}")),
             // Servers without MLST: look the item up in its folder's listing.
-            Err(_) => {
+            None => {
                 let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
                     // The root folder.
                     return Ok(RemoteMeta {
@@ -392,20 +409,31 @@ impl Ftp {
     ) -> Result<Vec<(String, RemoteMeta)>, String> {
         let text = path_text(dir);
         let what = format!("cannot open {text}");
-        let mlsd_path = text.clone();
-        let lines = self
-            .run(&what, &move |connection| {
-                let path = mlsd_path.clone();
-                Box::pin(async move { connection.mlsd(Some(path.as_str())).await })
-            })
-            .await;
+        let lines = if self.settings.no_mlsd.load(Ordering::Relaxed) {
+            None
+        } else {
+            let mlsd_path = text.clone();
+            let lines = self
+                .run(&what, &move |connection| {
+                    let path = mlsd_path.clone();
+                    Box::pin(async move {
+                        unless_unsupported(connection.mlsd(Some(path.as_str())).await)
+                    })
+                })
+                .await;
+            if matches!(lines, Ok(None)) {
+                tracing::debug!("the server has no MLSD; listing with LIST from now on");
+                self.settings.no_mlsd.store(true, Ordering::Relaxed);
+            }
+            lines.ok().flatten()
+        };
         let files: Vec<File> = match lines {
-            Ok(lines) => lines
+            Some(lines) => lines
                 .iter()
                 .filter_map(|line| ListParser::parse_mlsd(line).ok())
                 .collect(),
             // Servers without MLSD: parse the older, free-form LIST output.
-            Err(_) => {
+            None => {
                 let list_path = text.clone();
                 self.run(&what, &move |connection| {
                     let path = list_path.clone();
@@ -426,6 +454,19 @@ impl Ftp {
             .filter(|file| file.name() != "." && file.name() != "..")
             .map(|file| (file.name().to_owned(), meta(file)))
             .collect())
+    }
+
+    /// Whether `path` (a symbolic link) leads to a folder: one CWD into it, which needs
+    /// no data connection, unlike a listing. Every path used is absolute, so leaving a
+    /// pooled connection in that folder is harmless.
+    pub(super) async fn leads_to_folder(&self, path: &RemotePath) -> bool {
+        let text = path_text(path);
+        self.run(&format!("cannot open {text}"), &move |connection| {
+            let path = text.clone();
+            Box::pin(async move { connection.cwd(path.as_str()).await })
+        })
+        .await
+        .is_ok()
     }
 
     pub(super) async fn open_at(
@@ -552,6 +593,28 @@ fn meta(file: &File) -> RemoteMeta {
         size: file.size() as u64,
         modified: Some(file.modified()),
     }
+}
+
+/// A command's result, with "the server does not know this command" (500, 502, 504)
+/// as `None` rather than an error.
+fn unless_unsupported<T>(result: Result<T, FtpError>) -> Result<Option<T>, FtpError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if unsupported(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the server refused a command because it does not implement it.
+fn unsupported(error: &FtpError) -> bool {
+    matches!(
+        error,
+        FtpError::UnexpectedResponse(response)
+            if matches!(
+                response.status,
+                Status::BadCommand | Status::NotImplemented | Status::NotImplementedParameter
+            )
+    )
 }
 
 /// Whether an error means the connection itself is gone (so a fresh one may work).
