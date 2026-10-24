@@ -809,6 +809,22 @@ separator.relay-divider {
 .login-tabs {
     margin-bottom: -1px;
 }
+/* The Unfinished tab while transfers wait to be resumed or given up: amber, as for
+   things waiting (the relay picture's sending light), pulsing a few times when the
+   dialog opens so it is noticed, then steady. */
+.login-tabs button.needs-attention {
+    background-color: alpha(#f0a020, 0.28);
+    border-color: alpha(#f0a020, 0.85);
+    font-weight: bold;
+    animation: attention-pulse 0.9s ease-in-out 4 alternate;
+}
+.login-tabs button.needs-attention:checked {
+    background-color: alpha(#f0a020, 0.4);
+}
+@keyframes attention-pulse {
+    from { background-color: alpha(#f0a020, 0.28); }
+    to { background-color: alpha(#f0a020, 0.6); }
+}
 .login-tabs-page {
     padding: 10px;
     border: 1px solid alpha(currentColor, 0.15);

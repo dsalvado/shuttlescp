@@ -450,7 +450,13 @@ impl LoginDialog {
     /// Reread the unfinished transfers (sessions may have finished or recorded some) and
     /// list them, keeping the ticks and the pick of those still there.
     fn refresh_unfinished(&mut self, sender: &ComponentSender<Self>) {
-        self.unfinished = self.pending.unclaimed();
+        let unfinished = self.pending.unclaimed();
+        // Unchanged: keep the rows as they are (rebuilding them would lose a tick or
+        // pick made just before, whose message is still on its way).
+        if !self.unfinished.is_empty() && unfinished == self.unfinished {
+            return;
+        }
+        self.unfinished = unfinished;
         let keys: HashSet<&String> = self.unfinished.iter().map(|pending| &pending.key).collect();
         self.unfinished_ticked.retain(|key| keys.contains(key));
         if self
@@ -484,7 +490,8 @@ impl LoginDialog {
         self.show_unfinished_count();
     }
 
-    /// Title the Unfinished tab with how many there are: "Unfinished (2)".
+    /// Title the Unfinished tab with how many there are, "Unfinished (2)", and highlight
+    /// it while there are any.
     fn show_unfinished_count(&self) {
         let Some(page) = self
             .tabs
@@ -497,6 +504,8 @@ impl LoginDialog {
             0 => String::from("Unfinished"),
             count => format!("Unfinished ({count})"),
         });
+        // The tab button gets the `needs-attention` class (see style.css).
+        page.set_needs_attention(!self.unfinished.is_empty());
     }
 
     /// A site's name, or a note that it was deleted.
@@ -1938,7 +1947,12 @@ impl Component for LoginDialog {
                 self.tab = LoginTab::Direct;
                 self.fill_pair_lists();
                 self.refresh_unfinished(&sender);
-                self.status.clear();
+                // Point out transfers waiting to be resumed (the tab is highlighted too).
+                self.status = match self.unfinished.len() {
+                    0 => String::new(),
+                    1 => String::from("1 transfer did not finish: see the Unfinished tab"),
+                    count => format!("{count} transfers did not finish: see the Unfinished tab"),
+                };
                 root.present();
             }
             LoginMsg::Close => root.close(),
@@ -2061,8 +2075,11 @@ impl Component for LoginDialog {
             }
             LoginMsg::TabShown(tab) => {
                 if !self.busy {
+                    // Opening the dialog brings Direct forward too: keep its hint.
+                    if tab != self.tab {
+                        self.status.clear();
+                    }
                     self.tab = tab;
-                    self.status.clear();
                     // Sites may have been added, changed or deleted on Direct, and
                     // sessions may have recorded or finished transfers.
                     match tab {
