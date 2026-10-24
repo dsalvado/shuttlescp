@@ -22,8 +22,10 @@ becomes its release notes on GitHub.
   with a single command (SFTP checks them all at once), and a newly opened session no
   longer reads its folders twice.
 - While a folder is being read, a spinner turns in the pane's title bar and the status
-  line says so; when moving to another folder, the old folder's list is dimmed until the
-  new one arrives. Both appear only if reading takes more than a moment.
+  line says so. Over a pane with nothing to show yet, or a dimmed list while moving to
+  another folder, a panel says "Reading folder information..."; when reading a folder
+  again takes more than a couple of seconds, a note says "Still reading folder
+  information...". All appear only if reading takes more than a moment.
 
 ### Fixed
 
