@@ -432,7 +432,9 @@ button.tab-close {
    they come from, with an arrowhead at its leading edge, and while data moves
    (`flowing`) stripes slide the same way, one 12px tile per cycle so the loop is
    seamless. GTK skips animations when they are turned off in the desktop settings.
-   The arrowhead is dark on the light fill, and the bar a little taller, so it shows. */
+   The arrowhead is dark on the light fill, and the bar a little taller, so it shows;
+   its 24px icon is pushed 8px past the fill's edge, so the triangle (drawn in the
+   middle of the icon) points from the very front. */
 .transfer-panel progressbar.to-right > trough > progress,
 .transfer-panel progressbar.to-left > trough > progress {
     min-height: 12px;
@@ -446,12 +448,12 @@ button.tab-close {
 }
 .transfer-panel progressbar.to-right > trough > progress {
     background-image: -gtk-icontheme("pan-end-symbolic");
-    background-position: right center;
+    background-position: calc(100% + 8px) 50%;
     animation: hold-right 1ms forwards;
 }
 .transfer-panel progressbar.to-left > trough > progress {
     background-image: -gtk-icontheme("pan-start-symbolic");
-    background-position: left center;
+    background-position: calc(0% - 8px) 50%;
     animation: hold-left 1ms forwards;
 }
 .transfer-panel progressbar.to-right.flowing > trough > progress {
@@ -477,20 +479,20 @@ button.tab-close {
    always honoured. So the still arrowheads are placed by a 1ms animation that holds
    its end (`forwards`). */
 @keyframes hold-right {
-    from { background-position: 100% 50%; }
-    to { background-position: 100% 50%; }
+    from { background-position: calc(100% + 8px) 50%; }
+    to { background-position: calc(100% + 8px) 50%; }
 }
 @keyframes hold-left {
-    from { background-position: 0% 50%; }
-    to { background-position: 0% 50%; }
+    from { background-position: calc(0% - 8px) 50%; }
+    to { background-position: calc(0% - 8px) 50%; }
 }
 @keyframes flow-right {
-    from { background-position: 100% 50%, 0 0; }
-    to { background-position: 100% 50%, 12px 0; }
+    from { background-position: calc(100% + 8px) 50%, 0 0; }
+    to { background-position: calc(100% + 8px) 50%, 12px 0; }
 }
 @keyframes flow-left {
-    from { background-position: 0% 50%, 12px 0; }
-    to { background-position: 0% 50%, 0 0; }
+    from { background-position: calc(0% - 8px) 50%, 12px 0; }
+    to { background-position: calc(0% - 8px) 50%, 0 0; }
 }
 .transfer-panel .transfer-info {
     font-feature-settings: "tnum";
