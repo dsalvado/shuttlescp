@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-24
+
 ### Added
 
 - Server folders open at once when revisited: each server folder's listing is saved
@@ -282,7 +284,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/dsalvado/shuttlescp/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/dsalvado/shuttlescp/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/dsalvado/shuttlescp/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/dsalvado/shuttlescp/compare/v0.15.0...v0.15.1
