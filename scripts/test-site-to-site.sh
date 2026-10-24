@@ -36,6 +36,13 @@ docker run -d --name "$NAME-ftp" -p "$FTP_PORT:21" -p 21000-21010:21000-21010 \
 # The FTP user's writable folders. This vsftpd does not confine users to their home,
 # so the user sees the real paths (its home is /ftp/test).
 docker exec "$NAME-ftp" sh -c 'mkdir -p /ftp/test/files/other && chown -R test /ftp/test/files'
+# Symbolic links, which listings must show as what they lead to (relative, so they work
+# inside the SFTP server's chroot too).
+for target in "$NAME-sftp:/home/test/upload" "$NAME-ftp:/ftp/test/files"; do
+    docker exec "${target%%:*}" sh -c "cd ${target#*:} && mkdir -p links/real-folder &&
+        echo hello > links/real-file && ln -s real-folder links/to-folder &&
+        ln -s real-file links/to-file"
+done
 
 # Wait until each server greets (an open port alone is not enough: Docker can accept
 # connections before the server inside is listening).
@@ -63,4 +70,4 @@ CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rust
 HOME="$HOME_DIR" \
 SHUTTLESCP_TEST_SFTP="sftp://test:test@127.0.0.1:$SFTP_PORT/upload" \
 SHUTTLESCP_TEST_FTP="ftp://test:test@127.0.0.1:$FTP_PORT/ftp/test/files" \
-    cargo test -p shuttlescp-core --test site_to_site -- --ignored --test-threads 1 _and_back
+    cargo test -p shuttlescp-core --test site_to_site -- --ignored --test-threads 1 --skip live_

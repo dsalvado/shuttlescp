@@ -868,7 +868,7 @@ impl SimpleComponent for App {
                 self.transfers_follow_session();
                 // Show what changed in its folders while another tab was in front.
                 if let Some(session) = self.current() {
-                    session.refresh_panes();
+                    session.refresh_panes(false);
                 }
             }
             AppMsg::BottomTabSwitched => self.session_follows_transfers(),
@@ -1036,7 +1036,7 @@ impl SimpleComponent for App {
             }
             AppMsg::TransferFinished(session) => {
                 if let Some(session) = self.session(session) {
-                    session.refresh_panes();
+                    session.refresh_panes(true);
                 }
             }
             AppMsg::WindowChanged { size, maximized } => {

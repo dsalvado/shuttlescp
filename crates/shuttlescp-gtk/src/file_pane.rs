@@ -100,6 +100,13 @@ thread_local! {
 pub enum FilePaneMsg {
     /// Re-read the current directory.
     Refresh,
+    /// Re-read it unless a listing is already on its way, which is as fresh (e.g. when
+    /// the session's tab comes forward right after the pane opened). A refresh then
+    /// would read the folder twice, or cancel a move to another folder.
+    RefreshIfIdle,
+    /// Files changed (a transfer wrote or removed some): re-read the folder now, or as
+    /// soon as a listing on its way arrives (it may have been read before the change).
+    RefreshAfterChange,
     /// Show this folder (e.g. where an interrupted transfer was, when it is resumed).
     GoTo(SidePath),
     /// A row was double-clicked or had Enter pressed on it (position in the sorted view).
@@ -360,6 +367,10 @@ pub struct FilePane {
     notice: Option<String>,
     /// Whether a listing has been shown yet (the start folder is not listed until then).
     listed: bool,
+    /// A listing has been asked for and has not arrived yet.
+    loading: bool,
+    /// Re-read the folder once that listing arrives ([`FilePaneMsg::RefreshAfterChange`]).
+    refresh_after: bool,
     /// Items running transfers use; shared with the rows.
     in_use: Rc<InUseMarks>,
 }
@@ -426,6 +437,7 @@ impl FilePane {
     fn request_listing(&mut self, dir: SidePath, sender: &ComponentSender<Self>) {
         tracing::debug!("listing {dir}");
         self.requested_dir = dir.clone();
+        self.loading = true;
         self.status = String::from("Loading...");
         match (&dir, self.remote.clone()) {
             (SidePath::Remote(remote_dir), Some(remote)) => {
@@ -783,6 +795,8 @@ impl Component for FilePane {
         let mut model = Self {
             current_dir: start_dir.clone(),
             listed: false,
+            loading: false,
+            refresh_after: false,
             title: title.clone(),
             requested_dir: start_dir.clone(),
             entries,
@@ -811,6 +825,17 @@ impl Component for FilePane {
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match message {
             FilePaneMsg::Refresh => self.request_listing(self.current_dir.clone(), &sender),
+            FilePaneMsg::RefreshIfIdle if self.loading => {
+                tracing::trace!(
+                    "not refreshing {}: a listing is on its way",
+                    self.requested_dir
+                );
+            }
+            FilePaneMsg::RefreshIfIdle => self.request_listing(self.current_dir.clone(), &sender),
+            FilePaneMsg::RefreshAfterChange if self.loading => self.refresh_after = true,
+            FilePaneMsg::RefreshAfterChange => {
+                self.request_listing(self.current_dir.clone(), &sender);
+            }
             FilePaneMsg::GoTo(dir) => self.request_listing(dir, &sender),
             FilePaneMsg::Activate(position) => {
                 // Build the target first: `item.borrow()` holds a borrow that must end
@@ -1044,6 +1069,11 @@ impl Component for FilePane {
         if listing.dir != self.requested_dir {
             tracing::trace!("dropping stale listing of {}", listing.dir);
             return;
+        }
+        self.loading = false;
+        if std::mem::take(&mut self.refresh_after) {
+            // Files changed while this was being read: read again.
+            self.request_listing(listing.dir.clone(), &sender);
         }
         match listing.result {
             Ok(entries) => {

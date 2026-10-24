@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use secrecy::SecretString;
+use shuttlescp_core::entry::EntryKind;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::{ConnectError, Credentials, Remote, connect};
 use shuttlescp_core::sites::{FtpOptions, Protocol, Site, SshAuth};
@@ -353,5 +354,37 @@ async fn live_server_names() {
         let name = server.connect().await.server_name().await;
         println!("{}: {name:?}", server.site.host);
         assert!(name.is_some(), "{} gave no name", server.site.host);
+    }
+}
+
+/// A symbolic link is listed as what it leads to: a folder link as a folder, a file link
+/// as a file. The script makes `links/` on each server: `real-folder/`, `real-file`, and
+/// `to-folder` and `to-file` linking to them. FTP lists twice: the second listing skips
+/// what the first found the server does not support (vsftpd has neither MLSD nor MLST).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn links_list_as_what_they_lead_to() {
+    for var in ["SHUTTLESCP_TEST_SFTP", "SHUTTLESCP_TEST_FTP"] {
+        let server = Server::from_env(var);
+        let remote = server.connect().await;
+        let dir = server.dir.join("links");
+        for listing in 1..=2 {
+            let entries = remote.list_dir(&dir).await.expect("list the links folder");
+            let kind = |name: &str| {
+                entries
+                    .iter()
+                    .find(|entry| entry.name() == name)
+                    .map(|entry| entry.kind())
+                    .unwrap_or_else(|| panic!("{var}: {name} missing from listing {listing}"))
+            };
+            assert_eq!(kind("real-folder"), EntryKind::Directory, "{var}");
+            assert_eq!(
+                kind("to-folder"),
+                EntryKind::Directory,
+                "{var}, listing {listing}"
+            );
+            assert_eq!(kind("real-file"), EntryKind::File, "{var}");
+            assert_eq!(kind("to-file"), EntryKind::File, "{var}, listing {listing}");
+        }
     }
 }
