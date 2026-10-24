@@ -59,6 +59,7 @@ pub fn run(
     let ago = |hours: u64| SystemTime::now() - Duration::from_secs(hours * 3600);
     let open_login = Rc::new(open_login);
     let open_login_again = Rc::clone(&open_login);
+    let open_login_unfinished = Rc::clone(&open_login);
     let steps: Vec<Step> = vec![
         ("main-window", Box::new(|_| {})),
         (
@@ -92,6 +93,14 @@ pub fn run(
                 open_login();
                 // Back to the Direct tab (the dialog keeps the last one shown).
                 show_login_tab(window, "direct");
+            }),
+        ),
+        (
+            "login-unfinished",
+            Box::new(move |window| {
+                open_login_unfinished();
+                // Its first transfer picked (details shown) and ticked.
+                show_login_tab(window, "unfinished");
             }),
         ),
         (
@@ -264,14 +273,43 @@ fn show_login_tab(main: &gtk::Window, tab: &'static str) {
             return;
         };
         stack.set_visible_child_name(tab);
-        if let Some(page) = stack.child_by_name(tab).filter(|_| tab == "site-to-site") {
+        let Some(page) = stack.child_by_name(tab) else {
+            return;
+        };
+        if tab == "site-to-site" {
             for (list, row) in site_lists(&page).iter().zip([0, 2]) {
                 if let Some(row) = list.row_at_index(row) {
                     row.activate();
                 }
             }
         }
+        if tab == "unfinished"
+            && let Some(list) = first_descendant::<gtk::ListBox>(&page)
+            && let Some(row) = list.row_at_index(0)
+        {
+            list.select_row(Some(&row));
+            if let Some(check) = first_descendant::<gtk::CheckButton>(row.upcast_ref()) {
+                check.set_active(true);
+            }
+        }
     });
+}
+
+/// The first widget of type `T` inside `widget` (depth first), if any.
+fn first_descendant<T: IsA<gtk::Widget>>(widget: &gtk::Widget) -> Option<T> {
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(found) = current
+            .clone()
+            .downcast::<T>()
+            .ok()
+            .or_else(|| first_descendant(&current))
+        {
+            return Some(found);
+        }
+        child = current.next_sibling();
+    }
+    None
 }
 
 /// The site lists inside `widget`, in order.
@@ -409,7 +447,11 @@ pub fn connect_pair(pair: &str, sender: relm4::ComponentSender<crate::app::App>)
             }
         };
         if let (Some(left), Some(right)) = (open(left).await, open(right).await) {
-            sender.input(crate::app::AppMsg::ConnectedPair { left, right });
+            sender.input(crate::app::AppMsg::ConnectedPair {
+                left,
+                right,
+                resume: None,
+            });
         }
     });
 }

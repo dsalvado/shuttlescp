@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- **Unfinished transfers in the Login dialog:** a new Unfinished tab lists transfers
+  that did not finish, with what each was doing, its site(s), its folders and when it
+  was saved. Tick some and choose Resume: ShuttleSCP logs in to their site (or both
+  sites, site to site) with the saved password or keys, opens each pane in the folder
+  the transfer used, and continues them. Discard logs in, deletes their partial files
+  and forgets them; transfers of a deleted site are just forgotten. While any wait, the
+  tab is highlighted and the dialog opens with a hint pointing to it.
+
 ### Changed
 
 - Transfer progress bars show which way files are going: they fill from the pane the

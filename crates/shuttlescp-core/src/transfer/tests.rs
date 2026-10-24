@@ -1022,3 +1022,82 @@ fn paths_in_use_are_the_targets() {
         ]
     );
 }
+
+#[test]
+fn pane_folders_are_where_sources_were_and_where_copies_go() {
+    // An upload: this computer's folder on the left, the server's on the right.
+    let upload = Job {
+        sources: vec![local(Path::new("/home/me/delete_me/a.txt"))],
+        dest_dir: remote("/srv/in"),
+        ..job(JobKind::Copy, Vec::new(), Path::new("/"))
+    };
+    assert_eq!(
+        upload.pane_folders(),
+        [
+            (Side::Local, local(Path::new("/home/me/delete_me"))),
+            (Side::Remote, remote("/srv/in")),
+        ]
+    );
+
+    // Site to site from the right server to the left one.
+    let leftward = Job {
+        side: Side::Remote,
+        sources: vec![remote("/data/x"), remote("/data/y")],
+        dest_dir: remote("/backup"),
+        between_servers: true,
+        ..upload.clone()
+    };
+    assert_eq!(
+        leftward.pane_folders(),
+        [
+            (Side::Remote, remote("/data")),
+            (Side::Local, remote("/backup"))
+        ]
+    );
+
+    // A delete changes only the pane its files are in.
+    let delete = Job {
+        kind: JobKind::Delete,
+        ..upload
+    };
+    assert_eq!(
+        delete.pane_folders(),
+        [(Side::Local, local(Path::new("/home/me/delete_me")))]
+    );
+}
+
+#[test]
+fn connections_follow_the_pane_the_sources_are_in() {
+    let base = job(JobKind::Copy, Vec::new(), Path::new("/"));
+    // An ordinary session: only the server.
+    assert_eq!(base.connections(None, &"right"), (Some("right"), None));
+    // Site to site, left to right and right to left.
+    let rightward = Job {
+        side: Side::Remote,
+        between_servers: true,
+        left_server: true,
+        ..base.clone()
+    };
+    assert_eq!(
+        rightward.connections(Some(&"left"), &"right"),
+        (Some("left"), Some("right"))
+    );
+    let leftward = Job {
+        left_server: false,
+        ..rightward.clone()
+    };
+    assert_eq!(
+        leftward.connections(Some(&"left"), &"right"),
+        (Some("right"), Some("left"))
+    );
+    // A delete on the left server uses that server alone.
+    let delete = Job {
+        kind: JobKind::Delete,
+        between_servers: false,
+        ..rightward
+    };
+    assert_eq!(
+        delete.connections(Some(&"left"), &"right"),
+        (Some("left"), None)
+    );
+}

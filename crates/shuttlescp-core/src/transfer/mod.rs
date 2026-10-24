@@ -166,6 +166,43 @@ impl Job {
         }
     }
 
+    /// The folders a pane showed when the job was made, as far as the job tells: the one
+    /// holding its sources and, if copies go to the other pane, the one they go to. For
+    /// reopening an interrupted job's session where it was.
+    ///
+    /// # Returns
+    ///
+    /// Each pane (left is [`Side::Local`], right [`Side::Remote`]) with its folder
+    pub fn pane_folders(&self) -> Vec<(Side, SidePath)> {
+        let mut folders: Vec<(Side, SidePath)> = self
+            .sources
+            .first()
+            .and_then(SidePath::parent)
+            .map(|dir| (self.source_pane(), dir))
+            .into_iter()
+            .collect();
+        if self.dest_pane() != self.source_pane() {
+            folders.push((self.dest_pane(), self.dest_dir.clone()));
+        }
+        folders
+    }
+
+    /// Pick the job's connections from a session's: the server its sources are on and,
+    /// site to site, the server copies go to (see [`run`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `left` - The left pane's server (site to site only)
+    /// * `right` - The right pane's server
+    pub fn connections<T: Clone>(&self, left: Option<&T>, right: &T) -> (Option<T>, Option<T>) {
+        let (from, to) = if self.left_server {
+            (left.cloned(), Some(right.clone()))
+        } else {
+            (Some(right.clone()), left.cloned())
+        };
+        (from, to.filter(|_| self.between_servers))
+    }
+
     /// The pane whose files the job changes: where copies go, or what a delete removes
     /// (left is [`Side::Local`], right [`Side::Remote`]).
     pub fn changed_pane(&self) -> Side {

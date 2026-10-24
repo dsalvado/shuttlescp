@@ -100,6 +100,8 @@ thread_local! {
 pub enum FilePaneMsg {
     /// Re-read the current directory.
     Refresh,
+    /// Show this folder (e.g. where an interrupted transfer was, when it is resumed).
+    GoTo(SidePath),
     /// A row was double-clicked or had Enter pressed on it (position in the sorted view).
     Activate(u32),
     /// The user picked the disk at this position in the disk drop-down.
@@ -356,6 +358,8 @@ pub struct FilePane {
     peer_available: bool,
     /// What the last operation did, shown with the next listing's item count.
     notice: Option<String>,
+    /// Whether a listing has been shown yet (the start folder is not listed until then).
+    listed: bool,
     /// Items running transfers use; shared with the rows.
     in_use: Rc<InUseMarks>,
 }
@@ -778,6 +782,7 @@ impl Component for FilePane {
 
         let mut model = Self {
             current_dir: start_dir.clone(),
+            listed: false,
             title: title.clone(),
             requested_dir: start_dir.clone(),
             entries,
@@ -806,6 +811,7 @@ impl Component for FilePane {
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match message {
             FilePaneMsg::Refresh => self.request_listing(self.current_dir.clone(), &sender),
+            FilePaneMsg::GoTo(dir) => self.request_listing(dir, &sender),
             FilePaneMsg::Activate(position) => {
                 // Build the target first: `item.borrow()` holds a borrow that must end
                 // before `self` is mutably borrowed by `request_listing`.
@@ -1080,6 +1086,14 @@ impl Component for FilePane {
                     disk_root,
                 });
                 self.current_dir = listing.dir;
+                self.listed = true;
+            }
+            // Sent elsewhere before anything was shown (e.g. to a resumed transfer's
+            // folder, since deleted): show the start folder after all, with the error.
+            Err(error) if !self.listed && listing.dir != self.current_dir => {
+                tracing::warn!("{error}");
+                self.notice = Some(error);
+                self.request_listing(self.current_dir.clone(), &sender);
             }
             Err(error) => {
                 tracing::warn!("{error}");

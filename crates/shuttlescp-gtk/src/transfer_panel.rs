@@ -94,6 +94,7 @@ impl ListKind {
 ///
 /// A record is *claimed* while a job using it is in some panel's lists, so another
 /// session connected to the same site does not offer to resume it as well.
+#[derive(Debug)]
 pub struct PendingStore {
     path: PathBuf,
     transfers: RefCell<PendingTransfers>,
@@ -166,6 +167,34 @@ impl PendingStore {
             self.transfers.borrow_mut().remove(key);
         }
         replaced
+    }
+
+    /// Every record no panel shows, oldest first: the interrupted jobs of all sites, for
+    /// the Login dialog's Unfinished tab.
+    pub fn unclaimed(&self) -> Vec<PendingJob> {
+        let claimed = self.claimed.borrow();
+        self.transfers
+            .borrow()
+            .all()
+            .filter(|pending| !claimed.contains(&pending.key))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the record is still kept (the Login dialog may have discarded it).
+    fn contains(&self, key: &str) -> bool {
+        self.transfers
+            .borrow()
+            .all()
+            .any(|pending| pending.key == key)
+    }
+
+    /// Forget records given up from the Login dialog, and write the file.
+    pub fn forget(&self, keys: &[String]) {
+        for key in keys {
+            self.remove(key);
+        }
+        self.save();
     }
 
     /// Write the file, logging (not failing) on error.
@@ -254,6 +283,9 @@ pub enum TransferPanelMsg {
     Connection(Option<PanelConnection>),
     /// Resume the jobs interrupted in an earlier session.
     ResumeInterrupted,
+    /// Resume these of them (by record key), picked in the Login dialog; the banner
+    /// keeps offering the rest.
+    ResumeChosen(Vec<String>),
     /// Forget the jobs interrupted in an earlier session.
     DiscardInterrupted,
     /// Give up every unfinished job (running or paused) before the app quits: stop
@@ -643,16 +675,19 @@ impl Component for TransferPanel {
             TransferPanelMsg::Connection(connection) => self.set_connection(connection),
             TransferPanelMsg::ResumeInterrupted => {
                 for pending in std::mem::take(&mut self.interrupted) {
-                    // Another session may have resumed it meanwhile.
-                    if self.pending.is_claimed(&pending.key) {
-                        continue;
-                    }
-                    tracing::info!("resuming interrupted transfer: {}", pending.job.title());
-                    let mut job = pending.job;
-                    job.resume = true;
-                    self.start(job, Some(pending.key), &sender);
+                    self.resume_interrupted(pending, &sender);
                 }
                 self.banner.set_visible(false);
+            }
+            TransferPanelMsg::ResumeChosen(keys) => {
+                let (chosen, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.interrupted)
+                    .into_iter()
+                    .partition(|pending| keys.contains(&pending.key));
+                self.interrupted = rest;
+                for pending in chosen {
+                    self.resume_interrupted(pending, &sender);
+                }
+                self.show_interrupted();
             }
             TransferPanelMsg::DiscardInterrupted => {
                 for pending in std::mem::take(&mut self.interrupted) {
@@ -764,6 +799,7 @@ impl TransferPanel {
                     site_id: connection.site_id.clone(),
                     left_site_id: connection.left.as_ref().map(|left| left.site_id.clone()),
                     job: job.clone(),
+                    saved_at: PendingJob::now(),
                 });
                 self.save_pending();
                 Some(key)
@@ -1048,12 +1084,7 @@ impl TransferPanel {
                     .left
                     .as_ref()
                     .map(|left| (left.remote.clone(), left.name.clone()));
-                let (from, to) = if job.left_server {
-                    (left, Some(right))
-                } else {
-                    (Some(right), left)
-                };
-                let to = to.filter(|_| job.between_servers);
+                let (from, to) = job.connections(left.as_ref(), &right);
                 let route = from
                     .as_ref()
                     .zip(to.as_ref())
@@ -1109,6 +1140,18 @@ impl TransferPanel {
             // Fails only if the panel is gone, when nobody waits for this.
             let _ = done.send(TransferPanelOutput::Discarded);
         });
+    }
+
+    /// Continue an interrupted job from an earlier session, unless another session has
+    /// resumed it meanwhile or the Login dialog discarded it.
+    fn resume_interrupted(&mut self, pending: PendingJob, sender: &ComponentSender<Self>) {
+        if self.pending.is_claimed(&pending.key) || !self.pending.contains(&pending.key) {
+            return;
+        }
+        tracing::info!("resuming interrupted transfer: {}", pending.job.title());
+        let mut job = pending.job;
+        job.resume = true;
+        self.start(job, Some(pending.key), sender);
     }
 
     /// Show (or hide) the banner offering the interrupted transfers.
@@ -2246,6 +2289,7 @@ mod tests {
                 left_server: false,
                 resume: false,
             },
+            saved_at: None,
         }
     }
 
