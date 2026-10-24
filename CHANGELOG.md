@@ -14,7 +14,18 @@ becomes its release notes on GitHub.
   was saved. Tick some and choose Resume: ShuttleSCP logs in to their site (or both
   sites, site to site) with the saved password or keys, opens each pane in the folder
   the transfer used, and continues them. Discard logs in, deletes their partial files
-  and forgets them; transfers of a deleted site are just forgotten.
+  and forgets them; transfers of a deleted site are just forgotten. While any wait, the
+  tab is highlighted and the dialog opens with a hint pointing to it.
+
+### Changed
+
+- Transfer progress bars show which way files are going: they fill from the pane the
+  files come from, with an arrowhead at the leading edge, and while data is moving their
+  stripes slide toward the other pane (left to right from the left pane, right to left
+  from the right one).
+- Site-to-site transfer titles always name the left pane's server first, with the arrow
+  showing the way: "Copy report.pdf: left → right" or "Copy report.pdf: left ← right",
+  so a transfer reads the same however the list is ordered.
 
 ## [0.15.1] - 2026-10-23
 

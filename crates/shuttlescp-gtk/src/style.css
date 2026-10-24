@@ -428,6 +428,69 @@ button.tab-close {
 .transfer-panel progressbar > trough > progress {
     min-height: 6px;
 }
+/* Which way files go (transfer_panel.rs sets the classes): the bar fills from the pane
+   they come from, with an arrowhead at its leading edge, and while data moves
+   (`flowing`) stripes slide the same way, one 12px tile per cycle so the loop is
+   seamless. GTK skips animations when they are turned off in the desktop settings. */
+.transfer-panel progressbar.to-right > trough > progress,
+.transfer-panel progressbar.to-left > trough > progress {
+    min-height: 8px;
+    color: white;
+    background-repeat: no-repeat;
+    background-size: 16px 16px;
+}
+.transfer-panel progressbar.to-right > trough,
+.transfer-panel progressbar.to-left > trough {
+    min-height: 8px;
+}
+.transfer-panel progressbar.to-right > trough > progress {
+    background-image: -gtk-icontheme("pan-end-symbolic");
+    background-position: right center;
+    animation: hold-right 1ms forwards;
+}
+.transfer-panel progressbar.to-left > trough > progress {
+    background-image: -gtk-icontheme("pan-start-symbolic");
+    background-position: left center;
+    animation: hold-left 1ms forwards;
+}
+.transfer-panel progressbar.to-right.flowing > trough > progress {
+    background-image: -gtk-icontheme("pan-end-symbolic"),
+        linear-gradient(-45deg,
+            alpha(white, 0.35) 25%, transparent 25%, transparent 50%,
+            alpha(white, 0.35) 50%, alpha(white, 0.35) 75%, transparent 75%);
+    background-repeat: no-repeat, repeat;
+    background-size: 16px 16px, 12px 12px;
+    animation: flow-right 0.6s linear infinite;
+}
+.transfer-panel progressbar.to-left.flowing > trough > progress {
+    background-image: -gtk-icontheme("pan-start-symbolic"),
+        linear-gradient(45deg,
+            alpha(white, 0.35) 25%, transparent 25%, transparent 50%,
+            alpha(white, 0.35) 50%, alpha(white, 0.35) 75%, transparent 75%);
+    background-repeat: no-repeat, repeat;
+    background-size: 16px 16px, 12px 12px;
+    animation: flow-left 0.6s linear infinite;
+}
+/* GTK can draw a progress fill's background at its left end, ignoring a plain
+   background-position, until the bar is restyled; a position set by an animation is
+   always honoured. So the still arrowheads are placed by a 1ms animation that holds
+   its end (`forwards`). */
+@keyframes hold-right {
+    from { background-position: 100% 50%; }
+    to { background-position: 100% 50%; }
+}
+@keyframes hold-left {
+    from { background-position: 0% 50%; }
+    to { background-position: 0% 50%; }
+}
+@keyframes flow-right {
+    from { background-position: 100% 50%, 0 0; }
+    to { background-position: 100% 50%, 12px 0; }
+}
+@keyframes flow-left {
+    from { background-position: 0% 50%, 12px 0; }
+    to { background-position: 0% 50%, 0 0; }
+}
 .transfer-panel .transfer-info {
     font-feature-settings: "tnum";
 }
