@@ -970,6 +970,8 @@ impl LoginDialog {
         }
         let site = self.book.sites.remove(index);
         self.write_sites(&format!("deleted site {}", site.display_name()));
+        // Its saved folder listings hold the server's file names: delete them too.
+        shuttlescp_core::listing_cache::forget_site(&site.id);
         if site.ssh.passphrase_saved {
             let entry = session::passphrase_entry(&site.id);
             sender.oneshot_command(async move {
