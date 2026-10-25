@@ -1961,9 +1961,10 @@ fn quit_on_signals(sender: &ComponentSender<App>) {
 
 /// Build the menu bar model: File, View (themes), Tools (logging) and Help (About).
 ///
-/// Lists sit in sections rather than nested submenus, so every menu opens as a single
-/// popup. The theme section holds one placeholder item that the [`ThemeList`] widget
-/// replaces (see [`THEME_LIST_ID`]).
+/// Most lists sit in sections, so their menu opens as a single popup; the log levels
+/// are a submenu of Tools (opening beside it on hover) so Tools stays two items. The
+/// theme section holds one placeholder item that the [`ThemeList`] widget replaces
+/// (see [`THEME_LIST_ID`]).
 ///
 /// The macOS menu bar follows the Mac's layout: Quit and About sit in the app menu GTK
 /// adds, and Edit and Window menus are added (GTK's own, which it shows only when the
@@ -1998,15 +1999,13 @@ fn build_menu(bar: MenuBar) -> gio::Menu {
     let view_menu = gio::Menu::new();
     view_menu.append_section(Some("Theme"), &theme_section);
 
-    let level_section = gio::Menu::new();
+    let level_menu = gio::Menu::new();
     for level in LogLevel::ALL {
-        level_section.append_item(&bar.radio_item::<LogLevelAction>(level.label(), level.as_str()));
+        level_menu.append_item(&bar.radio_item::<LogLevelAction>(level.label(), level.as_str()));
     }
-    let log_file_section = gio::Menu::new();
-    log_file_section.append_item(&bar.item::<OpenLogAction>("_Open Log File"));
     let tools_menu = gio::Menu::new();
-    tools_menu.append_section(Some("Log Level"), &level_section);
-    tools_menu.append_section(None, &log_file_section);
+    tools_menu.append_submenu(Some("_Log Level"), &level_menu);
+    tools_menu.append_item(&bar.item::<OpenLogAction>("_Open Log File"));
 
     let update_section = gio::Menu::new();
     update_section.append_item(&bar.item::<CheckUpdatesAction>("Check for _Updates…"));
