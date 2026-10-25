@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, Utc};
 use secrecy::{ExposeSecret, SecretString};
@@ -250,7 +250,13 @@ async fn open(settings: &Settings) -> Result<Connection, ConnectError> {
         .login(settings.user.as_str(), settings.password.expose_secret())
         .await
         .map_err(|error| match error {
-            FtpError::UnexpectedResponse(_) => ConnectError::AuthenticationFailed,
+            FtpError::UnexpectedResponse(response) => {
+                // Servers also refuse here for reasons other than a wrong password,
+                // such as too many connections; their reply tells which.
+                let reply = String::from_utf8_lossy(&response.body).trim().to_owned();
+                tracing::warn!("{} refused the login: {reply}", settings.host);
+                ConnectError::AuthenticationFailed
+            }
             other => network(other),
         })?;
     // Exact bytes, not text with line endings converted.
@@ -320,12 +326,25 @@ impl Ftp {
         let idle = self.pool.idle.lock().ok().and_then(|mut idle| idle.pop());
         let (connection, reused) = match idle {
             Some(connection) => (connection, true),
-            None => (
-                open(&self.settings)
-                    .await
-                    .map_err(|error| error.to_string())?,
-                false,
-            ),
+            None => {
+                // Counting this one, which already holds its slot.
+                let number = MAX_CONNECTIONS - self.pool.slots.available_permits();
+                let host = &self.settings.host;
+                let opening = Instant::now();
+                let connection = open(&self.settings).await.map_err(|error| {
+                    tracing::warn!(
+                        "cannot open connection {number} (of at most {MAX_CONNECTIONS}) to \
+                         {host}: {error}"
+                    );
+                    error.to_string()
+                })?;
+                tracing::debug!(
+                    "opened connection {number} (of at most {MAX_CONNECTIONS}) to {host} in \
+                     {:.2} s",
+                    opening.elapsed().as_secs_f64()
+                );
+                (connection, false)
+            }
         };
         Ok(Lease {
             connection: Some(connection),
