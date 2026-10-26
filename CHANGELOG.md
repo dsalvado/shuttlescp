@@ -7,6 +7,20 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-26
+
+### Changed
+
+- Tools › Log Level is now a submenu, so the Tools menu has two items: Log Level and
+  Open Log File. The levels open beside it, with the current one marked.
+- The log shows where transfer time goes, to help find what slows a transfer down.
+  Each copied file's line splits its time into opening, moving the data and
+  finishing. Each copy job adds a line with files per second, the most files copied
+  at once, and the average of each part. For FTP, it also logs each new connection
+  to the server, connections that cannot be opened, and the server's reply when it
+  refuses a login (for example because of too many connections, which used to look
+  like a wrong password).
+
 ## [0.17.0] - 2026-10-24
 
 ### Added
@@ -284,7 +298,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/dsalvado/shuttlescp/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/dsalvado/shuttlescp/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/dsalvado/shuttlescp/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/dsalvado/shuttlescp/compare/v0.15.1...v0.16.0
