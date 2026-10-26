@@ -172,7 +172,14 @@ pub(super) async fn copy_items(
     // 3. Files, several at a time, in order; each runs as its own task. A file the
     //    user pauses gives up its place and waits, with its partial copy, until it is
     //    resumed (then it continues where it stopped), stopped, or the job ends.
-    let slots = Arc::new(Semaphore::new(FILES_AT_ONCE));
+    //    As many at once as the server is set to; site to site, the lower of the two.
+    let at_once = [src.files_at_once(), dst.files_at_once()]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(FILES_AT_ONCE);
+    tracing::debug!("copying up to {at_once} files at once");
+    let slots = Arc::new(Semaphore::new(at_once));
     let times = Arc::new(Mutex::new(JobTimes::default()));
     let files_started = Instant::now();
     let mut most_at_once = 0;
@@ -267,7 +274,9 @@ pub(super) async fn copy_items(
                 };
                 (item, action, end)
             });
-            most_at_once = most_at_once.max(running.len());
+            // Counted by slots held, not tasks: a finished task stays in `running`
+            // until joined, after its slot went to the next file.
+            most_at_once = most_at_once.max(at_once - slots.available_permits());
         }
 
         if running.is_empty() && waiting.is_empty() && paused.is_empty() {

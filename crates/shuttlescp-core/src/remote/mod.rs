@@ -158,6 +158,8 @@ struct RemoteInner {
     host: String,
     home: RemotePath,
     backend: Backend,
+    /// The site's [`Site::files_at_once`].
+    files_at_once: usize,
 }
 
 /// The protocol-specific half of a [`Remote`].
@@ -194,6 +196,12 @@ impl Remote {
     /// The user's home folder on the server, where browsing starts.
     pub fn home(&self) -> &RemotePath {
         &self.0.home
+    }
+
+    /// How many files to copy at the same time to or from this server (the site's
+    /// setting).
+    pub fn files_at_once(&self) -> usize {
+        self.0.files_at_once
     }
 
     /// List a folder on the server, sorted like local listings (folders first). A
@@ -419,5 +427,6 @@ pub async fn connect(
         host: site.host.clone(),
         home,
         backend,
+        files_at_once: site.files_at_once(),
     })))
 }

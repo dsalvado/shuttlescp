@@ -16,16 +16,18 @@ SFTP_IMAGE=atmoz/sftp@sha256:43dd1c023cf1bae487127d4b54660b0aee6e94c188a6599be36
 FTP_IMAGE=delfer/alpine-ftp-server@sha256:60bb774d8408d9d4d5c74d05d1c086a34ce192c6c1a142ffac268cac0dbc6fac
 SFTP_PORT=2222
 FTP_PORT=2121
+# A second FTP server that takes only 3 connections per client.
+LIMITED_PORT=2123
 NAME=shuttlescp-s2s-$$
 HOME_DIR=$(mktemp -d)
 
 cleanup() {
-    docker rm -f "$NAME-sftp" "$NAME-ftp" >/dev/null 2>&1 || true
+    docker rm -f "$NAME-sftp" "$NAME-ftp" "$NAME-limited" >/dev/null 2>&1 || true
     rm -rf "$HOME_DIR"
 }
 trap cleanup EXIT
 
-echo "==> Starting an SFTP server on port $SFTP_PORT and an FTP server on port $FTP_PORT"
+echo "==> Starting an SFTP server on port $SFTP_PORT and FTP servers on ports $FTP_PORT and $LIMITED_PORT"
 # SFTP: user test, password test, writable folders upload and upload/other.
 docker run -d --name "$NAME-sftp" -p "$SFTP_PORT:22" "$SFTP_IMAGE" \
     test:test:::upload,upload/other >/dev/null
@@ -39,9 +41,18 @@ docker run -d --name "$NAME-ftp" -p "$FTP_PORT:21" -p 21000-21010:21000-21010 \
     -e USERS="test|test" "$FTP_IMAGE" \
     vsftpd /etc/vsftpd/vsftpd.conf -obackground=NO -opasv_min_port=21000 \
     -opasv_max_port=21010 -opasv_address=127.0.0.1 >/dev/null
-# The FTP user's writable folders. This vsftpd does not confine users to their home,
+# The same, but refusing a client's fourth connection (with "421 There are too many
+# connections from your internet address"), as many hosting servers do; passive data
+# ports 21020-21030.
+docker run -d --name "$NAME-limited" -p "$LIMITED_PORT:21" -p 21020-21030:21020-21030 \
+    -e USERS="test|test" "$FTP_IMAGE" \
+    vsftpd /etc/vsftpd/vsftpd.conf -obackground=NO -opasv_min_port=21020 \
+    -opasv_max_port=21030 -opasv_address=127.0.0.1 -omax_per_ip=3 >/dev/null
+# The FTP users' writable folders. This vsftpd does not confine users to their home,
 # so the user sees the real paths (its home is /ftp/test).
-docker exec "$NAME-ftp" sh -c 'mkdir -p /ftp/test/files/other && chown -R test /ftp/test/files'
+for server in "$NAME-ftp" "$NAME-limited"; do
+    docker exec "$server" sh -c 'mkdir -p /ftp/test/files/other && chown -R test /ftp/test/files'
+done
 # Symbolic links, which listings must show as what they lead to (relative, so they work
 # inside the SFTP server's chroot too).
 for target in "$NAME-sftp:/home/test/upload" "$NAME-ftp:/ftp/test/files"; do
@@ -68,6 +79,7 @@ wait_for() {
 }
 wait_for "$SFTP_PORT" SSH "$NAME-sftp"
 wait_for "$FTP_PORT" 220 "$NAME-ftp"
+wait_for "$LIMITED_PORT" 220 "$NAME-limited"
 
 echo "==> Running the site-to-site tests"
 cd "$ROOT"
@@ -76,4 +88,5 @@ CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rust
 HOME="$HOME_DIR" \
 SHUTTLESCP_TEST_SFTP="sftp://test:test@127.0.0.1:$SFTP_PORT/upload" \
 SHUTTLESCP_TEST_FTP="ftp://test:test@127.0.0.1:$FTP_PORT/ftp/test/files" \
+SHUTTLESCP_TEST_FTP_LIMITED="ftp://test:test@127.0.0.1:$LIMITED_PORT/ftp/test/files" \
     cargo test -p shuttlescp-core --test site_to_site -- --ignored --test-threads 1 --skip live_

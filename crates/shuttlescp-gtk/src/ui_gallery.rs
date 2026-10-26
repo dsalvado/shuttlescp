@@ -431,6 +431,7 @@ pub fn connect_pair(pair: &str, sender: relm4::ComponentSender<crate::app::App>)
                 use_agent: true,
                 passphrase_saved: false,
             },
+            files_at_once: shuttlescp_core::sites::DEFAULT_FILES_AT_ONCE,
         })
         .collect();
     let [left, right] = <[_; 2]>::try_from(sites)

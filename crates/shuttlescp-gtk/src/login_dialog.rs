@@ -26,7 +26,8 @@ use shuttlescp_core::secrets;
 use shuttlescp_core::session::{self, ExportReport, ImportReport, KeyringAction};
 use shuttlescp_core::site_export::ExportFile;
 use shuttlescp_core::sites::{
-    FtpEncryption, FtpOptions, Protocol, Site, SiteBook, SshAuth, new_site_id,
+    DEFAULT_FILES_AT_ONCE, FtpEncryption, FtpOptions, MAX_FILES_AT_ONCE, Protocol, Site, SiteBook,
+    SshAuth, new_site_id,
 };
 use shuttlescp_core::transfer::{self, JobKind, Side};
 
@@ -97,6 +98,8 @@ pub enum LoginMsg {
     PassiveToggled(bool),
     /// The port field changed.
     PortChanged(i32),
+    /// The "Files at once" field changed.
+    FilesAtOnceChanged(i32),
     /// The "Save password" box was ticked or cleared.
     SavePasswordToggled(bool),
     /// The "Browse..." button of the key file field was clicked.
@@ -333,6 +336,8 @@ pub struct LoginDialog {
     editing: bool,
     protocol: Protocol,
     port: u16,
+    /// Files copied at the same time to or from the site.
+    files_at_once: u8,
     /// FTP settings (shown for FTP sites).
     ftp: FtpOptions,
     /// Whether Save stores the typed password in the keyring.
@@ -753,6 +758,9 @@ impl LoginDialog {
         self.port = site
             .as_ref()
             .map_or_else(|| self.default_port(), |site| site.port);
+        self.files_at_once = site
+            .as_ref()
+            .map_or(DEFAULT_FILES_AT_ONCE, |site| site.files_at_once);
         self.host
             .set_text(site.as_ref().map_or("", |site| site.host.as_str()));
         self.user
@@ -896,6 +904,7 @@ impl LoginDialog {
                 key_file,
                 use_agent: self.use_agent,
             },
+            files_at_once: self.files_at_once,
         };
         if let Some(entry) = old_passphrase {
             sender.oneshot_command(async move {
@@ -1276,6 +1285,32 @@ impl Component for LoginDialog {
                                             set_value: f64::from(model.port),
                                             connect_value_changed[sender] => move |spin| {
                                                 sender.input(LoginMsg::PortChanged(spin.value_as_int()));
+                                            },
+                                        },
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
+                                        set_tooltip_text: Some(
+                                            "Files copied at the same time. More can be faster when \
+                                             the server limits each connection's speed; FTP opens a \
+                                             connection for each, and some servers allow only a few.",
+                                        ),
+
+                                        gtk::Label {
+                                            set_label: "Files at once:",
+                                            set_xalign: 0.0,
+                                        },
+                                        gtk::SpinButton::with_range(1.0, f64::from(MAX_FILES_AT_ONCE), 1.0) {
+                                            set_digits: 0,
+                                            set_width_chars: 2,
+                                            set_halign: gtk::Align::Start,
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_value: f64::from(model.files_at_once),
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(LoginMsg::FilesAtOnceChanged(spin.value_as_int()));
                                             },
                                         },
                                     },
@@ -1875,6 +1910,7 @@ impl Component for LoginDialog {
             editing: false,
             protocol: Protocol::default(),
             port: Protocol::default().default_port(),
+            files_at_once: DEFAULT_FILES_AT_ONCE,
             ftp: FtpOptions::default(),
             save_password: true,
             host: gtk::EntryBuffer::default(),
@@ -2043,6 +2079,11 @@ impl Component for LoginDialog {
             LoginMsg::PortChanged(value) => {
                 if let Ok(port) = u16::try_from(value) {
                     self.port = port;
+                }
+            }
+            LoginMsg::FilesAtOnceChanged(value) => {
+                if let Ok(count) = u8::try_from(value) {
+                    self.files_at_once = count;
                 }
             }
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,

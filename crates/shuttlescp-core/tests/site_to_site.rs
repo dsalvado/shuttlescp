@@ -63,6 +63,7 @@ impl Server {
                     use_agent: password.is_empty(),
                     passphrase_saved: false,
                 },
+                files_at_once: shuttlescp_core::sites::DEFAULT_FILES_AT_ONCE,
             },
             password: password.to_owned(),
             dir: RemotePath::new(format!("/{dir}")),
@@ -386,5 +387,71 @@ async fn links_list_as_what_they_lead_to() {
             assert_eq!(kind("real-file"), EntryKind::File, "{var}");
             assert_eq!(kind("to-file"), EntryKind::File, "{var}, listing {listing}");
         }
+    }
+}
+
+/// A site set to more files at once than its FTP server allows connections: the server
+/// refuses the extra ones, and every file still arrives over those it allowed. The
+/// script's `SHUTTLESCP_TEST_FTP_LIMITED` server takes 3 connections per client.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn more_files_at_once_than_the_ftp_server_allows() {
+    // Arrange: 20 files, and a site asking for 8 at once.
+    let mut server = Server::from_env("SHUTTLESCP_TEST_FTP_LIMITED");
+    server.site.files_at_once = 8;
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let name = format!("limited-{stamp}");
+    let folder = temp.path().join(&name);
+    std::fs::create_dir(&folder).expect("create");
+    for index in 0..20 {
+        std::fs::write(
+            folder.join(format!("{index:02}.bin")),
+            pattern(50_000 + index),
+        )
+        .expect("write");
+    }
+    let on_server = SidePath::Remote(server.dir.join(&name));
+
+    // Act: up, then back down.
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(folder.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    let back = temp.path().join("back");
+    std::fs::create_dir(&back).expect("create");
+    let download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![on_server.clone()],
+        SidePath::Local(back.clone()),
+    );
+    let (down, down_errors) = run_job(download, &remote, None).await;
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert: nothing failed either way, and every file came back as it went.
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    assert!(down.is_complete(), "download: {down:?} {down_errors:?}");
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+    for index in 0..20 {
+        let file = format!("{index:02}.bin");
+        assert_eq!(
+            std::fs::read(back.join(&name).join(&file)).expect("read the copy"),
+            pattern(50_000 + index),
+            "{file} differs"
+        );
     }
 }

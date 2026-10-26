@@ -95,6 +95,22 @@ pub struct Site {
     /// were supported have none: no key file, the agent used.
     #[serde(default)]
     pub ssh: SshAuth,
+    /// Files copied at the same time to or from this server; more go faster when the
+    /// server limits each connection's speed. FTP opens a connection for each. See
+    /// [`Site::files_at_once`].
+    #[serde(default = "default_files_at_once")]
+    pub files_at_once: u8,
+}
+
+/// Files copied at the same time for a site that does not say (files from before the
+/// setting existed).
+pub const DEFAULT_FILES_AT_ONCE: u8 = 4;
+/// Most files at once a site may be set to: many servers refuse more connections from
+/// one client.
+pub const MAX_FILES_AT_ONCE: u8 = 10;
+
+pub(crate) fn default_files_at_once() -> u8 {
+    DEFAULT_FILES_AT_ONCE
 }
 
 /// Logging in to an SSH server (SFTP and SCP) with keys rather than, or before, a
@@ -230,6 +246,12 @@ impl Default for FtpOptions {
 }
 
 impl Site {
+    /// Files to copy at the same time to or from this server, kept within 1 and
+    /// [`MAX_FILES_AT_ONCE`] whatever the settings file says.
+    pub fn files_at_once(&self) -> usize {
+        usize::from(self.files_at_once.clamp(1, MAX_FILES_AT_ONCE))
+    }
+
     /// The usual port for this site's protocol (and, for FTP, its encryption).
     pub fn default_port(&self) -> u16 {
         match self.protocol {
@@ -342,6 +364,7 @@ mod tests {
             password_saved: false,
             ftp: crate::sites::FtpOptions::default(),
             ssh: SshAuth::default(),
+            files_at_once: DEFAULT_FILES_AT_ONCE,
         }
     }
 
@@ -363,6 +386,24 @@ mod tests {
                 Some(encryption)
             );
         }
+    }
+
+    #[test]
+    fn files_at_once_defaults_for_older_sites_and_stays_in_range() {
+        // A site saved before the setting existed.
+        let old: Site = serde_json::from_str(
+            r#"{"protocol":"ftp","host":"example.com","port":21,"user":"me"}"#,
+        )
+        .expect("read an older site");
+        assert_eq!(old.files_at_once, DEFAULT_FILES_AT_ONCE);
+        assert_eq!(old.files_at_once(), usize::from(DEFAULT_FILES_AT_ONCE));
+
+        // Out of range in a hand-edited file: kept within 1 and the maximum.
+        let mut edited = site("me", 21);
+        edited.files_at_once = 0;
+        assert_eq!(edited.files_at_once(), 1);
+        edited.files_at_once = 99;
+        assert_eq!(edited.files_at_once(), usize::from(MAX_FILES_AT_ONCE));
     }
 
     #[test]

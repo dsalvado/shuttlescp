@@ -43,8 +43,11 @@ use crate::path::{RemotePath, SidePath};
 use crate::remote::Remote;
 use endpoint::Endpoint;
 
-/// Files of one job copied at the same time. More would not add speed (they share one
-/// network link and disk) but would make each file slower to finish.
+/// Files of one job copied at the same time on this computer alone. More would not add
+/// speed (they share one disk) but would make each file slower to finish. A job using a
+/// server copies as many as its site is set to (see [`Site::files_at_once`]).
+///
+/// [`Site::files_at_once`]: crate::sites::Site::files_at_once
 pub const FILES_AT_ONCE: usize = 4;
 
 /// Ending added to a file's name while it is being copied; the file gets its real name
