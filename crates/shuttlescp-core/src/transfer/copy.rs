@@ -3,7 +3,7 @@
 
 use crate::path::SidePath;
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,6 +42,58 @@ enum FileEnd {
 impl From<ItemOutcome> for FileEnd {
     fn from(outcome: ItemOutcome) -> Self {
         Self::Outcome(outcome)
+    }
+}
+
+/// Where one file copy's time went.
+#[derive(Debug, Clone, Copy, Default)]
+struct FileTimes {
+    /// Opening the source and the partial copy (for FTP, setting up a data connection).
+    open: Duration,
+    /// Moving the bytes, until the partial copy is closed.
+    data: Duration,
+    /// Giving the copy its real name and date (and deleting the source if moving).
+    finish: Duration,
+}
+
+/// The copied files' times added up, to tell in the log whether a job was slowed by
+/// starting each file or by moving the bytes.
+#[derive(Debug, Default)]
+struct JobTimes {
+    files: usize,
+    total: FileTimes,
+}
+
+impl JobTimes {
+    fn add(&mut self, times: FileTimes) {
+        self.files += 1;
+        self.total.open += times.open;
+        self.total.data += times.data;
+        self.total.finish += times.finish;
+    }
+
+    /// Record the totals in the log.
+    ///
+    /// # Arguments
+    ///
+    /// * `took` - How long copying the files took
+    /// * `most_at_once` - The most files copied at the same time
+    fn log(&self, took: Duration, most_at_once: usize) {
+        if self.files == 0 {
+            return;
+        }
+        let files = self.files as f64;
+        let average = |total: Duration| total.as_secs_f64() / files;
+        tracing::info!(
+            "file timing: {} files in {:.1} s ({:.2} per second), up to {most_at_once} at \
+             once; per file on average open {:.2} s, data {:.2} s, finish {:.2} s",
+            self.files,
+            took.as_secs_f64(),
+            files / took.as_secs_f64().max(0.001),
+            average(self.total.open),
+            average(self.total.data),
+            average(self.total.finish),
+        );
     }
 }
 
@@ -121,6 +173,9 @@ pub(super) async fn copy_items(
     //    user pauses gives up its place and waits, with its partial copy, until it is
     //    resumed (then it continues where it stopped), stopped, or the job ends.
     let slots = Arc::new(Semaphore::new(FILES_AT_ONCE));
+    let times = Arc::new(Mutex::new(JobTimes::default()));
+    let files_started = Instant::now();
+    let mut most_at_once = 0;
     let mut running = JoinSet::new();
     let mut waiting: VecDeque<(PlanItem, FileAction)> = VecDeque::new();
     for item in items.iter().filter(|item| item.kind == ItemKind::File) {
@@ -180,8 +235,13 @@ pub(super) async fn copy_items(
                 waiting.push_front((item, action));
                 break;
             };
-            let (src, dst, cancel, sink) =
-                (src.clone(), dst.clone(), cancel.clone(), Arc::clone(sink));
+            let (src, dst, cancel, sink, times) = (
+                src.clone(),
+                dst.clone(),
+                cancel.clone(),
+                Arc::clone(sink),
+                Arc::clone(&times),
+            );
             running.spawn(async move {
                 // Holding the slot until the copy ends lets the next file start.
                 let _slot = slot;
@@ -192,11 +252,22 @@ pub(super) async fn copy_items(
                     }
                     FileAction::Copy | FileAction::Overwrite => {
                         let replace = action == FileAction::Overwrite;
-                        copy_file(&item, &src, &dst, delete_source, replace, &cancel, &sink).await
+                        copy_file(
+                            &item,
+                            &src,
+                            &dst,
+                            delete_source,
+                            replace,
+                            &cancel,
+                            &sink,
+                            &times,
+                        )
+                        .await
                     }
                 };
                 (item, action, end)
             });
+            most_at_once = most_at_once.max(running.len());
         }
 
         if running.is_empty() && waiting.is_empty() && paused.is_empty() {
@@ -219,6 +290,9 @@ pub(super) async fn copy_items(
             Ok(None) => tokio::time::sleep(PAUSE_POLL).await,
             Err(_) => {}
         }
+    }
+    if let Ok(times) = times.lock() {
+        times.log(files_started.elapsed(), most_at_once);
     }
 
     // 4. Folders last, deepest first: each is done once everything inside it is.
@@ -440,7 +514,8 @@ async fn finish_source(item: &PlanItem, src: &Endpoint, delete_source: bool) -> 
 
 /// Copy one file through its partial file, continuing an earlier partial copy when
 /// there is one, then give it its real name (replacing the existing file if `replace`)
-/// and delete the source if moving.
+/// and delete the source if moving. A completed copy's times are added to `times`.
+#[allow(clippy::too_many_arguments)]
 async fn copy_file(
     item: &PlanItem,
     src: &Endpoint,
@@ -449,6 +524,7 @@ async fn copy_file(
     replace: bool,
     cancel: &CancelFlag,
     sink: &Sink,
+    times: &Mutex<JobTimes>,
 ) -> FileEnd {
     let started = Instant::now();
     let partial = partial_path(&item.dest);
@@ -458,8 +534,8 @@ async fn copy_file(
     } else {
         tracing::debug!("copying {} to {}", item.source, item.dest);
     }
-    match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
-        Ok(()) => {}
+    let mut took = match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
+        Ok(took) => took,
         Err(FileEnd::Paused(at)) => {
             tracing::info!("paused {} at {at} of {} bytes", item.dest, item.size);
             return FileEnd::Paused(at);
@@ -484,7 +560,8 @@ async fn copy_file(
             }
             return outcome.into();
         }
-    }
+    };
+    let finishing = Instant::now();
     if replace && let Err(error) = dst.remove_file(&item.dest).await {
         return ItemOutcome::Failed(error).into();
     }
@@ -499,19 +576,25 @@ async fn copy_file(
     }
     let outcome = finish_source(item, src, delete_source).await;
     if outcome == ItemOutcome::Done {
-        log_copied(item, offset, started.elapsed(), delete_source);
+        took.finish = finishing.elapsed();
+        log_copied(item, offset, started.elapsed(), took, delete_source);
+        if let Ok(mut times) = times.lock() {
+            times.add(took);
+        }
     }
     outcome.into()
 }
 
-/// Record a finished file copy in the log: what went where, how big, how fast.
+/// Record a finished file copy in the log: what went where, how big, how fast, and
+/// where the time went.
 ///
 /// # Arguments
 ///
 /// * `offset` - Bytes copied by an earlier, interrupted attempt
 /// * `took` - How long this attempt took
+/// * `parts` - That time split into opening, moving the bytes and finishing
 /// * `moved` - The source was deleted afterwards
-fn log_copied(item: &PlanItem, offset: u64, took: Duration, moved: bool) {
+fn log_copied(item: &PlanItem, offset: u64, took: Duration, parts: FileTimes, moved: bool) {
     let sent = item.size.saturating_sub(offset);
     let seconds = took.as_secs_f64();
     let speed = if seconds > 0.0 {
@@ -526,11 +609,14 @@ fn log_copied(item: &PlanItem, offset: u64, took: Duration, moved: bool) {
         String::new()
     };
     tracing::info!(
-        "{} {} -> {}: {} in {seconds:.1} s{speed}{resumed}",
+        "{} {} -> {}: {} in {seconds:.1} s (open {:.2} s, data {:.2} s, finish {:.2} s){speed}{resumed}",
         if moved { "moved" } else { "copied" },
         item.source,
         item.dest,
         format_size(item.size),
+        parts.open.as_secs_f64(),
+        parts.data.as_secs_f64(),
+        parts.finish.as_secs_f64(),
     );
 }
 
@@ -560,6 +646,10 @@ async fn resume_offset(item: &PlanItem, src: &Endpoint, dst: &Endpoint, partial:
 /// Stream a file's bytes from `src` to `partial` starting at `offset`, reporting
 /// progress.
 ///
+/// # Returns
+///
+/// How long opening and moving the bytes took (finishing is left at zero)
+///
 /// # Errors
 ///
 /// Returns how the copy ended when it did not complete: an outcome, or paused
@@ -571,10 +661,13 @@ async fn copy_contents(
     offset: u64,
     cancel: &CancelFlag,
     sink: &Sink,
-) -> Result<(), FileEnd> {
+) -> Result<FileTimes, FileEnd> {
     let failed = ItemOutcome::Failed;
+    let opening = Instant::now();
     let mut reader = src.open_at(&item.source, offset).await.map_err(failed)?;
     let mut writer = dst.open_write_at(partial, offset).await.map_err(failed)?;
+    let open = opening.elapsed();
+    let moving = Instant::now();
     // No read-ahead queue of our own: the SFTP library already keeps several requests in
     // flight, and measured site to site (2026-10, 25 ms each way) a queue made copies
     // about 10% slower. See the live_relay_speed test.
@@ -627,7 +720,11 @@ async fn copy_contents(
         .await
         .map_err(|error| ItemOutcome::Failed(format!("cannot finish {}: {error}", partial)))?;
     sink(TransferEvent::Progress { id: item.id, done });
-    Ok(())
+    Ok(FileTimes {
+        open,
+        data: moving.elapsed(),
+        finish: Duration::ZERO,
+    })
 }
 
 /// Delete every planned item: contents before the folders holding them.
