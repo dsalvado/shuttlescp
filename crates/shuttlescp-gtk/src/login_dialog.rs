@@ -100,6 +100,8 @@ pub enum LoginMsg {
     PortChanged(i32),
     /// The "Files at once" field changed.
     FilesAtOnceChanged(i32),
+    /// The Advanced section was opened or closed.
+    AdvancedToggled(bool),
     /// The "Save password" box was ticked or cleared.
     SavePasswordToggled(bool),
     /// The "Browse..." button of the key file field was clicked.
@@ -338,6 +340,9 @@ pub struct LoginDialog {
     port: u16,
     /// Files copied at the same time to or from the site.
     files_at_once: u8,
+    /// The Advanced section is open: by the user, or because the site changed a setting
+    /// in it.
+    advanced_open: bool,
     /// FTP settings (shown for FTP sites).
     ftp: FtpOptions,
     /// Whether Save stores the typed password in the keyring.
@@ -761,6 +766,7 @@ impl LoginDialog {
         self.files_at_once = site
             .as_ref()
             .map_or(DEFAULT_FILES_AT_ONCE, |site| site.files_at_once);
+        self.advanced_open = self.files_at_once != DEFAULT_FILES_AT_ONCE;
         self.host
             .set_text(site.as_ref().map_or("", |site| site.host.as_str()));
         self.user
@@ -1296,37 +1302,6 @@ impl Component for LoginDialog {
                                             },
                                         },
                                     },
-                                    gtk::Box {
-                                        set_orientation: gtk::Orientation::Vertical,
-                                        set_spacing: 2,
-                                        set_tooltip_text: Some(
-                                            "Files copied at the same time. More can be faster when \
-                                             the server limits each connection's speed; FTP opens a \
-                                             connection for each, and some servers allow only a few.",
-                                        ),
-
-                                        gtk::Label {
-                                            set_label: "Files at once:",
-                                            set_xalign: 0.0,
-                                        },
-                                        gtk::SpinButton::with_range(1.0, f64::from(MAX_FILES_AT_ONCE), 1.0) {
-                                            set_digits: 0,
-                                            set_width_chars: 2,
-                                            set_halign: gtk::Align::Start,
-                                            #[watch]
-                                            set_sensitive: model.editing,
-                                            #[watch]
-                                            set_value: f64::from(model.files_at_once),
-                                            connect_value_changed[sender] => move |spin| {
-                                                sender.input(LoginMsg::FilesAtOnceChanged(spin.value_as_int()));
-                                            },
-                                            connect_changed[sender] => move |spin| {
-                                                if let Some(value) = typed_number(spin) {
-                                                    sender.input(LoginMsg::FilesAtOnceChanged(value));
-                                                }
-                                            },
-                                        },
-                                    },
                                 },
 
                                 // User name and password, side by side at equal widths.
@@ -1440,6 +1415,52 @@ impl Component for LoginDialog {
                                             connect_toggled[sender] => move |check| {
                                                 sender.input(LoginMsg::UseAgentToggled(check.is_active()));
                                             },
+                                        },
+                                    },
+                                },
+
+                                // Settings few sites need, folded away; open for a site that
+                                // changed them, so a changed setting is never out of sight.
+                                gtk::Expander {
+                                    set_label: Some("Advanced"),
+                                    #[watch]
+                                    set_expanded: model.advanced_open,
+                                    connect_expanded_notify[sender] => move |expander| {
+                                        sender.input(LoginMsg::AdvancedToggled(expander.is_expanded()));
+                                    },
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        set_margin_top: 4,
+                                        set_tooltip_text: Some(
+                                            "Files copied at the same time. More can be faster when \
+                                             the server limits each connection's speed; FTP opens a \
+                                             connection for each, and some servers allow only a few.",
+                                        ),
+
+                                        gtk::Label {
+                                            set_label: "Files at once:",
+                                        },
+                                        gtk::SpinButton::with_range(1.0, f64::from(MAX_FILES_AT_ONCE), 1.0) {
+                                            set_digits: 0,
+                                            set_width_chars: 2,
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_value: f64::from(model.files_at_once),
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(LoginMsg::FilesAtOnceChanged(spin.value_as_int()));
+                                            },
+                                            connect_changed[sender] => move |spin| {
+                                                if let Some(value) = typed_number(spin) {
+                                                    sender.input(LoginMsg::FilesAtOnceChanged(value));
+                                                }
+                                            },
+                                        },
+                                        gtk::Label {
+                                            set_label: &format!("(usually {DEFAULT_FILES_AT_ONCE})"),
+                                            add_css_class: "dim-label",
                                         },
                                     },
                                 },
@@ -1924,6 +1945,7 @@ impl Component for LoginDialog {
             protocol: Protocol::default(),
             port: Protocol::default().default_port(),
             files_at_once: DEFAULT_FILES_AT_ONCE,
+            advanced_open: false,
             ftp: FtpOptions::default(),
             save_password: true,
             host: gtk::EntryBuffer::default(),
@@ -2099,6 +2121,7 @@ impl Component for LoginDialog {
                     self.files_at_once = count;
                 }
             }
+            LoginMsg::AdvancedToggled(open) => self.advanced_open = open,
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
             LoginMsg::BrowseKeyFile => self.choose_key_file(root.upcast_ref(), &sender),
             LoginMsg::KeyFileChosen(path) => {
