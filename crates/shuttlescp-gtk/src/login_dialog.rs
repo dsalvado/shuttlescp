@@ -26,7 +26,8 @@ use shuttlescp_core::secrets;
 use shuttlescp_core::session::{self, ExportReport, ImportReport, KeyringAction};
 use shuttlescp_core::site_export::ExportFile;
 use shuttlescp_core::sites::{
-    FtpEncryption, FtpOptions, Protocol, Site, SiteBook, SshAuth, new_site_id,
+    DEFAULT_FILES_AT_ONCE, FtpEncryption, FtpOptions, MAX_FILES_AT_ONCE, Protocol, Site, SiteBook,
+    SshAuth, new_site_id,
 };
 use shuttlescp_core::transfer::{self, JobKind, Side};
 
@@ -97,6 +98,10 @@ pub enum LoginMsg {
     PassiveToggled(bool),
     /// The port field changed.
     PortChanged(i32),
+    /// The "Files at once" field changed.
+    FilesAtOnceChanged(i32),
+    /// The Advanced section was opened or closed.
+    AdvancedToggled(bool),
     /// The "Save password" box was ticked or cleared.
     SavePasswordToggled(bool),
     /// The "Browse..." button of the key file field was clicked.
@@ -333,6 +338,11 @@ pub struct LoginDialog {
     editing: bool,
     protocol: Protocol,
     port: u16,
+    /// Files copied at the same time to or from the site.
+    files_at_once: u8,
+    /// The Advanced section is open: by the user, or because the site changed a setting
+    /// in it.
+    advanced_open: bool,
     /// FTP settings (shown for FTP sites).
     ftp: FtpOptions,
     /// Whether Save stores the typed password in the keyring.
@@ -753,6 +763,10 @@ impl LoginDialog {
         self.port = site
             .as_ref()
             .map_or_else(|| self.default_port(), |site| site.port);
+        self.files_at_once = site
+            .as_ref()
+            .map_or(DEFAULT_FILES_AT_ONCE, |site| site.files_at_once);
+        self.advanced_open = self.files_at_once != DEFAULT_FILES_AT_ONCE;
         self.host
             .set_text(site.as_ref().map_or("", |site| site.host.as_str()));
         self.user
@@ -896,6 +910,7 @@ impl LoginDialog {
                 key_file,
                 use_agent: self.use_agent,
             },
+            files_at_once: self.files_at_once,
         };
         if let Some(entry) = old_passphrase {
             sender.oneshot_command(async move {
@@ -1277,6 +1292,14 @@ impl Component for LoginDialog {
                                             connect_value_changed[sender] => move |spin| {
                                                 sender.input(LoginMsg::PortChanged(spin.value_as_int()));
                                             },
+                                            // A typed number only becomes the value on Enter
+                                            // or leaving the field: taken as typed, so Save
+                                            // right after typing keeps it.
+                                            connect_changed[sender] => move |spin| {
+                                                if let Some(value) = typed_number(spin) {
+                                                    sender.input(LoginMsg::PortChanged(value));
+                                                }
+                                            },
                                         },
                                     },
                                 },
@@ -1392,6 +1415,52 @@ impl Component for LoginDialog {
                                             connect_toggled[sender] => move |check| {
                                                 sender.input(LoginMsg::UseAgentToggled(check.is_active()));
                                             },
+                                        },
+                                    },
+                                },
+
+                                // Settings few sites need, folded away; open for a site that
+                                // changed them, so a changed setting is never out of sight.
+                                gtk::Expander {
+                                    set_label: Some("Advanced"),
+                                    #[watch]
+                                    set_expanded: model.advanced_open,
+                                    connect_expanded_notify[sender] => move |expander| {
+                                        sender.input(LoginMsg::AdvancedToggled(expander.is_expanded()));
+                                    },
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        set_margin_top: 4,
+                                        set_tooltip_text: Some(
+                                            "Files copied at the same time. More can be faster when \
+                                             the server limits each connection's speed; FTP opens a \
+                                             connection for each, and some servers allow only a few.",
+                                        ),
+
+                                        gtk::Label {
+                                            set_label: "Files at once:",
+                                        },
+                                        gtk::SpinButton::with_range(1.0, f64::from(MAX_FILES_AT_ONCE), 1.0) {
+                                            set_digits: 0,
+                                            set_width_chars: 2,
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_value: f64::from(model.files_at_once),
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(LoginMsg::FilesAtOnceChanged(spin.value_as_int()));
+                                            },
+                                            connect_changed[sender] => move |spin| {
+                                                if let Some(value) = typed_number(spin) {
+                                                    sender.input(LoginMsg::FilesAtOnceChanged(value));
+                                                }
+                                            },
+                                        },
+                                        gtk::Label {
+                                            set_label: &format!("(usually {DEFAULT_FILES_AT_ONCE})"),
+                                            add_css_class: "dim-label",
                                         },
                                     },
                                 },
@@ -1875,6 +1944,8 @@ impl Component for LoginDialog {
             editing: false,
             protocol: Protocol::default(),
             port: Protocol::default().default_port(),
+            files_at_once: DEFAULT_FILES_AT_ONCE,
+            advanced_open: false,
             ftp: FtpOptions::default(),
             save_password: true,
             host: gtk::EntryBuffer::default(),
@@ -2045,6 +2116,12 @@ impl Component for LoginDialog {
                     self.port = port;
                 }
             }
+            LoginMsg::FilesAtOnceChanged(value) => {
+                if let Ok(count) = u8::try_from(value) {
+                    self.files_at_once = count;
+                }
+            }
+            LoginMsg::AdvancedToggled(open) => self.advanced_open = open,
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
             LoginMsg::BrowseKeyFile => self.choose_key_file(root.upcast_ref(), &sender),
             LoginMsg::KeyFileChosen(path) => {
@@ -2730,6 +2807,14 @@ fn default_port(protocol: Protocol, encryption: FtpEncryption) -> u16 {
         Protocol::Ftp => encryption.default_port(),
         Protocol::Sftp | Protocol::Scp => protocol.default_port(),
     }
+}
+
+/// The whole number typed in a number field, if it is one within the field's range
+/// (a number typed but not yet entered is not the field's value yet).
+fn typed_number(spin: &gtk::SpinButton) -> Option<i32> {
+    let value: i32 = spin.text().trim().parse().ok()?;
+    let (low, high) = spin.range();
+    (low..=high).contains(&f64::from(value)).then_some(value)
 }
 
 /// The key file path typed in the form: `None` when empty; a leading `~/` means the

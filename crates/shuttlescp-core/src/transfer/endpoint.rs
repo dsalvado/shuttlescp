@@ -57,6 +57,15 @@ impl Endpoint {
         }
     }
 
+    /// How many files to copy at the same time to or from here: the server's setting,
+    /// or `None` for this computer, which sets no limit of its own.
+    pub(super) fn files_at_once(&self) -> Option<usize> {
+        match self {
+            Self::Local => None,
+            Self::Remote(remote) => Some(remote.files_at_once()),
+        }
+    }
+
     /// Details of `path`; `follow` describes what a symbolic link points to instead of
     /// the link itself.
     pub(super) async fn stat(&self, path: &SidePath, follow: bool) -> Result<Node, String> {

@@ -3,13 +3,16 @@
 //!
 //! An FTP connection carries one file transfer at a time, so several transfers in
 //! parallel need several connections: they come from a small pool, opened as needed
-//! (up to [`MAX_CONNECTIONS`]) and reused. A pooled connection the server has closed
-//! meanwhile (servers drop idle ones) is replaced and the operation retried once.
+//! (one per file the site copies at once, plus [`BROWSING_CONNECTIONS`]) and reused. A
+//! pooled connection the server has closed meanwhile (servers drop idle ones) is
+//! replaced and the operation retried once. A server that refuses another connection
+//! while others are open is taken to allow no more: the pool shrinks for the rest of
+//! the session, and the operation waits for a connection in use instead of failing.
 
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
@@ -29,9 +32,9 @@ use super::{CONNECT_TIMEOUT, ConnectError, RemoteMeta, RemoteReader, RemoteWrite
 use crate::path::RemotePath;
 use crate::sites::{FtpEncryption, Site};
 
-/// Most connections opened to one server at once. Enough for a few parallel transfers
-/// plus browsing; many servers refuse more than a handful per client.
-const MAX_CONNECTIONS: usize = 6;
+/// Connections kept for browsing (listings, lookups) on top of one for each file the
+/// site copies at once, so the panes keep working during a transfer.
+const BROWSING_CONNECTIONS: usize = 2;
 /// How long active mode waits for the server to connect back.
 const ACTIVE_MODE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -66,14 +69,18 @@ pub(super) struct Ftp {
 /// Open connections not in use, and the limit on how many may exist.
 struct Pool {
     idle: Mutex<Vec<Connection>>,
+    /// One per connection allowed; each connection holds one while it exists in use.
     slots: Arc<Semaphore>,
+    /// How many connections are allowed: the slots, counting those held. Lowered when
+    /// the server refuses one.
+    limit: AtomicUsize,
 }
 
 /// A connection checked out of the pool; it goes back when dropped (unless discarded).
 struct Lease {
     connection: Option<Connection>,
     pool: Arc<Pool>,
-    /// Holding it counts against [`MAX_CONNECTIONS`].
+    /// Holding it counts against the pool's limit.
     _slot: OwnedSemaphorePermit,
     /// Came from the pool (so it may have been closed by the server meanwhile).
     reused: bool,
@@ -174,9 +181,11 @@ pub(super) async fn connect(
         .pwd()
         .await
         .map_err(|error| ConnectError::Ftp(format!("cannot read the home folder: {error}")))?;
+    let limit = site.files_at_once() + BROWSING_CONNECTIONS;
     let pool = Arc::new(Pool {
         idle: Mutex::new(vec![first]),
-        slots: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+        slots: Arc::new(Semaphore::new(limit)),
+        limit: AtomicUsize::new(limit),
     });
     Ok((Ftp { settings, pool }, RemotePath::new(home)))
 }
@@ -316,42 +325,60 @@ type Operation<T> = dyn for<'a> Fn(&'a mut Connection) -> Pin<Box<dyn Future<Out
     + Sync;
 
 impl Ftp {
-    /// Take a connection from the pool, or open a new one (waiting while
-    /// [`MAX_CONNECTIONS`] are in use).
+    /// Take a connection from the pool, or open a new one (waiting while the pool's
+    /// limit is in use). If the server refuses a new one while others are open, the
+    /// limit is lowered for the rest of the session and this waits for one of those.
     async fn lease(&self) -> Result<Lease, String> {
-        let slot = Arc::clone(&self.pool.slots)
-            .acquire_owned()
-            .await
-            .map_err(|error| error.to_string())?;
-        let idle = self.pool.idle.lock().ok().and_then(|mut idle| idle.pop());
-        let (connection, reused) = match idle {
-            Some(connection) => (connection, true),
-            None => {
-                // Counting this one, which already holds its slot.
-                let number = MAX_CONNECTIONS - self.pool.slots.available_permits();
-                let host = &self.settings.host;
-                let opening = Instant::now();
-                let connection = open(&self.settings).await.map_err(|error| {
-                    tracing::warn!(
-                        "cannot open connection {number} (of at most {MAX_CONNECTIONS}) to \
-                         {host}: {error}"
-                    );
-                    error.to_string()
-                })?;
-                tracing::debug!(
-                    "opened connection {number} (of at most {MAX_CONNECTIONS}) to {host} in \
-                     {:.2} s",
-                    opening.elapsed().as_secs_f64()
-                );
-                (connection, false)
+        let host = &self.settings.host;
+        loop {
+            let slot = Arc::clone(&self.pool.slots)
+                .acquire_owned()
+                .await
+                .map_err(|error| error.to_string())?;
+            let idle = self.pool.idle.lock().ok().and_then(|mut idle| idle.pop());
+            if let Some(connection) = idle {
+                return Ok(self.lease_of(connection, slot, true));
             }
-        };
-        Ok(Lease {
+            let limit = self.pool.limit.load(Ordering::Relaxed);
+            // Counting this one, which already holds its slot.
+            let number = limit.saturating_sub(self.pool.slots.available_permits());
+            let opening = Instant::now();
+            match open(&self.settings).await {
+                Ok(connection) => {
+                    tracing::debug!(
+                        "opened connection {number} (of at most {limit}) to {host} in {:.2} s",
+                        opening.elapsed().as_secs_f64()
+                    );
+                    return Ok(self.lease_of(connection, slot, false));
+                }
+                // Others are open, so the server is there: it most likely allows no more
+                // connections from one client. Do with fewer from now on.
+                Err(error) if number > 1 => {
+                    slot.forget();
+                    let lower = self.pool.limit.fetch_sub(1, Ordering::Relaxed) - 1;
+                    tracing::warn!(
+                        "{host} refused connection {number} ({error}); using at most {lower} \
+                         from now on"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "cannot open connection {number} (of at most {limit}) to {host}: {error}"
+                    );
+                    return Err(error.to_string());
+                }
+            }
+        }
+    }
+
+    /// A lease of `connection`, holding `slot`.
+    fn lease_of(&self, connection: Connection, slot: OwnedSemaphorePermit, reused: bool) -> Lease {
+        Lease {
             connection: Some(connection),
             pool: Arc::clone(&self.pool),
             _slot: slot,
             reused,
-        })
+        }
     }
 
     /// Run `operation` on a leased connection. If a reused connection turns out to be

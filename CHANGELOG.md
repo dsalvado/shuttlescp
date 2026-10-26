@@ -7,6 +7,44 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-26
+
+### Added
+
+- **Files at once, per site:** a site's Advanced section (in the Login dialog) sets
+  how many files are copied at the same time to or from it, from 1 to 10 (usually 4).
+  More can be faster when a server limits each connection's speed. FTP opens one
+  connection per file, plus two for browsing. Site to site, the lower of the two
+  settings applies. Sites saved before keep 4, and exported sites carry the setting.
+- **Hide finished files** in the Queue (on by default): files copied without problems
+  leave their job's list as they finish, so in a long job the ones being copied stay
+  at the top. Failed, skipped and stopped files stay, and so does a folder with one of
+  them inside. Completed and Failed still show everything.
+
+### Changed
+
+- When an FTP server refuses another connection while others are open (for example
+  "421 too many connections"), ShuttleSCP carries on with those it has: it uses fewer
+  for the rest of the session, notes it in the log, and the file waits for a free
+  connection. Before, the file failed.
+- A running copy's line shows what matters most first, since a long line is cut
+  short: percent, time left, speed, files done, then bytes, e.g. "55% · 14:20 left ·
+  2.6 MiB/s · 1204 of 2165 files · 2.6 GiB of 4.8 GiB".
+- "Gathering information..." in the middle of a pane appears together with the
+  spinner in its title bar, also over a list already shown.
+
+### Fixed
+
+- Tooltips now show while files are copying. Updating a tooltip restarts GTK's delay
+  before showing one, and the transfer rows and file panes updated theirs several
+  times a second. A transfer's full status also shows when hovering over its progress
+  bar.
+- "No completed transfers" no longer shows over a list of completed transfers, and
+  the Completed tab's Clear button works without a paused job.
+- A number typed in the Login dialog's Port or Files at once box is kept when Save is
+  clicked straight away.
+- The log's "file timing" line could count one file more than were copied at once.
+
 ## [0.17.2] - 2026-10-26
 
 ### Fixed
@@ -309,7 +347,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/dsalvado/shuttlescp/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/dsalvado/shuttlescp/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/dsalvado/shuttlescp/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/dsalvado/shuttlescp/compare/v0.16.1...v0.17.0

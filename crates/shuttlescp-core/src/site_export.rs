@@ -182,6 +182,10 @@ pub struct ExportedSite {
     /// its passphrase are never exported (exports from older versions have none).
     #[serde(default)]
     pub ssh: crate::sites::SshAuth,
+    /// Files copied at the same time (exports from older versions have none: the
+    /// default applies).
+    #[serde(default = "crate::sites::default_files_at_once")]
+    pub files_at_once: u8,
     /// Base64 of nonce followed by ciphertext, when the password was exported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
@@ -302,6 +306,7 @@ pub fn export_sites(
                 passphrase_saved: false,
                 ..site.ssh.clone()
             },
+            files_at_once: site.files_at_once,
             password,
         });
     }
@@ -377,6 +382,7 @@ pub fn import_sites(
                     passphrase_saved: false,
                     ..exported.ssh.clone()
                 },
+                files_at_once: exported.files_at_once,
             };
             Ok((site, password))
         })
@@ -500,6 +506,7 @@ mod tests {
             password_saved: true,
             ftp: crate::sites::FtpOptions::default(),
             ssh: crate::sites::SshAuth::default(),
+            files_at_once: 7,
         }
     }
 
@@ -551,6 +558,7 @@ mod tests {
         let text = serde_json::to_string(&file).expect("serialize");
         assert!(!text.contains("hunter2"), "password must be encrypted");
         assert_eq!(imported[0].0.host, "a.example");
+        assert_eq!(imported[0].0.files_at_once, 7, "the site's files at once");
         assert_eq!(
             imported[0].1.as_ref().map(|p| p.expose_secret().to_owned()),
             Some(String::from("hunter2"))
