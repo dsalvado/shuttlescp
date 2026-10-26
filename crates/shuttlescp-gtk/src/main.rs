@@ -25,6 +25,7 @@ mod resize_grips;
 mod session;
 mod theme;
 mod theme_list;
+mod tooltip;
 mod transfer_panel;
 #[cfg(debug_assertions)]
 mod ui_gallery;

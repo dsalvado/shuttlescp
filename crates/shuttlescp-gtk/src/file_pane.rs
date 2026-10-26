@@ -33,6 +33,7 @@ use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 use crate::dialog::{self, Dialog};
 use crate::disk_picker::DiskPicker;
 use crate::name_dialog::{self, NamePrompt};
+use crate::tooltip::TooltipExt;
 
 /// Up-arrow picture drawn over the folder icon of the ".." row, embedded at compile time.
 const UP_ARROW_SVG: &[u8] = include_bytes!("icons/up-arrow.svg");
@@ -436,12 +437,6 @@ fn fill_transfer_section(section: &gio::Menu, labels: &(String, String)) {
 }
 
 impl FilePane {
-    /// Whether a folder is being read that the list does not show yet: the pane's first,
-    /// or another one it is moving to.
-    fn reading_unshown(&self) -> bool {
-        self.loading && (!self.listed || self.requested_dir != self.current_dir)
-    }
-
     /// Start listing `dir` in the background so a slow disk or network never freezes
     /// the UI: on a worker thread for local folders, as an async SFTP request for remote.
     ///
@@ -658,9 +653,9 @@ impl Component for FilePane {
             set_margin_all: 2,
 
           // While a folder is being read, "Gathering information..." in the middle of
-          // the pane (style.css): soon when the list has nothing to show for it yet,
-          // after a couple of seconds when it already shows the folder (a refresh, or
-          // a saved listing). It takes no clicks.
+          // the pane, appearing with the title bar's spinner (style.css), also over a
+          // list already shown (a refresh, or a saved listing), since the pane takes no
+          // clicks meanwhile. It takes no clicks either.
           gtk::Overlay {
             set_vexpand: true,
             add_overlay = &gtk::Box {
@@ -671,9 +666,7 @@ impl Component for FilePane {
                 set_can_target: false,
                 add_css_class: "pane-gathering",
                 #[watch]
-                set_class_active: ("soon", model.reading_unshown()),
-                #[watch]
-                set_class_active: ("late", model.loading && !model.reading_unshown()),
+                set_class_active: ("reading", model.loading),
 
                 gtk::Spinner {
                     set_width_request: 32,
@@ -697,7 +690,7 @@ impl Component for FilePane {
                 set_spacing: 6,
                 add_css_class: "pane-title",
                 #[watch]
-                set_tooltip_text: Some(&model.title),
+                set_tooltip_if_changed: Some(&model.title),
 
                 gtk::Image {
                     set_icon_name: Some(title_icon),
@@ -744,7 +737,7 @@ impl Component for FilePane {
                     #[watch]
                     set_label: &model.current_dir.to_string(),
                     #[watch]
-                    set_tooltip_text: Some(&model.current_dir.to_string()),
+                    set_tooltip_if_changed: Some(&model.current_dir.to_string()),
                 },
             },
 
@@ -787,7 +780,7 @@ impl Component for FilePane {
                 #[watch]
                 set_label: &model.status,
                 #[watch]
-                set_tooltip_text: Some(&model.status),
+                set_tooltip_if_changed: Some(&model.status),
             },
           },
           },

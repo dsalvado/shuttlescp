@@ -915,8 +915,8 @@ separator.relay-divider {
     transition: opacity 150ms ease-in 300ms;
 }
 /* "Gathering information..." in the middle of a pane while a folder is being read
-   (file_pane.rs): after 0.3s when the list has nothing to show for it yet (`soon`),
-   after 2s when it already shows the folder (`late`), gone at once when it arrives. */
+   (file_pane.rs): after 0.3s, with the title bar's spinner (the pane takes no clicks
+   meanwhile, even over a list already shown); gone at once when it arrives. */
 .pane-gathering {
     opacity: 0;
     padding: 14px 20px;
@@ -924,13 +924,9 @@ separator.relay-divider {
     background-color: alpha(@theme_bg_color, 0.94);
     box-shadow: 0 1px 4px alpha(black, 0.2);
 }
-.pane-gathering.soon {
+.pane-gathering.reading {
     opacity: 1;
     transition: opacity 150ms ease-in 300ms;
-}
-.pane-gathering.late {
-    opacity: 1;
-    transition: opacity 150ms ease-in 2s;
 }
 
 /* A file pane's title bar: which machine the pane shows (file_pane.rs). */

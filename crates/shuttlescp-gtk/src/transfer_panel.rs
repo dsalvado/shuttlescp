@@ -20,7 +20,7 @@ use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
-use shuttlescp_core::format::format_size;
+use shuttlescp_core::format::{format_duration, format_size};
 use shuttlescp_core::path::SidePath;
 use shuttlescp_core::pending::{PendingJob, PendingTransfers};
 use shuttlescp_core::remote::Remote;
@@ -31,6 +31,7 @@ use shuttlescp_core::transfer::{
 };
 
 use crate::conflict_dialog;
+use crate::tooltip::TooltipExt;
 
 /// Jobs with more items than this start with their folders collapsed.
 const EXPAND_LIMIT: usize = 200;
@@ -288,6 +289,8 @@ pub enum TransferPanelMsg {
     ResumeChosen(Vec<String>),
     /// Forget the jobs interrupted in an earlier session.
     DiscardInterrupted,
+    /// Leave finished files out of the Queue (`true`), or show them again.
+    HideFinished(bool),
     /// Give up every unfinished job (running or paused) before the app quits: stop
     /// them, forget their records and delete their partial files; then report
     /// [`TransferPanelOutput::Discarded`].
@@ -378,6 +381,9 @@ struct JobState {
     done: u64,
     /// Items finished, for deletes (which have no bytes to count).
     finished_items: usize,
+    /// Files in all and finished, for the header line of a copy.
+    files: usize,
+    finished_files: usize,
     meter: RateMeter,
     summary: Option<JobSummary>,
     expanded: bool,
@@ -428,6 +434,17 @@ struct Shared {
     jobs: BTreeMap<u64, JobState>,
     /// The widgets of the rows on screen.
     bound: HashMap<RowKey, RowWidgets>,
+    /// The Queue leaves out files and folders copied without problems, so the ones being
+    /// copied stay near the top of their job (see [`finished_out_of_view`]).
+    hide_finished: bool,
+}
+
+impl Shared {
+    /// Whether a job's finished items are left out of its rows: only in the Queue;
+    /// Completed and Failed show everything.
+    fn hides_finished(&self, job: &JobState) -> bool {
+        self.hide_finished && job.list == ListKind::Queue
+    }
 }
 
 /// The transfers panel component. Its root is the Queue page; the Completed and Failed
@@ -498,6 +515,22 @@ impl Component for TransferPanel {
                     connect_clicked => TransferPanelMsg::DiscardInterrupted,
                 },
             },
+            gtk::Box {
+                add_css_class: "compact-toolbar",
+                set_halign: gtk::Align::End,
+
+                gtk::CheckButton {
+                    set_label: Some("Hide finished files"),
+                    set_active: true,
+                    set_tooltip_text: Some(
+                        "Leave files copied without problems out of the list, so the ones \
+                         being copied stay at the top",
+                    ),
+                    connect_toggled[sender] => move |check| {
+                        sender.input(TransferPanelMsg::HideFinished(check.is_active()));
+                    },
+                },
+            },
             gtk::Overlay {
                 set_vexpand: true,
                 add_overlay: placeholder,
@@ -517,7 +550,10 @@ impl Component for TransferPanel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let shared = Rc::new(RefCell::new(Shared::default()));
+        let shared = Rc::new(RefCell::new(Shared {
+            hide_finished: true,
+            ..Shared::default()
+        }));
         let rows: [gio::ListStore; 3] =
             std::array::from_fn(|_| gio::ListStore::new::<glib::BoxedAnyObject>());
         let lists: [gtk::ListView; 3] = std::array::from_fn(|index| {
@@ -697,6 +733,20 @@ impl Component for TransferPanel {
                 self.save_pending();
                 self.banner.set_visible(false);
             }
+            TransferPanelMsg::HideFinished(hide) => {
+                self.shared.borrow_mut().hide_finished = hide;
+                let queued: Vec<u64> = self
+                    .shared
+                    .borrow()
+                    .jobs
+                    .iter()
+                    .filter(|(_, job)| job.list == ListKind::Queue)
+                    .map(|(&id, _)| id)
+                    .collect();
+                for id in queued {
+                    self.rebuild_rows(id);
+                }
+            }
         }
         self.update_chrome(&sender);
     }
@@ -722,9 +772,24 @@ impl Component for TransferPanel {
                 refresh(&shared, &changed, now);
             }
             TransferEvent::ItemFinished { id: item, outcome } => {
-                let mut shared = self.shared.borrow_mut();
-                let changed = item_finished(&mut shared, id, item, outcome, now);
-                refresh(&shared, &changed, now);
+                let hide = {
+                    let mut shared = self.shared.borrow_mut();
+                    let changed = item_finished(&mut shared, id, item, outcome, now);
+                    refresh(&shared, &changed, now);
+                    shared.jobs.get(&id).is_some_and(|job| {
+                        shared.hides_finished(job) && finished_out_of_view(job, item)
+                    })
+                };
+                // The borrow is released first: removing a row makes GTK rebind others.
+                if hide {
+                    let key = RowKey {
+                        job: id,
+                        item: Some(item),
+                    };
+                    if let Some((list, position)) = self.position_of(key) {
+                        self.store(list).remove(position);
+                    }
+                }
             }
             TransferEvent::Conflict {
                 id: item,
@@ -822,6 +887,8 @@ impl TransferPanel {
                 total: 0,
                 done: 0,
                 finished_items: 0,
+                files: 0,
+                finished_files: 0,
                 meter: RateMeter::new(Instant::now()),
                 summary: None,
                 expanded: true,
@@ -1252,28 +1319,18 @@ impl TransferPanel {
                     None => job.roots.push(item.id),
                 }
             }
-            job.total = plan
-                .iter()
-                .filter(|item| item.kind == ItemKind::File)
-                .map(|item| item.size)
-                .sum();
+            let files = || plan.iter().filter(|item| item.kind == ItemKind::File);
+            job.total = files().map(|item| item.size).sum();
+            job.files = files().count();
             job.planned = true;
             job.meter = RateMeter::new(now);
-            let rows = visible_below(
-                job,
-                RowKey {
-                    job: id,
-                    item: None,
-                },
-            );
-            refresh(
-                &shared,
-                &[RowKey {
-                    job: id,
-                    item: None,
-                }],
-                now,
-            );
+            let header = RowKey {
+                job: id,
+                item: None,
+            };
+            // A new plan has nothing finished yet, so nothing to hide.
+            let rows = visible_below(job, header, false);
+            refresh(&shared, &[header], now);
             rows
         };
         // The borrow is released first: adding rows makes GTK fill them right away.
@@ -1340,10 +1397,12 @@ impl TransferPanel {
         };
         let (removed, added) = {
             let mut shared = self.shared.borrow_mut();
+            let hide_finished = shared.hide_finished;
             let Some(job) = shared.jobs.get_mut(&key.job) else {
                 return;
             };
-            let before = visible_below(job, key).len();
+            let hide = hide_finished && job.list == ListKind::Queue;
+            let before = visible_below(job, key, hide).len();
             match key.item {
                 None => job.expanded = !job.expanded,
                 Some(item) => {
@@ -1352,7 +1411,7 @@ impl TransferPanel {
                     }
                 }
             }
-            let after = visible_below(job, key);
+            let after = visible_below(job, key, hide);
             refresh(&shared, &[key], Instant::now());
             (before, after)
         };
@@ -1360,6 +1419,35 @@ impl TransferPanel {
         // `splice` counts in u32; a job never has anywhere near 4 billion rows.
         let removed = u32::try_from(removed).unwrap_or(u32::MAX);
         self.store(list).splice(position + 1, removed, &objects);
+    }
+
+    /// Show a job's rows again from scratch, e.g. after finished files were hidden or
+    /// shown.
+    fn rebuild_rows(&mut self, id: u64) {
+        let header = RowKey {
+            job: id,
+            item: None,
+        };
+        let Some((list, position)) = self.position_of(header) else {
+            return;
+        };
+        let rows = {
+            let shared = self.shared.borrow();
+            let Some(job) = shared.jobs.get(&id) else {
+                return;
+            };
+            visible_below(job, header, shared.hides_finished(job))
+        };
+        let store = self.store(list);
+        let mut end = position + 1;
+        while store
+            .item(end)
+            .is_some_and(|object| row_key(&object).is_some_and(|key| key.job == id))
+        {
+            end += 1;
+        }
+        let objects: Vec<glib::Object> = rows.into_iter().map(row_object).collect();
+        store.splice(position + 1, end - position - 1, &objects);
     }
 
     /// Remove a job's rows from a list.
@@ -1542,9 +1630,23 @@ fn row_key(object: &glib::Object) -> Option<RowKey> {
         .and_then(|boxed| boxed.try_borrow::<RowKey>().ok().map(|key| *key))
 }
 
+/// Whether a finished item is left out when finished items are hidden: it was copied
+/// without problems, and so was everything inside it (a folder keeps showing while a
+/// file in it failed or was skipped).
+fn finished_out_of_view(job: &JobState, item: usize) -> bool {
+    job.items
+        .get(item)
+        .is_some_and(|state| state.outcome == Some(ItemOutcome::Done))
+        && job.children.get(item).is_none_or(|children| {
+            children
+                .iter()
+                .all(|&child| finished_out_of_view(job, child))
+        })
+}
+
 /// The rows shown under `key` while it is expanded (none if it is collapsed), in tree
-/// order.
-fn visible_below(job: &JobState, key: RowKey) -> Vec<RowKey> {
+/// order; with `hide_finished`, without the items [`finished_out_of_view`].
+fn visible_below(job: &JobState, key: RowKey, hide_finished: bool) -> Vec<RowKey> {
     let (expanded, start): (bool, &[usize]) = match key.item {
         None => (job.expanded, &job.roots),
         Some(item) => (
@@ -1559,6 +1661,9 @@ fn visible_below(job: &JobState, key: RowKey) -> Vec<RowKey> {
     // Depth-first, keeping the plan's order among siblings.
     let mut stack: Vec<usize> = start.iter().rev().copied().collect();
     while let Some(item) = stack.pop() {
+        if hide_finished && finished_out_of_view(job, item) {
+            continue;
+        }
         rows.push(RowKey {
             job: key.job,
             item: Some(item),
@@ -1690,6 +1795,13 @@ fn item_finished(
     };
     if let Some(job) = shared.jobs.get_mut(&id) {
         job.finished_items += 1;
+        if job
+            .items
+            .get(item)
+            .is_some_and(|state| state.kind == ItemKind::File)
+        {
+            job.finished_files += 1;
+        }
         if let Some(state) = job.items.get_mut(item) {
             state.outcome = Some(outcome);
             state.asking = false;
@@ -1763,7 +1875,7 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     });
     widgets.icon.set_icon_name(Some(row.icon));
     widgets.name.set_label(&row.name);
-    widgets.name.set_tooltip_text(Some(&row.tooltip));
+    widgets.name.set_tooltip_if_changed(Some(&row.tooltip));
     set_class(&widgets.name, "heading", row.heading);
     widgets.bar.set_visible(row.fraction.is_some());
     widgets.bar.set_fraction(row.fraction.unwrap_or(0.0));
@@ -1777,16 +1889,21 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.bar, "to-left", leftward);
     set_class(&widgets.bar, "flowing", row.moving && from != to);
     widgets.info.set_label(&row.info);
-    widgets.info.set_tooltip_text(Some(&row.info));
     set_class(&widgets.info, "error", row.error);
     widgets.status.set_icon_name(row.status);
     widgets.cancel.set_visible(row.can_cancel);
-    widgets.cancel.set_tooltip_text(Some(row.cancel_tooltip));
+    widgets
+        .cancel
+        .set_tooltip_if_changed(Some(row.cancel_tooltip));
     widgets.pause.set_visible(row.can_pause);
-    widgets.pause.set_tooltip_text(Some(row.pause_tooltip));
+    widgets
+        .pause
+        .set_tooltip_if_changed(Some(row.pause_tooltip));
     widgets.retry.set_visible(row.can_retry);
     widgets.retry.set_icon_name(row.retry_icon);
-    widgets.retry.set_tooltip_text(Some(row.retry_tooltip));
+    widgets
+        .retry
+        .set_tooltip_if_changed(Some(row.retry_tooltip));
     widgets
         .status
         .set_visible(!row.can_cancel && !row.can_retry);
@@ -1797,6 +1914,19 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.line, "fading", job.fading);
 }
 
+/// Show a row's full status text (often cut short) when the pointer rests on `widget`.
+/// The text is read when the tooltip opens: it changes several times a second, and
+/// setting it as the tooltip each time restarts the tooltip's delay, so it never showed.
+fn show_status_on_hover(widget: &impl IsA<gtk::Widget>, info: &gtk::Label) {
+    let info = info.clone();
+    widget.set_has_tooltip(true);
+    widget.connect_query_tooltip(move |_, _, _, _, tooltip| {
+        let text = info.label();
+        tooltip.set_text(Some(&text));
+        !text.is_empty()
+    });
+}
+
 /// Add or remove a CSS class.
 fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
     if on {
@@ -1804,6 +1934,27 @@ fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
     } else {
         widget.remove_css_class(class);
     }
+}
+
+/// A running copy of several files, most useful first, since a long line is cut short
+/// at its end (hovering shows it all): "55% · 14:20 left · 2.6 MiB/s · 1204 of 2165
+/// files · 2.6 GiB of 4.8 GiB". The file count is where hidden finished files show.
+fn copy_progress(job: &JobState, now: Instant) -> String {
+    let mut parts = vec![format!("{}%", transfer::percent(job.done, job.total))];
+    if let Some(left) = job.meter.time_left(job.done, job.total, now) {
+        parts.push(format!("{} left", format_duration(left)));
+    }
+    if let Some(rate) = job.meter.bytes_per_second() {
+        // Rounded to whole bytes for display.
+        parts.push(format!("{}/s", format_size(rate as u64)));
+    }
+    parts.push(format!("{} of {} files", job.finished_files, job.files));
+    parts.push(format!(
+        "{} of {}",
+        format_size(job.done),
+        format_size(job.total)
+    ));
+    parts.join(" · ")
 }
 
 /// A job's header line.
@@ -1840,6 +1991,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             false,
             None,
         ),
+        None if job.files > 1 => (copy_progress(job, now), false, None),
         None => (job.meter.describe(job.done, job.total, now), false, None),
         Some(summary) => summary_text(job, summary),
     };
@@ -2161,6 +2313,8 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["dim-label", "transfer-info"])
         .build();
+    show_status_on_hover(&info, &info);
+    show_status_on_hover(&bar, &info);
     let status = gtk::Image::new();
     let pause = small_button(
         "media-playback-pause-symbolic",
@@ -2350,5 +2504,135 @@ mod tests {
         store.remove("old");
         store.save();
         assert_eq!(PendingTransfers::load(&path).for_site("site").count(), 1);
+    }
+
+    /// A running job in the Queue, expanded, whose items are given as (parent, kind,
+    /// outcome) in plan order.
+    fn job_with(items: &[(Option<usize>, ItemKind, Option<ItemOutcome>)]) -> JobState {
+        let mut children = vec![Vec::new(); items.len()];
+        let mut roots = Vec::new();
+        for (id, (parent, _, _)) in items.iter().enumerate() {
+            match parent {
+                Some(parent) => children[*parent].push(id),
+                None => roots.push(id),
+            }
+        }
+        JobState {
+            job: pending("job").job,
+            pending_key: None,
+            cancel: CancelFlag::default(),
+            user_cancelled: false,
+            paused: false,
+            items: items
+                .iter()
+                .enumerate()
+                .map(|(id, (parent, kind, outcome))| ItemState {
+                    name: format!("item{id}"),
+                    source: SidePath::Local(PathBuf::from(format!("/data/item{id}"))),
+                    kind: *kind,
+                    parent: *parent,
+                    depth: 0,
+                    size: 1,
+                    done: 0,
+                    meter: None,
+                    outcome: outcome.clone(),
+                    expanded: true,
+                    asking: false,
+                    paused: false,
+                })
+                .collect(),
+            children,
+            roots,
+            planned: true,
+            total: 0,
+            done: 0,
+            finished_items: 0,
+            files: 0,
+            finished_files: 0,
+            meter: RateMeter::new(Instant::now()),
+            summary: None,
+            expanded: true,
+            list: ListKind::Queue,
+            flashing: false,
+            fading: false,
+            shelved: 0,
+            writing: false,
+            route: None,
+        }
+    }
+
+    /// The items `visible_below` shows under the job's header line.
+    fn shown(job: &JobState, hide_finished: bool) -> Vec<usize> {
+        let header = RowKey { job: 0, item: None };
+        visible_below(job, header, hide_finished)
+            .into_iter()
+            .filter_map(|key| key.item)
+            .collect()
+    }
+
+    #[test]
+    fn finished_files_are_hidden_and_the_rest_stay_in_order() {
+        // Arrange: 0 and 1 copied, 2 being copied, 3 waiting.
+        let done = Some(ItemOutcome::Done);
+        let job = job_with(&[
+            (None, ItemKind::File, done.clone()),
+            (None, ItemKind::File, done),
+            (None, ItemKind::File, None),
+            (None, ItemKind::File, None),
+        ]);
+
+        // Act / Assert: the file being copied is first; switched off, all show.
+        assert_eq!(shown(&job, true), vec![2, 3]);
+        assert_eq!(shown(&job, false), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_finished_folder_stays_while_something_inside_it_needs_attention() {
+        // Arrange: folder 0 (done) holds a copied file and a skipped one; folder 3
+        // (done) holds only a copied file.
+        let done = Some(ItemOutcome::Done);
+        let job = job_with(&[
+            (None, ItemKind::Folder, done.clone()),
+            (Some(0), ItemKind::File, done.clone()),
+            (Some(0), ItemKind::File, Some(ItemOutcome::Skipped)),
+            (None, ItemKind::Folder, done.clone()),
+            (Some(3), ItemKind::File, done),
+        ]);
+
+        // Act / Assert: folder 0 shows with only its skipped file; folder 3 is gone.
+        assert_eq!(shown(&job, true), vec![0, 2]);
+        assert!(!finished_out_of_view(&job, 0));
+        assert!(finished_out_of_view(&job, 3));
+    }
+
+    #[test]
+    fn a_running_copy_shows_its_percent_and_speed_before_the_counts() {
+        // Arrange: half of 2 KiB copied over 2 s, 2 of 4 files done.
+        let start = Instant::now();
+        let mut job = job_with(&[]);
+        (job.done, job.total, job.files, job.finished_files) = (1024, 2048, 4, 2);
+        job.meter = RateMeter::new(start);
+        job.meter.record(1024, start + Duration::from_secs(2));
+
+        // Act
+        let text = copy_progress(&job, start + Duration::from_secs(2));
+
+        // Assert: what matters most comes first, as a long line is cut at its end.
+        assert_eq!(text, "50% · 512 B/s · 2 of 4 files · 1.0 KiB of 2.0 KiB");
+    }
+
+    #[test]
+    fn failed_and_stopped_files_stay_in_view() {
+        let job = job_with(&[
+            (
+                None,
+                ItemKind::File,
+                Some(ItemOutcome::Failed(String::from("no"))),
+            ),
+            (None, ItemKind::File, Some(ItemOutcome::Stopped)),
+            (None, ItemKind::File, Some(ItemOutcome::Cancelled)),
+        ]);
+
+        assert_eq!(shown(&job, true), vec![0, 1, 2]);
     }
 }
