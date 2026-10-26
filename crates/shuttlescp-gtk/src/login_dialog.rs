@@ -1286,6 +1286,14 @@ impl Component for LoginDialog {
                                             connect_value_changed[sender] => move |spin| {
                                                 sender.input(LoginMsg::PortChanged(spin.value_as_int()));
                                             },
+                                            // A typed number only becomes the value on Enter
+                                            // or leaving the field: taken as typed, so Save
+                                            // right after typing keeps it.
+                                            connect_changed[sender] => move |spin| {
+                                                if let Some(value) = typed_number(spin) {
+                                                    sender.input(LoginMsg::PortChanged(value));
+                                                }
+                                            },
                                         },
                                     },
                                     gtk::Box {
@@ -1311,6 +1319,11 @@ impl Component for LoginDialog {
                                             set_value: f64::from(model.files_at_once),
                                             connect_value_changed[sender] => move |spin| {
                                                 sender.input(LoginMsg::FilesAtOnceChanged(spin.value_as_int()));
+                                            },
+                                            connect_changed[sender] => move |spin| {
+                                                if let Some(value) = typed_number(spin) {
+                                                    sender.input(LoginMsg::FilesAtOnceChanged(value));
+                                                }
                                             },
                                         },
                                     },
@@ -2771,6 +2784,14 @@ fn default_port(protocol: Protocol, encryption: FtpEncryption) -> u16 {
         Protocol::Ftp => encryption.default_port(),
         Protocol::Sftp | Protocol::Scp => protocol.default_port(),
     }
+}
+
+/// The whole number typed in a number field, if it is one within the field's range
+/// (a number typed but not yet entered is not the field's value yet).
+fn typed_number(spin: &gtk::SpinButton) -> Option<i32> {
+    let value: i32 = spin.text().trim().parse().ok()?;
+    let (low, high) = spin.range();
+    (low..=high).contains(&f64::from(value)).then_some(value)
 }
 
 /// The key file path typed in the form: `None` when empty; a leading `~/` means the

@@ -1514,11 +1514,13 @@ impl TransferPanel {
             .jobs
             .values()
             .any(|job| job.list == ListKind::Queue);
+        // Counts are (running, paused, completed, failed).
+        let (_, _, completed, failed) = counts;
         self.placeholders[0].set_visible(!queued);
-        self.placeholders[1].set_visible(counts.1 == 0);
-        self.placeholders[2].set_visible(counts.2 == 0);
-        self.clear_buttons[0].set_sensitive(counts.1 > 0);
-        self.clear_buttons[1].set_sensitive(counts.2 > 0);
+        self.placeholders[1].set_visible(completed == 0);
+        self.placeholders[2].set_visible(failed == 0);
+        self.clear_buttons[0].set_sensitive(completed > 0);
+        self.clear_buttons[1].set_sensitive(failed > 0);
         let in_use = {
             let shared = self.shared.borrow();
             // By pane: site to site, both panes hold server paths.
