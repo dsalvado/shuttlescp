@@ -437,12 +437,6 @@ fn fill_transfer_section(section: &gio::Menu, labels: &(String, String)) {
 }
 
 impl FilePane {
-    /// Whether a folder is being read that the list does not show yet: the pane's first,
-    /// or another one it is moving to.
-    fn reading_unshown(&self) -> bool {
-        self.loading && (!self.listed || self.requested_dir != self.current_dir)
-    }
-
     /// Start listing `dir` in the background so a slow disk or network never freezes
     /// the UI: on a worker thread for local folders, as an async SFTP request for remote.
     ///
@@ -659,9 +653,9 @@ impl Component for FilePane {
             set_margin_all: 2,
 
           // While a folder is being read, "Gathering information..." in the middle of
-          // the pane (style.css): soon when the list has nothing to show for it yet,
-          // after a couple of seconds when it already shows the folder (a refresh, or
-          // a saved listing). It takes no clicks.
+          // the pane, appearing with the title bar's spinner (style.css), also over a
+          // list already shown (a refresh, or a saved listing), since the pane takes no
+          // clicks meanwhile. It takes no clicks either.
           gtk::Overlay {
             set_vexpand: true,
             add_overlay = &gtk::Box {
@@ -672,9 +666,7 @@ impl Component for FilePane {
                 set_can_target: false,
                 add_css_class: "pane-gathering",
                 #[watch]
-                set_class_active: ("soon", model.reading_unshown()),
-                #[watch]
-                set_class_active: ("late", model.loading && !model.reading_unshown()),
+                set_class_active: ("reading", model.loading),
 
                 gtk::Spinner {
                     set_width_request: 32,
