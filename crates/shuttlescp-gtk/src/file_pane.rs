@@ -33,6 +33,7 @@ use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 use crate::dialog::{self, Dialog};
 use crate::disk_picker::DiskPicker;
 use crate::name_dialog::{self, NamePrompt};
+use crate::tooltip::TooltipExt;
 
 /// Up-arrow picture drawn over the folder icon of the ".." row, embedded at compile time.
 const UP_ARROW_SVG: &[u8] = include_bytes!("icons/up-arrow.svg");
@@ -697,7 +698,7 @@ impl Component for FilePane {
                 set_spacing: 6,
                 add_css_class: "pane-title",
                 #[watch]
-                set_tooltip_text: Some(&model.title),
+                set_tooltip_if_changed: Some(&model.title),
 
                 gtk::Image {
                     set_icon_name: Some(title_icon),
@@ -744,7 +745,7 @@ impl Component for FilePane {
                     #[watch]
                     set_label: &model.current_dir.to_string(),
                     #[watch]
-                    set_tooltip_text: Some(&model.current_dir.to_string()),
+                    set_tooltip_if_changed: Some(&model.current_dir.to_string()),
                 },
             },
 
@@ -787,7 +788,7 @@ impl Component for FilePane {
                 #[watch]
                 set_label: &model.status,
                 #[watch]
-                set_tooltip_text: Some(&model.status),
+                set_tooltip_if_changed: Some(&model.status),
             },
           },
           },

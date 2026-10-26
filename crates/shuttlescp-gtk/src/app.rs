@@ -32,6 +32,7 @@ use crate::resize_grips;
 use crate::session::{self, Session, SessionId, SessionInit};
 use crate::theme;
 use crate::theme_list::ThemeList;
+use crate::tooltip::TooltipExt;
 use crate::transfer_panel::{PendingStore, TransferPanelMsg};
 use crate::update_dialog::{self, RestartChoice};
 
@@ -484,7 +485,7 @@ impl SimpleComponent for App {
                                 #[watch]
                                 set_label: &model.update_notice_text(),
                                 #[watch]
-                                set_tooltip_text: Some(&model.update_notice_tooltip()),
+                                set_tooltip_if_changed: Some(&model.update_notice_tooltip()),
                                 connect_clicked => AppMsg::ShowUpdate,
                             },
                             gtk::Button {

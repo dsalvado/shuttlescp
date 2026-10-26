@@ -20,7 +20,7 @@ use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
-use shuttlescp_core::format::format_size;
+use shuttlescp_core::format::{format_duration, format_size};
 use shuttlescp_core::path::SidePath;
 use shuttlescp_core::pending::{PendingJob, PendingTransfers};
 use shuttlescp_core::remote::Remote;
@@ -31,6 +31,7 @@ use shuttlescp_core::transfer::{
 };
 
 use crate::conflict_dialog;
+use crate::tooltip::TooltipExt;
 
 /// Jobs with more items than this start with their folders collapsed.
 const EXPAND_LIMIT: usize = 200;
@@ -1874,7 +1875,7 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     });
     widgets.icon.set_icon_name(Some(row.icon));
     widgets.name.set_label(&row.name);
-    widgets.name.set_tooltip_text(Some(&row.tooltip));
+    widgets.name.set_tooltip_if_changed(Some(&row.tooltip));
     set_class(&widgets.name, "heading", row.heading);
     widgets.bar.set_visible(row.fraction.is_some());
     widgets.bar.set_fraction(row.fraction.unwrap_or(0.0));
@@ -1891,12 +1892,18 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.info, "error", row.error);
     widgets.status.set_icon_name(row.status);
     widgets.cancel.set_visible(row.can_cancel);
-    widgets.cancel.set_tooltip_text(Some(row.cancel_tooltip));
+    widgets
+        .cancel
+        .set_tooltip_if_changed(Some(row.cancel_tooltip));
     widgets.pause.set_visible(row.can_pause);
-    widgets.pause.set_tooltip_text(Some(row.pause_tooltip));
+    widgets
+        .pause
+        .set_tooltip_if_changed(Some(row.pause_tooltip));
     widgets.retry.set_visible(row.can_retry);
     widgets.retry.set_icon_name(row.retry_icon);
-    widgets.retry.set_tooltip_text(Some(row.retry_tooltip));
+    widgets
+        .retry
+        .set_tooltip_if_changed(Some(row.retry_tooltip));
     widgets
         .status
         .set_visible(!row.can_cancel && !row.can_retry);
@@ -1927,6 +1934,27 @@ fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
     } else {
         widget.remove_css_class(class);
     }
+}
+
+/// A running copy of several files, most useful first, since a long line is cut short
+/// at its end (hovering shows it all): "55% · 14:20 left · 2.6 MiB/s · 1204 of 2165
+/// files · 2.6 GiB of 4.8 GiB". The file count is where hidden finished files show.
+fn copy_progress(job: &JobState, now: Instant) -> String {
+    let mut parts = vec![format!("{}%", transfer::percent(job.done, job.total))];
+    if let Some(left) = job.meter.time_left(job.done, job.total, now) {
+        parts.push(format!("{} left", format_duration(left)));
+    }
+    if let Some(rate) = job.meter.bytes_per_second() {
+        // Rounded to whole bytes for display.
+        parts.push(format!("{}/s", format_size(rate as u64)));
+    }
+    parts.push(format!("{} of {} files", job.finished_files, job.files));
+    parts.push(format!(
+        "{} of {}",
+        format_size(job.done),
+        format_size(job.total)
+    ));
+    parts.join(" · ")
 }
 
 /// A job's header line.
@@ -1963,17 +1991,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             false,
             None,
         ),
-        // With finished files hidden, the count is where they show.
-        None if job.files > 1 => (
-            format!(
-                "{} of {} files · {}",
-                job.finished_files,
-                job.files,
-                job.meter.describe(job.done, job.total, now)
-            ),
-            false,
-            None,
-        ),
+        None if job.files > 1 => (copy_progress(job, now), false, None),
         None => (job.meter.describe(job.done, job.total, now), false, None),
         Some(summary) => summary_text(job, summary),
     };
@@ -2585,6 +2603,22 @@ mod tests {
         assert_eq!(shown(&job, true), vec![0, 2]);
         assert!(!finished_out_of_view(&job, 0));
         assert!(finished_out_of_view(&job, 3));
+    }
+
+    #[test]
+    fn a_running_copy_shows_its_percent_and_speed_before_the_counts() {
+        // Arrange: half of 2 KiB copied over 2 s, 2 of 4 files done.
+        let start = Instant::now();
+        let mut job = job_with(&[]);
+        (job.done, job.total, job.files, job.finished_files) = (1024, 2048, 4, 2);
+        job.meter = RateMeter::new(start);
+        job.meter.record(1024, start + Duration::from_secs(2));
+
+        // Act
+        let text = copy_progress(&job, start + Duration::from_secs(2));
+
+        // Assert: what matters most comes first, as a long line is cut at its end.
+        assert_eq!(text, "50% · 512 B/s · 2 of 4 files · 1.0 KiB of 2.0 KiB");
     }
 
     #[test]
