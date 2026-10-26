@@ -80,7 +80,9 @@ impl RateMeter {
     pub fn time_left(&self, done: u64, total: u64, now: Instant) -> Option<Duration> {
         let rate = self.rate.filter(|rate| *rate > 0.0)?;
         let elapsed = now.saturating_duration_since(self.started);
-        let left = Duration::from_secs_f64(total.saturating_sub(done) as f64 / rate);
+        // A speed smoothed down towards zero (e.g. by a run of empty files) gives a time
+        // too long to represent: no estimate, rather than a panic.
+        let left = Duration::try_from_secs_f64(total.saturating_sub(done) as f64 / rate).ok()?;
         (elapsed >= ESTIMATE_AFTER && elapsed + left >= ESTIMATE_MIN_TOTAL).then_some(left)
     }
 
@@ -155,6 +157,28 @@ mod tests {
             meter.time_left(3_000_000, 5_000_000, start + Duration::from_secs(3)),
             None
         );
+    }
+
+    #[test]
+    fn a_speed_smoothed_almost_to_zero_gives_no_estimate() {
+        // Arrange: some progress, then thousands of samples with nothing moving (a run
+        // of empty files), which shrink the smoothed speed towards zero without
+        // reaching it.
+        let start = Instant::now();
+        let mut meter = RateMeter::new(start);
+        meter.record(1_000, start + Duration::from_secs(1));
+        let mut now = start + Duration::from_secs(1);
+        for _ in 0..3_000 {
+            now += Duration::from_secs(1);
+            meter.record(1_000, now);
+        }
+
+        // Act
+        let left = meter.time_left(1_000, 100_000_000_000, now);
+
+        // Assert: no estimate (this used to panic), and the speed is still above zero.
+        assert_eq!(left, None);
+        assert!(meter.bytes_per_second().is_some_and(|rate| rate > 0.0));
     }
 
     #[test]

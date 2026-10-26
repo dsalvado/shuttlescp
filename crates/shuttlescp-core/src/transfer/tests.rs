@@ -112,6 +112,25 @@ fn answer(choice: ConflictChoice, apply_to_all: bool) -> Option<ConflictAnswer> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_missing_item_among_several_picked_in_one_folder_stops_the_job() {
+    // Arrange: three items picked in src (looked up in its listing), one gone since.
+    let (_temp, src, dst) = setup();
+
+    // Act
+    let (summary, _) = run_local(job(
+        JobKind::Copy,
+        vec![src.join("a"), src.join("gone.txt"), src.join("top.txt")],
+        &dst,
+    ))
+    .await;
+
+    // Assert: as when looked up one by one, the missing item is reported.
+    let error = summary.error.expect("the job should not start");
+    assert!(error.contains("gone.txt"), "{error}");
+    assert_eq!(summary.done, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn copy_reproduces_the_tree_and_reports_every_item() {
     // Arrange
     let (_temp, src, dst) = setup();

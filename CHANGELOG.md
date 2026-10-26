@@ -7,6 +7,17 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-26
+
+### Fixed
+
+- Copying many files picked in one folder no longer takes hours to prepare. Each was
+  looked up on its own; on FTP servers without MLST, that meant listing the whole
+  folder again for every file (3,577 files picked in a folder of 40,000 never got
+  past "preparing"). The folder is now listed once.
+- The app no longer crashes when a transfer copies a long run of empty files: the
+  time-left estimate overflowed.
+
 ## [0.17.1] - 2026-10-26
 
 ### Changed
@@ -298,7 +309,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.17.2...HEAD
+[0.17.2]: https://github.com/dsalvado/shuttlescp/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/dsalvado/shuttlescp/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/dsalvado/shuttlescp/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/dsalvado/shuttlescp/compare/v0.16.0...v0.16.1

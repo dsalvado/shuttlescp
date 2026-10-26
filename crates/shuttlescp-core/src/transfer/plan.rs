@@ -46,11 +46,19 @@ pub(super) async fn plan(
     let mut folders = Vec::new();
 
     let at_top = existing_in(dst, &job.dest_dir).await;
+    let listed = list_shared_parents(src, &job.sources, follow).await;
     for source in &job.sources {
         let name = source
             .file_name()
             .ok_or_else(|| format!("{} cannot be copied or deleted", source))?;
-        let node = match src.stat(source, follow).await {
+        let known = source
+            .parent()
+            .and_then(|parent| listed.get(&parent)?.get(name).cloned());
+        let looked_up = match known {
+            Some(node) => Ok(node),
+            None => src.stat(source, follow).await,
+        };
+        let node = match looked_up {
             Ok(node) => node,
             Err(error) if job.resume => {
                 tracing::info!("passing over {}: {error}", source);
@@ -113,6 +121,40 @@ pub(super) async fn plan(
         }
     }
     Ok(items)
+}
+
+/// List, once each, the folders holding two or more of the sources, so many items picked
+/// in one folder are looked up in its listing instead of one by one. One by one costs a
+/// round trip each, and on FTP servers without MLST a listing of the whole folder each
+/// (3,577 files picked in a folder of 40,000 never finished planning).
+///
+/// # Returns
+///
+/// Each listed folder's entries, by name; a folder that cannot be listed is left out,
+/// so its sources are looked up one by one (and report their own errors)
+async fn list_shared_parents(
+    src: &Endpoint,
+    sources: &[SidePath],
+    follow: bool,
+) -> HashMap<SidePath, Existing> {
+    let mut picked: HashMap<SidePath, usize> = HashMap::new();
+    for parent in sources.iter().filter_map(SidePath::parent) {
+        *picked.entry(parent).or_default() += 1;
+    }
+    let mut listed = HashMap::new();
+    for (parent, count) in picked {
+        if count < 2 {
+            continue;
+        }
+        match src.children(&parent, follow).await {
+            Ok(children) => {
+                tracing::debug!("looking up {count} items in the listing of {parent}");
+                listed.insert(parent, children.into_iter().collect());
+            }
+            Err(error) => tracing::debug!("{error}; looking items up one by one"),
+        }
+    }
+    listed
 }
 
 /// List a destination folder; a folder that does not exist (yet) holds nothing.
