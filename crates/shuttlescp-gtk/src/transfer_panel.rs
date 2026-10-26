@@ -1888,7 +1888,6 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.bar, "to-left", leftward);
     set_class(&widgets.bar, "flowing", row.moving && from != to);
     widgets.info.set_label(&row.info);
-    widgets.info.set_tooltip_text(Some(&row.info));
     set_class(&widgets.info, "error", row.error);
     widgets.status.set_icon_name(row.status);
     widgets.cancel.set_visible(row.can_cancel);
@@ -1906,6 +1905,19 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.line, "finished-ok", job.flashing && complete);
     set_class(&widgets.line, "finished-bad", job.flashing && !complete);
     set_class(&widgets.line, "fading", job.fading);
+}
+
+/// Show a row's full status text (often cut short) when the pointer rests on `widget`.
+/// The text is read when the tooltip opens: it changes several times a second, and
+/// setting it as the tooltip each time restarts the tooltip's delay, so it never showed.
+fn show_status_on_hover(widget: &impl IsA<gtk::Widget>, info: &gtk::Label) {
+    let info = info.clone();
+    widget.set_has_tooltip(true);
+    widget.connect_query_tooltip(move |_, _, _, _, tooltip| {
+        let text = info.label();
+        tooltip.set_text(Some(&text));
+        !text.is_empty()
+    });
 }
 
 /// Add or remove a CSS class.
@@ -2283,6 +2295,8 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["dim-label", "transfer-info"])
         .build();
+    show_status_on_hover(&info, &info);
+    show_status_on_hover(&bar, &info);
     let status = gtk::Image::new();
     let pause = small_button(
         "media-playback-pause-symbolic",
