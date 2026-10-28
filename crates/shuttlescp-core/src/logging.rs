@@ -4,6 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDateTime};
@@ -253,8 +254,10 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
     }
 }
 
-/// Make a crash (Rust panic) end the session with a banner in the log before the
-/// default panic report is printed.
+/// Log crashes (Rust panics) before the default panic report is printed. A crash on
+/// the main thread ends the app: it ends the session in the log, with a banner like the
+/// normal one. A crash elsewhere (a background task) only stops that task, so it is
+/// logged as an error and the session goes on.
 ///
 /// # Arguments
 ///
@@ -263,14 +266,49 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
 fn log_crashes(session_label: String, started: Instant) {
     // `take_hook` returns the current handler so ours can still call it afterwards.
     let default_hook = std::panic::take_hook();
+    // A crash while ending (e.g. "panic in a function that cannot unwind") must not end
+    // the session a second time.
+    let ended = AtomicBool::new(false);
     std::panic::set_hook(Box::new(move |info| {
-        tracing::error!(
-            target: SESSION_TARGET,
-            "==== Session {session_label} Ended abnormally after {}: {info} ====",
-            format_duration(started.elapsed())
-        );
+        let thread = std::thread::current();
+        let report = crash_report(info.payload_as_str(), info.location());
+        if thread.name() == Some("main") && !ended.swap(true, Ordering::SeqCst) {
+            tracing::error!(
+                target: SESSION_TARGET,
+                "==== Session {session_label} Ended after {}, reason: crash ({report}) ====",
+                format_duration(started.elapsed())
+            );
+        } else {
+            tracing::error!(
+                "crash in thread {} (the app keeps running): {report}",
+                thread.name().unwrap_or("unnamed")
+            );
+        }
         default_hook(info);
     }));
+}
+
+/// A crash on one line: its message and where it happened, e.g. `index out of
+/// bounds at src/copy.rs:12:5`.
+///
+/// # Arguments
+///
+/// * `message` - The panic message, if it is text
+/// * `location` - Where the panic happened, if known
+fn crash_report(message: Option<&str>, location: Option<&std::panic::Location<'_>>) -> String {
+    let message = message.map_or_else(
+        || String::from("no message"),
+        |message| message.split_whitespace().collect::<Vec<_>>().join(" "),
+    );
+    match location {
+        Some(location) => format!(
+            "{message} at {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        ),
+        None => message,
+    }
 }
 
 /// Build the short session tag printed on every log line: four hex digits in brackets,
@@ -411,6 +449,24 @@ mod tests {
     use tracing::Level;
 
     use super::*;
+
+    #[test]
+    fn crash_reports_fit_on_one_line() {
+        let here = std::panic::Location::caller();
+
+        let report = crash_report(Some("cannot convert:\n  too big"), Some(here));
+
+        assert_eq!(
+            report,
+            format!(
+                "cannot convert: too big at {}:{}:{}",
+                here.file(),
+                here.line(),
+                here.column()
+            )
+        );
+        assert_eq!(crash_report(None, None), "no message");
+    }
 
     #[test]
     fn level_names_round_trip() {
