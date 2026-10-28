@@ -32,8 +32,8 @@ use crate::app::{App, AppMsg, NOT_CONNECTED};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
 use crate::login_dialog::Resume;
 use crate::transfer_panel::{
-    LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelMsg,
-    TransferPanelOutput,
+    LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelInit,
+    TransferPanelMsg, TransferPanelOutput,
 };
 
 /// Identifies a session for its whole life (positions change as tabs close).
@@ -138,6 +138,8 @@ pub struct SessionInit<'a> {
     pub pending: Rc<PendingStore>,
     /// Initial position of the left/right divider, in pixels.
     pub split_position: i32,
+    /// Whether the transfer list starts hiding finished files.
+    pub hide_finished: bool,
     /// Site to site: the left pane's site and its open connection (the right one comes
     /// through [`Session::connect`]).
     pub left: Option<(Site, Remote)>,
@@ -155,6 +157,7 @@ impl Session {
             last_dir_on_disk,
             pending,
             split_position,
+            hide_finished,
             left,
             sender,
         } = init;
@@ -218,9 +221,12 @@ impl Session {
         split.set_vexpand(true);
         page.append(&split);
 
-        let transfers = TransferPanel::builder().launch(pending).forward(
-            sender.input_sender(),
-            move |output| match output {
+        let transfers = TransferPanel::builder()
+            .launch(TransferPanelInit {
+                pending,
+                hide_finished,
+            })
+            .forward(sender.input_sender(), move |output| match output {
                 TransferPanelOutput::JobFinished => AppMsg::TransferFinished(id),
                 TransferPanelOutput::TargetChanged(side) => {
                     AppMsg::TargetChanged { session: id, side }
@@ -248,8 +254,8 @@ impl Session {
                     failed,
                 },
                 TransferPanelOutput::Discarded => AppMsg::TransfersDiscarded(id),
-            },
-        );
+                TransferPanelOutput::HideFinishedChanged(hide) => AppMsg::HideFinishedFiles(hide),
+            });
         let (completed_page, failed_page) = transfers.model().history_pages();
         let transfer_pages: [gtk::Widget; 3] = [
             transfers.widget().clone().upcast(),

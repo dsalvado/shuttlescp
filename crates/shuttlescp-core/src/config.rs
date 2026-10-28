@@ -122,6 +122,8 @@ pub struct Config {
     log_level: LogLevel,
     /// Open the Login dialog when the app starts.
     show_login_at_startup: bool,
+    /// Leave finished files out of the transfer list ("Hide finished files").
+    hide_finished_files: bool,
     /// Main window size when the app was last closed (its normal size, even if it was
     /// maximized then); `None` until the app has been closed once.
     window_size: Option<WindowSize>,
@@ -143,6 +145,7 @@ impl Default for Config {
             last_dir_on_disk: BTreeMap::new(),
             log_level: LogLevel::default(),
             show_login_at_startup: true,
+            hide_finished_files: true,
             window_size: None,
             window_maximized: false,
             check_for_updates: true,
@@ -394,6 +397,21 @@ impl Config {
         self.show_login_at_startup = show;
     }
 
+    /// Whether transfer lists leave finished files out.
+    pub fn hide_finished_files(&self) -> bool {
+        self.hide_finished_files
+    }
+
+    /// Change whether transfer lists leave finished files out (call [`Config::save`]
+    /// to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `hide` - `true` to leave them out
+    pub fn set_hide_finished_files(&mut self, hide: bool) {
+        self.hide_finished_files = hide;
+    }
+
     /// Whether to look for a newer release at startup.
     pub fn check_for_updates(&self) -> bool {
         self.check_for_updates
@@ -528,6 +546,7 @@ mod tests {
             height: 900,
         });
         config.set_window_maximized(true);
+        config.set_hide_finished_files(false);
 
         // Act
         config.save(&path).expect("save config");
@@ -547,6 +566,8 @@ mod tests {
         assert_eq!(loaded, Config::default());
         // Settings files from before this option existed keep showing the dialog.
         assert!(loaded.show_login_at_startup());
+        // And keep hiding finished files, as before the choice was saved.
+        assert!(loaded.hide_finished_files());
 
         fs::write(&path, "not json").expect("write file");
         assert!(matches!(Config::load(&path), Err(ConfigError::Json { .. })));

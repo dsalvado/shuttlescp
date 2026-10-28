@@ -299,6 +299,8 @@ pub enum AppMsg {
     },
     /// A session gave up its unfinished transfers (see `QuitDiscarding`).
     TransfersDiscarded(SessionId),
+    /// "Hide finished files" was ticked or cleared: new sessions start that way.
+    HideFinishedFiles(bool),
     /// Quit, after giving up the unfinished transfers and deleting their partial files.
     QuitDiscarding(&'static str),
     /// Look for a newer release: asked for (Help > Check for Updates) or automatic.
@@ -925,6 +927,11 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::CloseSessionNow(id) => self.close_session(id),
+            AppMsg::HideFinishedFiles(hide) => {
+                tracing::info!("hide finished files: {hide}");
+                self.config.set_hide_finished_files(hide);
+                self.save_config();
+            }
             AppMsg::ShowLoginAtStartup(show) => {
                 tracing::info!("show Login dialog at startup: {show}");
                 self.config.set_show_login_at_startup(show);
@@ -1138,6 +1145,7 @@ impl App {
             last_dir_on_disk: self.config.last_dir_on_disk().clone(),
             pending: Rc::clone(&self.pending),
             split_position,
+            hide_finished: self.config.hide_finished_files(),
             left,
             sender,
         });
