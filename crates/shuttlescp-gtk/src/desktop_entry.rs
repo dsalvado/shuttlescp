@@ -46,14 +46,15 @@ pub fn install(app_id: &str) {
 
     // From an AppImage, the program itself lives in a temporary mount that is gone once
     // it exits: the launcher must start the AppImage file instead.
-    let exe =
-        match shuttlescp_core::update::running_appimage().map_or_else(std::env::current_exe, Ok) {
-            Ok(exe) => exe,
-            Err(error) => {
-                tracing::warn!("cannot find the program's path for its desktop entry: {error}");
-                return;
-            }
-        };
+    let appimage = shuttlescp_core::update::running_appimage();
+    let from_appimage = appimage.is_some();
+    let exe = match appimage.map_or_else(std::env::current_exe, Ok) {
+        Ok(exe) => exe,
+        Err(error) => {
+            tracing::warn!("cannot find the program's path for its desktop entry: {error}");
+            return;
+        }
+    };
     let applications = glib::user_data_dir().join("applications");
     for legacy in LEGACY_ENTRIES.map(|name| applications.join(name)) {
         if legacy.exists() {
@@ -64,10 +65,12 @@ pub fn install(app_id: &str) {
         }
     }
     let path = applications.join(format!("{app_id}.desktop"));
-    // A development build (`cargo run`) leaves an existing entry alone: otherwise the
-    // app launcher would start the developer's debug build instead of the installed
-    // AppImage. Without any entry it writes one, for the icon.
-    if cfg!(debug_assertions) && path.exists() {
+    // Only an AppImage replaces an existing entry. A build run from the source tree
+    // (`cargo run`, debug or release) leaves it alone: otherwise the launcher would
+    // start that build instead of the installed AppImage, and updates (which replace
+    // the AppImage) would no longer reach it. Without any entry it writes one, for the
+    // icon.
+    if !from_appimage && path.exists() {
         return;
     }
     let entry = entry_text(app_id, &exe);
