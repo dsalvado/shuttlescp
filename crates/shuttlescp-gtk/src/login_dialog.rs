@@ -8,9 +8,10 @@
 //! `shuttlescp_core::session` and friends, run as background commands so the window never
 //! freezes, e.g. while the desktop asks to unlock the keyring. This file only presents it.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, UNIX_EPOCH};
 
 use relm4::RelmRemoveAllExt;
@@ -27,13 +28,14 @@ use shuttlescp_core::session::{self, ExportReport, ImportReport, KeyringAction};
 use shuttlescp_core::site_export::ExportFile;
 use shuttlescp_core::sites::{
     DEFAULT_FILES_AT_ONCE, FtpEncryption, FtpOptions, MAX_FILES_AT_ONCE, Protocol, Site, SiteBook,
-    SshAuth, new_site_id,
+    SshAuth, address_label, folder_name, join_folder, new_site_id, parent_folder,
 };
 use shuttlescp_core::transfer::{self, JobKind, Side};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
 use crate::key_passphrase_dialog::{self, KeyPassphrase};
+use crate::name_dialog::{self, NamePrompt};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
 use crate::transfer_panel::PendingStore;
 
@@ -43,6 +45,13 @@ const NEW_SITE_LABEL: &str = "New Site";
 const NEW_SITE_ICON: &str = "list-add-symbolic";
 /// Icon of a saved site.
 const SITE_ICON: &str = "network-server-symbolic";
+/// Icon of a site folder.
+const FOLDER_ICON: &str = "folder-symbolic";
+/// Arrows of an open and a closed folder.
+const FOLDER_OPEN_ICON: &str = "pan-down-symbolic";
+const FOLDER_CLOSED_ICON: &str = "pan-end-symbolic";
+/// How far each folder level is indented in the site lists, in pixels.
+const FOLDER_INDENT: i32 = 16;
 /// Icons of the password field's show/hide toggle.
 const SHOW_PASSWORD_ICON: &str = "view-reveal-symbolic";
 const HIDE_PASSWORD_ICON: &str = "view-conceal-symbolic";
@@ -59,14 +68,45 @@ const SITE_TO_SITE_TAB: &str = "site-to-site";
 const UNFINISHED_TAB: &str = "unfinished";
 
 /// What the site list has picked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
     /// Nothing picked yet: the fields are empty and disabled.
     Nothing,
     /// "New Site" was clicked: the fields are empty and editable.
     NewSite,
+    /// A folder of sites, by its path (to rename, delete, or make a folder in).
+    Folder(String),
     /// A saved site, by index into the site book.
     Saved(usize),
+}
+
+/// What is dragged in the Direct tab's site list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dragged {
+    /// A site, by id.
+    Site(String),
+    /// A folder, by path.
+    Folder(String),
+}
+
+impl Dragged {
+    /// The text a drag carries: `site:<id>` or `folder:<path>`.
+    fn to_text(&self) -> String {
+        match self {
+            Self::Site(id) => format!("site:{id}"),
+            Self::Folder(path) => format!("folder:{path}"),
+        }
+    }
+
+    /// Inverse of [`Dragged::to_text`]; `None` for text dragged in from elsewhere.
+    fn from_text(text: &str) -> Option<Self> {
+        if let Some(id) = text.strip_prefix("site:") {
+            Some(Self::Site(id.to_owned()))
+        } else {
+            text.strip_prefix("folder:")
+                .map(|path| Self::Folder(path.to_owned()))
+        }
+    }
 }
 
 /// Messages handled by the Login dialog.
@@ -80,12 +120,25 @@ pub enum LoginMsg {
     SiteClicked(Selection),
     /// An entry in the site list was double-clicked: open a saved site straight away.
     SiteDoubleClicked(Selection),
-    /// Start editing the selected saved site.
+    /// Start editing the selected saved site, or rename the selected folder.
     Edit,
-    /// Ask to confirm deleting the selected saved site.
+    /// Ask to confirm deleting the selected saved site or folder.
     Delete,
-    /// The user confirmed: delete the selected saved site.
+    /// The user confirmed: delete the selected saved site or folder.
     DeleteConfirmed,
+    /// Ask for the name of a new folder.
+    NewFolder,
+    /// Make a folder of this name, in the picked folder (or the picked site's).
+    NewFolderNamed(String),
+    /// Give the picked folder this name.
+    FolderRenamed(String),
+    /// A site or folder was dropped on a folder (`""` is the top of the list).
+    Dropped {
+        /// What was dragged.
+        dragged: Dragged,
+        /// The folder it goes in.
+        folder: String,
+    },
     /// Store the edited or new site.
     Save,
     /// Discard the edits in progress.
@@ -352,6 +405,10 @@ pub struct LoginDialog {
     host: gtk::EntryBuffer,
     user: gtk::EntryBuffer,
     password: gtk::EntryBuffer,
+    /// The site's alias (empty shows the address).
+    alias: gtk::EntryBuffer,
+    /// The site's description.
+    description: gtk::TextBuffer,
     /// The private key file field (SFTP and SCP).
     key_file: gtk::EntryBuffer,
     /// Whether the site also tries the SSH agent's keys.
@@ -524,7 +581,7 @@ impl LoginDialog {
             .sites
             .iter()
             .find(|site| site.id == site_id)
-            .map_or_else(|| String::from("(deleted site)"), Site::display_name)
+            .map_or_else(|| String::from("(deleted site)"), Site::label)
     }
 
     /// Where an unfinished transfer runs: "site", or site to site "left ⇄ right".
@@ -731,17 +788,52 @@ impl LoginDialog {
     fn fill_pair_lists(&self) {
         for (pane, list) in self.pair_lists.iter().enumerate() {
             list.fill(
-                &self.book.sites,
-                self.pair_index(pane)
+                &self.book,
+                &self
+                    .pair_index(pane)
                     .map_or(Selection::Nothing, Selection::Saved),
             );
+        }
+    }
+
+    /// The folder of what is picked: the picked folder, or the picked site's (`""` is
+    /// the top level).
+    fn picked_folder(&self) -> String {
+        match &self.selection {
+            Selection::Folder(path) => path.clone(),
+            Selection::Saved(_) => self
+                .selected_site()
+                .map_or_else(String::new, |site| site.folder.clone()),
+            Selection::Nothing | Selection::NewSite => String::new(),
+        }
+    }
+
+    /// The name a site is shown by when the Alias field is left blank: its address.
+    fn default_site_name(&self) -> String {
+        let host = self.host.text();
+        if host.trim().is_empty() {
+            return String::new();
+        }
+        address_label(
+            self.user.text().trim(),
+            host.trim(),
+            self.port,
+            self.default_port(),
+        )
+    }
+
+    /// Grey hint text of the Alias field: the name used when it is left blank.
+    fn alias_placeholder(&self) -> String {
+        match self.default_site_name() {
+            name if name.is_empty() => String::from("Optional"),
+            name => name,
         }
     }
     /// The saved site currently picked, if any.
     fn selected_site(&self) -> Option<&Site> {
         match self.selection {
             Selection::Saved(index) => self.book.sites.get(index),
-            Selection::Nothing | Selection::NewSite => None,
+            Selection::Nothing | Selection::NewSite | Selection::Folder(_) => None,
         }
     }
 
@@ -771,6 +863,10 @@ impl LoginDialog {
             .set_text(site.as_ref().map_or("", |site| site.host.as_str()));
         self.user
             .set_text(site.as_ref().map_or("", |site| site.user.as_str()));
+        self.alias
+            .set_text(site.as_ref().map_or("", |site| site.alias.as_str()));
+        self.description
+            .set_text(site.as_ref().map_or("", |site| site.description.as_str()));
         self.password.set_text("");
         let ssh = site
             .as_ref()
@@ -799,7 +895,7 @@ impl LoginDialog {
     /// * `selection` - What to pick
     fn select(&mut self, selection: Selection) {
         self.selection = selection;
-        self.site_list.fill(&self.book.sites, selection);
+        self.site_list.fill(&self.book, &self.selection);
         self.load_form();
     }
 
@@ -842,7 +938,7 @@ impl LoginDialog {
             .as_ref()
             .map(|pending| pending.passphrase.clone());
         self.busy = true;
-        self.status = format!("Connecting to {}...", site.display_name());
+        self.status = format!("Connecting to {}...", site.label());
         sender.oneshot_command(async move {
             let result = session::login(&site, typed, passphrase, approved_key).await;
             LoginCmd::Connected(result.map(|remote| (site, remote)))
@@ -852,6 +948,14 @@ impl LoginDialog {
     /// Whether a saved site is picked and not being edited (Edit / Delete apply).
     fn saved_site_idle(&self) -> bool {
         matches!(self.selection, Selection::Saved(_)) && !self.editing && !self.busy
+    }
+
+    /// Whether a saved site or a folder is picked and nothing else is going on (Edit /
+    /// Delete apply).
+    fn picked_idle(&self) -> bool {
+        matches!(self.selection, Selection::Saved(_) | Selection::Folder(_))
+            && !self.editing
+            && !self.busy
     }
 
     /// Grey hint text for the password field, reflecting whether one is saved.
@@ -911,6 +1015,18 @@ impl LoginDialog {
                 use_agent: self.use_agent,
             },
             files_at_once: self.files_at_once,
+            alias: self.alias.text().trim().to_owned(),
+            description: {
+                let (start, end) = self.description.bounds();
+                self.description
+                    .text(&start, &end, false)
+                    .trim_end()
+                    .to_owned()
+            },
+            // New sites start at the top of the list; they are dragged into folders.
+            folder: existing
+                .as_ref()
+                .map_or_else(String::new, |site| site.folder.clone()),
         };
         if let Some(entry) = old_passphrase {
             sender.oneshot_command(async move {
@@ -935,7 +1051,10 @@ impl LoginDialog {
                 self.book.sites[index] = site;
                 index
             }
-            Selection::Saved(_) | Selection::Nothing | Selection::NewSite => {
+            Selection::Saved(_)
+            | Selection::Nothing
+            | Selection::NewSite
+            | Selection::Folder(_) => {
                 self.book.sites.push(site);
                 self.book.sites.len() - 1
             }
@@ -977,6 +1096,14 @@ impl LoginDialog {
     ///
     /// * `sender` - Used to remove the keyring entry
     fn delete(&mut self, sender: &ComponentSender<Self>) {
+        if let Selection::Folder(path) = &self.selection {
+            let path = path.clone();
+            self.book.delete_folder(&path);
+            self.write_sites(&format!("deleted site folder {path}"));
+            self.status.clear();
+            self.select(Selection::Nothing);
+            return;
+        }
         let Selection::Saved(index) = self.selection else {
             return;
         };
@@ -1008,6 +1135,67 @@ impl LoginDialog {
         }
         self.status.clear();
         self.select(Selection::Nothing);
+    }
+
+    /// Make a folder named `name` in the picked folder, or in the picked site's.
+    fn new_folder(&mut self, name: &str) {
+        let path = join_folder(&self.picked_folder(), name.trim());
+        if self.book.all_folders().contains(&path) {
+            self.status = format!("There is already a folder \"{path}\"");
+            return;
+        }
+        self.book.add_folder(&path);
+        self.write_sites(&format!("made site folder {path}"));
+        self.status.clear();
+        self.select(Selection::Folder(path));
+    }
+
+    /// Move or rename a folder, keeping it picked if it was.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - The folder's path now
+    /// * `to` - Its new path
+    fn move_folder(&mut self, from: &str, to: &str) {
+        match self.book.move_folder(from, to) {
+            Ok(()) if from == to => {}
+            Ok(()) => {
+                self.write_sites(&format!("moved site folder {from} to {to}"));
+                self.status.clear();
+                let picked = match &self.selection {
+                    Selection::Folder(path) if path == from => Selection::Folder(to.to_owned()),
+                    other => other.clone(),
+                };
+                self.select(picked);
+            }
+            Err(error) => self.status = format!("Cannot move \"{from}\": {error}"),
+        }
+    }
+
+    /// Put a dragged site or folder in `folder` (`""` is the top of the list).
+    fn drop_into(&mut self, dragged: Dragged, folder: &str) {
+        if self.editing || self.busy {
+            return;
+        }
+        match dragged {
+            Dragged::Site(id) => {
+                let Some(site) = self.book.sites.iter_mut().find(|site| site.id == id) else {
+                    return;
+                };
+                if site.folder == folder {
+                    return;
+                }
+                site.folder = folder.to_owned();
+                let name = site.label();
+                self.write_sites(&format!("moved site {name} to folder \"{folder}\""));
+                self.status.clear();
+                self.select(self.selection.clone());
+            }
+            Dragged::Folder(path) => {
+                let to = join_folder(folder, folder_name(&path));
+                self.move_folder(&path, &to);
+            }
+        }
     }
 
     /// Persist the site book, logging `done` on success.
@@ -1114,7 +1302,7 @@ impl Component for LoginDialog {
             set_modal: true,
             // Closing only hides the dialog, so it can be shown again from the menu.
             set_hide_on_close: true,
-            set_default_size: (760, 500),
+            set_default_size: (760, 620),
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
@@ -1163,20 +1351,41 @@ impl Component for LoginDialog {
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
                                     set_spacing: 4,
-                                    set_homogeneous: true,
 
                                     gtk::Button {
-                                        set_label: "Edit",
+                                        set_icon_name: "folder-new-symbolic",
+                                        set_tooltip_text: Some(
+                                            "New folder (in the picked folder). Drag sites and \
+                                             folders onto a folder to move them.",
+                                        ),
                                         #[watch]
-                                        set_sensitive: model.saved_site_idle(),
-                                        connect_clicked => LoginMsg::Edit,
+                                        set_sensitive: !model.editing && !model.busy,
+                                        connect_clicked => LoginMsg::NewFolder,
                                     },
-                                    gtk::Button {
-                                        set_label: "Delete",
-                                        add_css_class: "destructive-action",
-                                        #[watch]
-                                        set_sensitive: model.saved_site_idle(),
-                                        connect_clicked => LoginMsg::Delete,
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 4,
+                                        set_homogeneous: true,
+                                        set_hexpand: true,
+
+                                        gtk::Button {
+                                            #[watch]
+                                            set_label: if matches!(model.selection, Selection::Folder(_)) {
+                                                "Rename"
+                                            } else {
+                                                "Edit"
+                                            },
+                                            #[watch]
+                                            set_sensitive: model.picked_idle(),
+                                            connect_clicked => LoginMsg::Edit,
+                                        },
+                                        gtk::Button {
+                                            set_label: "Delete",
+                                            add_css_class: "destructive-action",
+                                            #[watch]
+                                            set_sensitive: model.picked_idle(),
+                                            connect_clicked => LoginMsg::Delete,
+                                        },
                                     },
                                 },
                             },
@@ -1195,6 +1404,27 @@ impl Component for LoginDialog {
                                     set_label: "Session",
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
+                                },
+
+                                // The site's alias, shown in the site list with its address.
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_spacing: 2,
+
+                                    gtk::Label {
+                                        set_label: "Alias:",
+                                        set_xalign: 0.0,
+                                    },
+                                    gtk::Entry::with_buffer(&model.alias) {
+                                        set_tooltip_text: Some(
+                                            "A name for the site, shown in the site list and on \
+                                             the session's tab; left blank, the address is shown",
+                                        ),
+                                        #[watch]
+                                        set_sensitive: model.editing,
+                                        #[watch]
+                                        set_placeholder_text: Some(&model.alias_placeholder()),
+                                    },
                                 },
 
                                 // File protocol.
@@ -1321,6 +1551,8 @@ impl Component for LoginDialog {
                                         gtk::Entry::with_buffer(&model.user) {
                                             #[watch]
                                             set_sensitive: model.editing,
+                                            // The Alias field's hint shows the user name.
+                                            connect_changed => LoginMsg::FormEdited,
                                         },
                                     },
                                     gtk::Box {
@@ -1415,6 +1647,35 @@ impl Component for LoginDialog {
                                             connect_toggled[sender] => move |check| {
                                                 sender.input(LoginMsg::UseAgentToggled(check.is_active()));
                                             },
+                                        },
+                                    },
+                                },
+
+                                // Notes about the site, a few lines high.
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_spacing: 2,
+
+                                    gtk::Label {
+                                        set_label: "Description:",
+                                        set_xalign: 0.0,
+                                    },
+                                    gtk::ScrolledWindow {
+                                        set_min_content_height: 52,
+                                        set_hscrollbar_policy: gtk::PolicyType::Never,
+                                        add_css_class: "frame",
+                                        add_css_class: "site-description",
+
+                                        gtk::TextView::with_buffer(&model.description) {
+                                            set_wrap_mode: gtk::WrapMode::WordChar,
+                                            // Tab moves on to the next field.
+                                            set_accepts_tab: false,
+                                            set_top_margin: 3,
+                                            set_bottom_margin: 3,
+                                            set_left_margin: 5,
+                                            set_right_margin: 5,
+                                            #[watch]
+                                            set_sensitive: model.editing,
                                         },
                                     },
                                 },
@@ -1907,17 +2168,20 @@ impl Component for LoginDialog {
 
         let click_sender = sender.clone();
         let double_click_sender = sender.clone();
+        let drop_sender = sender.clone();
         let site_list = SiteList::new(
-            true,
             move |selection| click_sender.input(LoginMsg::SiteClicked(selection)),
             move |selection| double_click_sender.input(LoginMsg::SiteDoubleClicked(selection)),
+            Some(Box::new(move |dragged, folder| {
+                drop_sender.input(LoginMsg::Dropped { dragged, folder });
+            })),
         );
         let pair_list = |pane: usize| {
             let sender = sender.clone();
             SiteList::new(
-                false,
                 move |selection| sender.input(LoginMsg::PairSitePicked { pane, selection }),
                 |_| {},
+                None,
             )
         };
         let pair_lists = [pair_list(0), pair_list(1)];
@@ -1951,6 +2215,8 @@ impl Component for LoginDialog {
             host: gtk::EntryBuffer::default(),
             user: gtk::EntryBuffer::default(),
             password: gtk::EntryBuffer::default(),
+            alias: gtk::EntryBuffer::default(),
+            description: gtk::TextBuffer::new(None),
             key_file: gtk::EntryBuffer::default(),
             use_agent: true,
             pending_passphrase: None,
@@ -2007,8 +2273,8 @@ impl Component for LoginDialog {
         match message {
             LoginMsg::Show => {
                 // Reopen without half-finished edits: keep a picked saved site, drop the rest.
-                let keep = match self.selection {
-                    Selection::Saved(_) => self.selection,
+                let keep = match &self.selection {
+                    Selection::Saved(_) | Selection::Folder(_) => self.selection.clone(),
                     Selection::Nothing | Selection::NewSite => Selection::Nothing,
                 };
                 self.select(keep);
@@ -2039,26 +2305,72 @@ impl Component for LoginDialog {
                     self.start_login(&sender, None);
                 }
             }
-            // Double-clicking "New Site" needs nothing beyond its single click.
-            LoginMsg::SiteDoubleClicked(Selection::NewSite | Selection::Nothing) => {}
+            // Double-clicking "New Site" needs nothing beyond its single click, and a
+            // folder opens or closes in the list itself.
+            LoginMsg::SiteDoubleClicked(
+                Selection::NewSite | Selection::Nothing | Selection::Folder(_),
+            ) => {}
             LoginMsg::SiteClicked(selection) => {
                 if !self.editing && !self.busy {
                     self.select(selection);
                 }
             }
             LoginMsg::Edit => {
-                if self.saved_site_idle() {
+                if let Selection::Folder(path) = &self.selection
+                    && self.picked_idle()
+                {
+                    let prompt = format!("New name for the folder {}:", folder_name(path));
+                    let wording = NamePrompt {
+                        title: "Rename Folder",
+                        prompt: &prompt,
+                        initial: folder_name(path),
+                        confirm_label: "Rename",
+                        side: Side::Remote,
+                    };
+                    let sender = sender.clone();
+                    name_dialog::ask(root.upcast_ref(), wording, move |name| {
+                        sender.input(LoginMsg::FolderRenamed(name));
+                    });
+                } else if self.saved_site_idle() {
                     self.editing = true;
                 }
             }
             LoginMsg::Delete => {
+                if let Selection::Folder(path) = &self.selection
+                    && self.picked_idle()
+                {
+                    let question = format!("Delete the folder {}?", folder_name(path));
+                    let detail = match parent_folder(path) {
+                        "" => String::from(
+                            "The sites and folders in it move to the top of the list. No \
+                             site is deleted.",
+                        ),
+                        parent => format!(
+                            "The sites and folders in it move to {}. No site is deleted.",
+                            folder_name(parent)
+                        ),
+                    };
+                    let wording = Confirmation {
+                        title: "Delete Folder",
+                        question: &question,
+                        detail: &detail,
+                        confirm_label: "Delete",
+                    };
+                    let sender = sender.clone();
+                    confirm_dialog::ask(root.upcast_ref(), wording, move |confirmed| {
+                        if confirmed {
+                            sender.input(LoginMsg::DeleteConfirmed);
+                        }
+                    });
+                    return;
+                }
                 if !self.saved_site_idle() {
                     return;
                 }
                 let Some(site) = self.selected_site() else {
                     return;
                 };
-                let question = format!("Delete {}?", site.display_name());
+                let question = format!("Delete {}?", site.label());
                 let detail = if site.password_saved {
                     "The site and its saved password (in the keyring) will be removed. \
                      This cannot be undone."
@@ -2079,12 +2391,42 @@ impl Component for LoginDialog {
                 });
             }
             LoginMsg::DeleteConfirmed => self.delete(&sender),
+            LoginMsg::NewFolder => {
+                if self.editing || self.busy {
+                    return;
+                }
+                let prompt = match self.picked_folder() {
+                    parent if parent.is_empty() => String::from("Name of the new folder:"),
+                    parent => format!("Name of the new folder in {}:", folder_name(&parent)),
+                };
+                let wording = NamePrompt {
+                    title: "New Folder",
+                    prompt: &prompt,
+                    initial: "",
+                    confirm_label: "Create",
+                    side: Side::Remote,
+                };
+                let sender = sender.clone();
+                name_dialog::ask(root.upcast_ref(), wording, move |name| {
+                    sender.input(LoginMsg::NewFolderNamed(name));
+                });
+            }
+            LoginMsg::NewFolderNamed(name) => self.new_folder(&name),
+            LoginMsg::FolderRenamed(name) => {
+                if let Selection::Folder(path) = self.selection.clone() {
+                    let to = join_folder(parent_folder(&path), name.trim());
+                    self.move_folder(&path, &to);
+                }
+            }
+            LoginMsg::Dropped { dragged, folder } => self.drop_into(dragged, &folder),
             LoginMsg::Save => self.save(&sender),
             LoginMsg::Cancel => {
                 // A new site is abandoned entirely; a saved one goes back to its details.
-                let back_to = match self.selection {
+                let back_to = match &self.selection {
                     Selection::NewSite => Selection::Nothing,
-                    Selection::Nothing | Selection::Saved(_) => self.selection,
+                    Selection::Nothing | Selection::Saved(_) | Selection::Folder(_) => {
+                        self.selection.clone()
+                    }
                 };
                 self.select(back_to);
             }
@@ -2467,10 +2809,10 @@ impl Component for LoginDialog {
                             Some(pair) if matches!(error, ConnectError::PasswordRequired) => {
                                 format!(
                                     "{} needs a password: save it on the Direct tab, or use SSH keys",
-                                    pair.current().display_name()
+                                    pair.current().label()
                                 )
                             }
-                            Some(pair) => format!("{}: {error}", pair.current().display_name()),
+                            Some(pair) => format!("{}: {error}", pair.current().label()),
                             None => error.to_string(),
                         };
                     }
@@ -2493,7 +2835,7 @@ impl Component for LoginDialog {
                     });
                     // The list and form were drawn before the keyring answered: refresh
                     // the key icon, and the "Save password" box if this site is shown.
-                    self.site_list.fill(&self.book.sites, self.selection);
+                    self.site_list.fill(&self.book, &self.selection);
                     if !self.editing && self.selected_site().is_some_and(|site| site.id == site_id)
                     {
                         self.save_password = saved;
@@ -2591,11 +2933,94 @@ impl Component for LoginDialog {
     }
 }
 
-/// The site list: "New Site" followed by every saved site.
+/// What a line of a site list stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ListRow {
+    /// "New Site".
+    NewSite,
+    /// A folder, by path.
+    Folder(String),
+    /// A saved site, by index into the site book.
+    Site(usize),
+}
+
+impl ListRow {
+    /// What clicking the line picks.
+    fn selection(&self) -> Selection {
+        match self {
+            Self::NewSite => Selection::NewSite,
+            Self::Folder(path) => Selection::Folder(path.clone()),
+            Self::Site(index) => Selection::Saved(*index),
+        }
+    }
+}
+
+/// The lines of a site list, top to bottom: "New Site" if wanted, then each level's
+/// folders (by name) before its sites (in saved order), leaving out what is inside a
+/// closed folder. Each line comes with its depth.
+///
+/// # Arguments
+///
+/// * `book` - The saved sites and folders
+/// * `with_new_site` - Whether to start with "New Site"
+/// * `closed` - The folders shown closed
+fn list_rows(
+    book: &SiteBook,
+    with_new_site: bool,
+    closed: &HashSet<String>,
+) -> Vec<(ListRow, usize)> {
+    fn level(
+        book: &SiteBook,
+        parent: &str,
+        depth: usize,
+        closed: &HashSet<String>,
+        rows: &mut Vec<(ListRow, usize)>,
+    ) {
+        for folder in book.child_folders(parent) {
+            let open = !closed.contains(&folder);
+            rows.push((ListRow::Folder(folder.clone()), depth));
+            if open {
+                level(book, &folder, depth + 1, closed, rows);
+            }
+        }
+        for (index, site) in book.sites.iter().enumerate() {
+            if site.folder == parent {
+                rows.push((ListRow::Site(index), depth));
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    if with_new_site {
+        rows.push((ListRow::NewSite, 0));
+    }
+    level(book, "", 0, closed, &mut rows);
+    rows
+}
+
+/// Called with what a site or folder was dropped on: the folder it goes in.
+type OnDrop = Box<dyn Fn(Dragged, String)>;
+
+/// The site list: on the Direct tab "New Site" then the saved sites in their folders,
+/// whose sites and folders can be dragged onto other folders; on the Site to site tab
+/// just the sites in their folders. Clicking a folder's arrow, or double-clicking it,
+/// opens or closes it.
 struct SiteList {
+    inner: Rc<SiteListInner>,
+}
+
+/// The list's state, shared with its event handlers.
+struct SiteListInner {
     list: gtk::ListBox,
     /// Whether row 0 is "New Site" (the Direct tab's list; not the site-to-site ones).
     with_new_site: bool,
+    /// What each row of the list stands for.
+    rows: RefCell<Vec<ListRow>>,
+    /// The folders shown closed.
+    closed: RefCell<HashSet<String>>,
+    /// What the list shows, to draw it again when a folder opens or closes.
+    shown: RefCell<(SiteBook, Selection)>,
+    /// Where dragged sites and folders go; `None` turns dragging off.
+    on_drop: Option<OnDrop>,
 }
 
 impl SiteList {
@@ -2605,12 +3030,16 @@ impl SiteList {
     ///
     /// * `on_click` - Called with the clicked entry. Clicks are used rather than selection
     ///   changes so that clicking an already highlighted "New Site" still starts a site.
+    ///   Without "New Site" (the site-to-site lists) a click on a folder opens or
+    ///   closes it instead.
     /// * `on_double_click` - Called with the double-clicked entry (after its first click
-    ///   has reached `on_click`)
+    ///   has reached `on_click`); double-clicked folders open or close instead
+    /// * `on_drop` - Receives sites and folders dropped on a folder; `None` for a list
+    ///   whose entries cannot be dragged. Its presence also gives the list "New Site".
     fn new(
-        with_new_site: bool,
         on_click: impl Fn(Selection) + 'static,
         on_double_click: impl Fn(Selection) + 'static,
+        on_drop: Option<OnDrop>,
     ) -> Self {
         // GTK's own selection is off: it would also highlight whichever row merely has
         // keyboard focus (the first row when the dialog opens). The picked row is marked
@@ -2620,8 +3049,26 @@ impl SiteList {
             .activate_on_single_click(true)
             .css_classes(["site-list"])
             .build();
+        let with_new_site = on_drop.is_some();
+        let inner = Rc::new(SiteListInner {
+            list: list.clone(),
+            with_new_site,
+            rows: RefCell::new(Vec::new()),
+            closed: RefCell::new(HashSet::new()),
+            shown: RefCell::new((SiteBook::default(), Selection::Nothing)),
+            on_drop,
+        });
+
+        let weak = Rc::downgrade(&inner);
         list.connect_row_activated(move |_, row| {
-            on_click(selection_for_row(row.index(), with_new_site));
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            match inner.row(row.index()) {
+                Some(ListRow::Folder(path)) if !inner.with_new_site => inner.toggle(path),
+                Some(entry) => on_click(entry.selection()),
+                None => {}
+            }
         });
 
         // Watch for double-clicks without taking the clicks away from the list: the
@@ -2629,104 +3076,275 @@ impl SiteList {
         // claims it, so single-click picking keeps working.
         let double_click = gtk::GestureClick::new();
         double_click.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let weak_list = list.downgrade();
+        let weak = Rc::downgrade(&inner);
         double_click.connect_pressed(move |_, presses, _x, y| {
-            if presses != 2 {
+            let Some(inner) = weak.upgrade().filter(|_| presses == 2) else {
                 return;
-            }
+            };
             // `y` is a fractional pixel position; rows are found by whole pixels.
-            let row = weak_list.upgrade().and_then(|list| list.row_at_y(y as i32));
-            if let Some(row) = row {
-                on_double_click(selection_for_row(row.index(), with_new_site));
+            let entry = inner
+                .list
+                .row_at_y(y as i32)
+                .and_then(|row| inner.row(row.index()));
+            match entry {
+                // The site-to-site lists' single click has already done it.
+                Some(ListRow::Folder(path)) if inner.with_new_site => inner.toggle(path),
+                Some(ListRow::Folder(_)) | None => {}
+                Some(entry) => on_double_click(entry.selection()),
             }
         });
         list.add_controller(double_click);
-        Self {
-            list,
-            with_new_site,
+
+        // Dropped below the last line: to the top of the list.
+        if with_new_site {
+            list.add_controller(drop_target(Rc::downgrade(&inner), String::new()));
         }
+        Self { inner }
     }
 
     /// The list widget, for placing in a layout.
     fn widget(&self) -> &gtk::ListBox {
-        &self.list
+        &self.inner.list
     }
 
-    /// Show `sites` and highlight `selection` (nothing is highlighted for
-    /// [`Selection::Nothing`]).
+    /// Show `book` and highlight `selection` (nothing is highlighted for
+    /// [`Selection::Nothing`]), opening the folders around the highlighted entry.
     ///
     /// # Arguments
     ///
-    /// * `sites` - Saved sites, in list order
+    /// * `book` - The saved sites and folders
     /// * `selection` - Entry to highlight
-    fn fill(&self, sites: &[Site], selection: Selection) {
+    fn fill(&self, book: &SiteBook, selection: &Selection) {
+        let folder = match selection {
+            Selection::Saved(index) => book.sites.get(*index).map(|site| site.folder.as_str()),
+            Selection::Folder(path) => Some(parent_folder(path)),
+            Selection::Nothing | Selection::NewSite => None,
+        };
+        if let Some(mut folder) = folder {
+            let mut closed = self.inner.closed.borrow_mut();
+            while !folder.is_empty() {
+                closed.remove(folder);
+                folder = parent_folder(folder);
+            }
+        }
+        *self.inner.shown.borrow_mut() = (book.clone(), selection.clone());
+        self.inner.draw();
+    }
+}
+
+impl SiteListInner {
+    /// What row `index` stands for.
+    fn row(&self, index: i32) -> Option<ListRow> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rows.borrow().get(index).cloned())
+    }
+
+    /// Open a closed folder or close an open one. The list is drawn again once the
+    /// click being handled is over: its row is about to be replaced.
+    fn toggle(self: &Rc<Self>, path: String) {
+        {
+            let mut closed = self.closed.borrow_mut();
+            if !closed.remove(&path) {
+                closed.insert(path);
+            }
+        }
+        let weak = Rc::downgrade(self);
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(inner) = weak.upgrade() {
+                inner.draw();
+            }
+        });
+    }
+
+    /// Fill the list from what it shows.
+    fn draw(self: &Rc<Self>) {
         self.list.remove_all();
-        if self.with_new_site {
-            self.list
-                .append(&site_row(NEW_SITE_ICON, NEW_SITE_LABEL, false));
+        let shown = self.shown.borrow();
+        let (book, selection) = &*shown;
+        let rows = list_rows(book, self.with_new_site, &self.closed.borrow());
+        // Sites line up with folders' icons, past their arrows, once there are folders.
+        let arrow_slot = rows
+            .iter()
+            .any(|(row, _)| matches!(row, ListRow::Folder(_)));
+        for (entry, depth) in &rows {
+            let row = self.draw_row(book, entry, *depth, arrow_slot);
+            if &entry.selection() == selection {
+                row.add_css_class("picked");
+            }
+            self.list.append(&row);
         }
-        for site in sites {
-            self.list.append(&site_row(
-                SITE_ICON,
-                &site.display_name(),
-                site.password_saved,
-            ));
-        }
-        let first_site = usize::from(self.with_new_site);
-        let row = match selection {
-            Selection::Nothing => None,
-            Selection::NewSite => self.with_new_site.then_some(0),
-            Selection::Saved(index) => index.checked_add(first_site),
-        }
-        .and_then(|row| i32::try_from(row).ok())
-        .and_then(|row| self.list.row_at_index(row));
-        if let Some(row) = row {
-            row.add_css_class("picked");
-        }
+        *self.rows.borrow_mut() = rows.into_iter().map(|(row, _)| row).collect();
     }
-}
 
-/// Map a list row position to what it picks: with a "New Site" row, row 0 is "New Site"
-/// and row `n` is saved site `n - 1`; without one, row `n` is saved site `n`.
-///
-/// # Arguments
-///
-/// * `row` - Row position as GTK reports it (negative when the row is not in a list)
-/// * `with_new_site` - Whether the list starts with "New Site"
-fn selection_for_row(row: i32, with_new_site: bool) -> Selection {
-    match (usize::try_from(row), with_new_site) {
-        (Ok(0), true) => Selection::NewSite,
-        (Ok(row), true) => Selection::Saved(row - 1),
-        (Ok(row), false) => Selection::Saved(row),
-        (Err(_), _) => Selection::Nothing,
-    }
-}
-
-/// One site list entry: an icon, a name, and a key icon when a password is saved.
-///
-/// # Arguments
-///
-/// * `icon` - Theme icon name
-/// * `name` - Text to show
-/// * `has_password` - Whether to show the saved-password key icon
-fn site_row(icon: &str, name: &str, has_password: bool) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    row.append(&gtk::Image::from_icon_name(icon));
-    row.append(
-        &gtk::Label::builder()
-            .label(name)
+    /// One line of the list: (for folders) an arrow, an icon, a name (for sites with
+    /// an alias, then their address), and a key icon for sites with a saved password;
+    /// indented by its depth. On the Direct tab its site or folder can be dragged, and
+    /// things can be dropped on it.
+    fn draw_row(
+        self: &Rc<Self>,
+        book: &SiteBook,
+        entry: &ListRow,
+        depth: usize,
+        arrow_slot: bool,
+    ) -> gtk::ListBoxRow {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        line.set_margin_start(i32::try_from(depth).unwrap_or(0) * FOLDER_INDENT);
+        let (icon, name, tooltip, has_password, dragged, folder) = match entry {
+            ListRow::NewSite => (
+                NEW_SITE_ICON,
+                NEW_SITE_LABEL.to_owned(),
+                None,
+                false,
+                None,
+                String::new(),
+            ),
+            ListRow::Folder(path) => {
+                let open = !self.closed.borrow().contains(path);
+                let arrow = gtk::Image::from_icon_name(if open {
+                    FOLDER_OPEN_ICON
+                } else {
+                    FOLDER_CLOSED_ICON
+                });
+                arrow.set_tooltip_text(Some(if open { "Close folder" } else { "Open folder" }));
+                let click = gtk::GestureClick::new();
+                let (weak, toggled) = (Rc::downgrade(self), path.clone());
+                click.connect_pressed(move |gesture, _, _, _| {
+                    // Opening a folder does not pick it.
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(inner) = weak.upgrade() {
+                        inner.toggle(toggled.clone());
+                    }
+                });
+                arrow.add_controller(click);
+                line.append(&arrow);
+                (
+                    FOLDER_ICON,
+                    folder_name(path).to_owned(),
+                    None,
+                    false,
+                    Some(Dragged::Folder(path.clone())),
+                    path.clone(),
+                )
+            }
+            ListRow::Site(index) => {
+                let site = &book.sites[*index];
+                if arrow_slot {
+                    // As wide as a folder's arrow.
+                    let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    slot.set_width_request(16);
+                    line.append(&slot);
+                }
+                (
+                    SITE_ICON,
+                    site.label(),
+                    site_tooltip(site),
+                    site.password_saved,
+                    Some(Dragged::Site(site.id.clone())),
+                    site.folder.clone(),
+                )
+            }
+        };
+        // A site with an alias also shows its address, greyed.
+        let address = match entry {
+            ListRow::Site(index) if !book.sites[*index].alias.trim().is_empty() => {
+                Some(book.sites[*index].display_name())
+            }
+            ListRow::NewSite | ListRow::Folder(_) | ListRow::Site(_) => None,
+        };
+        line.append(&gtk::Image::from_icon_name(icon));
+        // One label, so a long line cuts the address short before the alias.
+        let label = gtk::Label::builder()
             .xalign(0.0)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .build(),
-    );
-    if has_password {
-        let key = gtk::Image::from_icon_name(PASSWORD_ICON);
-        key.set_tooltip_text(Some("Password saved"));
-        key.add_css_class("dim-label");
-        row.append(&key);
+            .build();
+        match address {
+            Some(address) => label.set_markup(&format!(
+                "{}  <span alpha=\"55%\">{}</span>",
+                gtk::glib::markup_escape_text(&name),
+                gtk::glib::markup_escape_text(&address)
+            )),
+            None => label.set_label(&name),
+        }
+        line.append(&label);
+        if has_password {
+            let key = gtk::Image::from_icon_name(PASSWORD_ICON);
+            key.set_tooltip_text(Some("Password saved"));
+            key.add_css_class("dim-label");
+            line.append(&key);
+        }
+        let row = gtk::ListBoxRow::builder().child(&line).build();
+        row.set_tooltip_text(tooltip.as_deref());
+        if matches!(entry, ListRow::Folder(_)) {
+            row.add_css_class("folder");
+        }
+        if self.on_drop.is_some() {
+            // Dropped on a site, it joins that site's folder.
+            row.add_controller(drop_target(Rc::downgrade(self), folder));
+            if let Some(dragged) = dragged {
+                row.add_controller(drag_source(&line, dragged));
+            }
+        }
+        row
     }
-    row
+}
+
+/// Lets a site or folder be dragged by its line.
+///
+/// # Arguments
+///
+/// * `line` - The line's contents, pictured under the pointer while dragging
+/// * `dragged` - What the line is
+fn drag_source(line: &gtk::Box, dragged: Dragged) -> gtk::DragSource {
+    let source = gtk::DragSource::builder()
+        .actions(gtk::gdk::DragAction::MOVE)
+        .build();
+    let text = dragged.to_text();
+    source.connect_prepare(move |_, _, _| {
+        Some(gtk::gdk::ContentProvider::for_value(&text.to_value()))
+    });
+    let line = line.downgrade();
+    source.connect_drag_begin(move |source, _| {
+        if let Some(line) = line.upgrade() {
+            source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&line))), 0, 0);
+        }
+    });
+    source
+}
+
+/// Accepts a site or folder dropped on a line (or the empty end of the list) and
+/// hands it on to go in `folder`.
+fn drop_target(list: Weak<SiteListInner>, folder: String) -> gtk::DropTarget {
+    let target = gtk::DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+    target.connect_drop(move |_, value, _, _| {
+        let dragged = value
+            .get::<String>()
+            .ok()
+            .and_then(|text| Dragged::from_text(&text));
+        match (dragged, list.upgrade()) {
+            (Some(dragged), Some(list)) => {
+                if let Some(on_drop) = &list.on_drop {
+                    on_drop(dragged, folder.clone());
+                }
+                true
+            }
+            _ => false,
+        }
+    });
+    target
+}
+
+/// A site line's tooltip: its address when it has its own name, and its description.
+fn site_tooltip(site: &Site) -> Option<String> {
+    let mut lines = Vec::new();
+    if !site.alias.trim().is_empty() {
+        lines.push(site.display_name());
+    }
+    if !site.description.trim().is_empty() {
+        lines.push(site.description.trim().to_owned());
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// A line of the Unfinished list: a tick box, what the transfer does, and below it
@@ -2849,18 +3467,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn selection_for_row_maps_rows_after_new_site() {
-        assert_eq!(selection_for_row(0, true), Selection::NewSite);
-        assert_eq!(selection_for_row(1, true), Selection::Saved(0));
-        assert_eq!(selection_for_row(4, true), Selection::Saved(3));
-        assert_eq!(selection_for_row(-1, true), Selection::Nothing);
+    fn book() -> SiteBook {
+        let site = |folder: &str| Site {
+            id: new_site_id(),
+            protocol: Protocol::Sftp,
+            host: String::from("example.com"),
+            port: 22,
+            user: String::new(),
+            password_saved: false,
+            ftp: FtpOptions::default(),
+            ssh: SshAuth::default(),
+            files_at_once: DEFAULT_FILES_AT_ONCE,
+            alias: String::new(),
+            description: String::new(),
+            folder: folder.to_owned(),
+        };
+        SiteBook {
+            sites: vec![site(""), site("Work/Clients"), site("Work")],
+            folders: vec![String::from("Empty")],
+        }
     }
 
     #[test]
-    fn selection_for_row_maps_rows_without_new_site() {
-        assert_eq!(selection_for_row(0, false), Selection::Saved(0));
-        assert_eq!(selection_for_row(4, false), Selection::Saved(4));
-        assert_eq!(selection_for_row(-1, false), Selection::Nothing);
+    fn list_rows_put_folders_before_sites_at_each_level() {
+        let rows = list_rows(&book(), true, &HashSet::new());
+
+        assert_eq!(
+            rows,
+            [
+                (ListRow::NewSite, 0),
+                (ListRow::Folder(String::from("Empty")), 0),
+                (ListRow::Folder(String::from("Work")), 0),
+                (ListRow::Folder(String::from("Work/Clients")), 1),
+                (ListRow::Site(1), 2),
+                (ListRow::Site(2), 1),
+                (ListRow::Site(0), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_rows_leave_out_what_closed_folders_hold() {
+        let closed = HashSet::from([String::from("Work")]);
+
+        let rows = list_rows(&book(), false, &closed);
+
+        assert_eq!(
+            rows,
+            [
+                (ListRow::Folder(String::from("Empty")), 0),
+                (ListRow::Folder(String::from("Work")), 0),
+                (ListRow::Site(0), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn dragged_text_round_trips_and_ignores_other_text() {
+        for dragged in [
+            Dragged::Site(String::from("abc")),
+            Dragged::Folder(String::from("Work/Clients")),
+        ] {
+            assert_eq!(Dragged::from_text(&dragged.to_text()), Some(dragged));
+        }
+        assert_eq!(Dragged::from_text("some text"), None);
     }
 }

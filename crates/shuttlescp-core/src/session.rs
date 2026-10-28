@@ -288,6 +288,9 @@ mod tests {
             ftp: crate::sites::FtpOptions::default(),
             ssh: crate::sites::SshAuth::default(),
             files_at_once: crate::sites::DEFAULT_FILES_AT_ONCE,
+            alias: String::new(),
+            description: String::new(),
+            folder: String::new(),
         };
         assert_eq!(keyring_label(&site), "ShuttleSCP: me@host");
     }

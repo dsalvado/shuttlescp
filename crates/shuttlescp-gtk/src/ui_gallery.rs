@@ -277,8 +277,14 @@ fn show_login_tab(main: &gtk::Window, tab: &'static str) {
             return;
         };
         if tab == "site-to-site" {
-            for (list, row) in site_lists(&page).iter().zip([0, 2]) {
-                if let Some(row) = list.row_at_index(row) {
+            // The first site of the left list and the third of the right one (folder
+            // lines would only open or close).
+            for (list, nth) in site_lists(&page).iter().zip([0, 2]) {
+                let site = (0..)
+                    .map_while(|index| list.row_at_index(index))
+                    .filter(|row| !row.has_css_class("folder"))
+                    .nth(nth);
+                if let Some(row) = site {
                     row.activate();
                 }
             }
@@ -432,6 +438,9 @@ pub fn connect_pair(pair: &str, sender: relm4::ComponentSender<crate::app::App>)
                 passphrase_saved: false,
             },
             files_at_once: shuttlescp_core::sites::DEFAULT_FILES_AT_ONCE,
+            alias: String::new(),
+            description: String::new(),
+            folder: String::new(),
         })
         .collect();
     let [left, right] = <[_; 2]>::try_from(sites)
