@@ -321,6 +321,8 @@ pub enum TransferPanelOutput {
     },
     /// [`TransferPanelMsg::DiscardAll`] is done.
     Discarded,
+    /// The user ticked or cleared "Hide finished files" (saved for new sessions).
+    HideFinishedChanged(bool),
     /// The number of jobs in the lists changed.
     Counts {
         /// Jobs still running.
@@ -480,10 +482,17 @@ pub struct TransferPanel {
     next_shelf: u64,
 }
 
+/// What a transfer panel starts with.
+pub struct TransferPanelInit {
+    /// Where unfinished transfers are recorded (shared by all sessions).
+    pub pending: Rc<PendingStore>,
+    /// Whether "Hide finished files" starts ticked (the user's last choice).
+    pub hide_finished: bool,
+}
+
 #[relm4::component(pub)]
 impl Component for TransferPanel {
-    /// Where unfinished transfers are recorded (shared by all sessions).
-    type Init = Rc<PendingStore>;
+    type Init = TransferPanelInit;
     type Input = TransferPanelMsg;
     type Output = TransferPanelOutput;
     type CommandOutput = (u64, TransferEvent);
@@ -521,7 +530,8 @@ impl Component for TransferPanel {
 
                 gtk::CheckButton {
                     set_label: Some("Hide finished files"),
-                    set_active: true,
+                    // Before `connect_toggled`, so starting ticked is not a change.
+                    set_active: hide_finished,
                     set_tooltip_text: Some(
                         "Leave files copied without problems out of the list, so the ones \
                          being copied stay at the top",
@@ -546,12 +556,16 @@ impl Component for TransferPanel {
     }
 
     fn init(
-        pending: Rc<PendingStore>,
+        init: TransferPanelInit,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let TransferPanelInit {
+            pending,
+            hide_finished,
+        } = init;
         let shared = Rc::new(RefCell::new(Shared {
-            hide_finished: true,
+            hide_finished,
             ..Shared::default()
         }));
         let rows: [gio::ListStore; 3] =
@@ -735,6 +749,8 @@ impl Component for TransferPanel {
             }
             TransferPanelMsg::HideFinished(hide) => {
                 self.shared.borrow_mut().hide_finished = hide;
+                // Sending fails only if the main window is gone; nothing to do then.
+                let _ = sender.output(TransferPanelOutput::HideFinishedChanged(hide));
                 let queued: Vec<u64> = self
                     .shared
                     .borrow()
