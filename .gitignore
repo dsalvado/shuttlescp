@@ -5,6 +5,10 @@
 /.agents/
 /skills-lock.json
 /claude.me
+/doc/*
+# Private documents (e.g. the technical specification); the rest of docs/ is published.
+/docs/Technical.Specification/
 
 # Built AppImages (packaging/linux/build-appimage.sh).
 /dist/
+
