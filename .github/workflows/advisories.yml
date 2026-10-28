@@ -1,0 +1,39 @@
+# Security advisories: check the dependencies against the RustSec advisory database.
+#
+# A crate with a known vulnerability (or one ShuttleSCP uses directly that is no longer
+# maintained) fails the run; deny.toml lists the accepted exceptions and why. New
+# advisories are published all the time, for code that has not changed, so besides each
+# change to the dependencies this also runs once a week.
+name: Advisories
+
+on:
+  push:
+    branches: [master]
+    paths: [Cargo.lock, "**/Cargo.toml", deny.toml, .github/workflows/advisories.yml]
+  pull_request:
+    paths: [Cargo.lock, "**/Cargo.toml", deny.toml, .github/workflows/advisories.yml]
+  # Mondays at 06:17 UTC (an odd minute: on the hour, GitHub's runners are busiest).
+  schedule:
+    - cron: "17 6 * * 1"
+  # Adds a "Run workflow" button on the Actions tab, to run it by hand.
+  workflow_dispatch:
+
+# Only reads the code.
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: RustSec advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      # Downloads the advisory database and checks Cargo.lock against it; no build
+      # needed.
+      - name: Check the dependencies
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

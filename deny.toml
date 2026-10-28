@@ -1,0 +1,19 @@
+# Settings for cargo-deny (https://embarkstudios.github.io/cargo-deny/), which the
+# Advisories workflow runs: `cargo deny check advisories` compares every crate in
+# Cargo.lock with the RustSec advisory database (https://rustsec.org).
+#
+# Run it locally with: cargo install cargo-deny --locked && cargo deny check advisories
+
+[advisories]
+# A crate with a known vulnerability fails the check wherever it is in the dependency
+# tree. A crate no longer maintained fails it only when ShuttleSCP uses it directly:
+# the ones deeper down are for the libraries that use them to replace.
+unmaintained = "workspace"
+# Each exception says why it is accepted. Look at them again when updating
+# dependencies: once a fix exists, update and remove the line.
+ignore = [
+    # rsa (through russh, for RSA SSH keys): the Marvin attack recovers a private key
+    # by timing very many operations with it. ShuttleSCP only uses an RSA key to sign
+    # a login, once or twice a connection, and no fixed version of the crate exists.
+    { id = "RUSTSEC-2023-0071", reason = "no fix; the SSH client only signs, a few times per login" },
+]
