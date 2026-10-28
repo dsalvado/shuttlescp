@@ -797,12 +797,63 @@ fn windows_safe_names_encode_what_windows_forbids() {
 }
 
 #[test]
-fn copies_to_this_computer_get_usable_names_on_windows() {
-    let dest = |dir: SidePath| ops::dest_name(std::ffi::OsStr::new("a:b"), &dir).into_owned();
+fn windows_restored_names_undo_windows_safe_names() {
+    for name in [
+        "notes:v2.txt",
+        "a<b>|c?*",
+        "say \"hi\"",
+        "back\\slash",
+        "tab\there",
+        "ends.",
+        "ends ",
+        "con.txt",
+        "COM1",
+        "aux .log",
+        "nul ",
+        "a:b.",
+        "café: été",
+    ] {
+        let safe = windows_safe_name(name);
+        assert_eq!(
+            windows_restored_name(&safe),
+            name,
+            "{name:?} was sent as {safe:?}"
+        );
+    }
+    // Names `windows_safe_name` would not have written stay as they are.
+    for name in [
+        "report.pdf",
+        "100%41.txt",
+        "50% off",
+        "%3a lower case",
+        "mid%2Edot",
+        "%",
+        "x%3",
+        "é%",
+    ] {
+        assert_eq!(windows_restored_name(name), name);
+    }
+}
 
-    let here = dest(local(Path::new("/srv")));
+#[test]
+fn copies_to_this_computer_get_usable_names_on_windows() {
+    let dest = |name: &str, source: Side, dir: SidePath| {
+        ops::dest_name(std::ffi::OsStr::new(name), source, &dir).into_owned()
+    };
+
+    let here = dest("a:b", Side::Remote, local(Path::new("/srv")));
     assert_eq!(here, if cfg!(windows) { "a%3Ab" } else { "a:b" });
-    assert_eq!(dest(remote("/srv")), "a:b", "uploads keep their names");
+    let uploaded = dest("a%3Ab", Side::Local, remote("/srv"));
+    assert_eq!(
+        uploaded,
+        if cfg!(windows) { "a:b" } else { "a%3Ab" },
+        "uploads from Windows get their names back"
+    );
+    assert_eq!(
+        dest("a%3Ab", Side::Remote, remote("/srv")),
+        "a%3Ab",
+        "site to site keeps names"
+    );
 }
 
 #[test]

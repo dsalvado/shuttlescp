@@ -35,7 +35,8 @@ use tokio::sync::oneshot;
 
 pub use meter::{RateMeter, fraction, percent};
 pub use ops::{
-    check_name, check_same_side, create_folder, rename, windows_name_problem, windows_safe_name,
+    check_name, check_same_side, create_folder, rename, windows_name_problem,
+    windows_restored_name, windows_safe_name,
 };
 
 use crate::format::format_size;
@@ -256,8 +257,13 @@ impl Job {
         }
         self.sources
             .iter()
-            .filter_map(SidePath::file_name)
-            .map(|name| self.dest_dir.join(ops::dest_name(name, &self.dest_dir)))
+            .filter_map(|source| {
+                let name = source.file_name()?;
+                Some(
+                    self.dest_dir
+                        .join(ops::dest_name(name, source.side(), &self.dest_dir)),
+                )
+            })
             .collect()
     }
 
