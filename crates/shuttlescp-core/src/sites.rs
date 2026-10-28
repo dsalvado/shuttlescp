@@ -100,6 +100,17 @@ pub struct Site {
     /// [`Site::files_at_once`].
     #[serde(default = "default_files_at_once")]
     pub files_at_once: u8,
+    /// The alias the user gave the site; empty shows [`Site::display_name`] instead (see
+    /// [`Site::label`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub alias: String,
+    /// The user's notes about the site.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Folder the site is listed in, as a path like `Work/Clients`; empty is the top of
+    /// the list.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 /// Files copied at the same time for a site that does not say (files from before the
@@ -262,16 +273,86 @@ impl Site {
 
     /// Name shown in the site list, like `user@host` or `user@host:2222`.
     pub fn display_name(&self) -> String {
-        let mut name = if self.user.is_empty() {
-            self.host.clone()
-        } else {
-            format!("{}@{}", self.user, self.host)
-        };
-        if self.port != self.default_port() {
-            name.push_str(&format!(":{}", self.port));
-        }
-        name
+        address_label(&self.user, &self.host, self.port, self.default_port())
     }
+
+    /// Name the site is shown by: its alias, else
+    /// [`Site::display_name`].
+    pub fn label(&self) -> String {
+        match self.alias.trim() {
+            "" => self.display_name(),
+            name => name.to_owned(),
+        }
+    }
+}
+
+/// A server address as the site list shows it: `user@host`, with `:port` when not the
+/// usual one.
+///
+/// # Arguments
+///
+/// * `user` - Login user name (may be empty)
+/// * `host` - Server host name
+/// * `port` - Server port
+/// * `default_port` - The protocol's usual port
+pub fn address_label(user: &str, host: &str, port: u16, default_port: u16) -> String {
+    let mut name = if user.is_empty() {
+        host.to_owned()
+    } else {
+        format!("{user}@{host}")
+    };
+    if port != default_port {
+        name.push_str(&format!(":{port}"));
+    }
+    name
+}
+
+/// Tidy a typed folder path: spaces around each part and empty parts are dropped, so
+/// `" Work / /Clients/"` becomes `Work/Clients` and a blank one the top level (`""`).
+pub fn normalize_folder(path: &str) -> String {
+    path.split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The folder holding `path` (`""` for a top-level folder).
+pub fn parent_folder(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+/// The last part of a folder path: `Clients` of `Work/Clients`.
+pub fn folder_name(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, name)| name)
+}
+
+/// `name` inside folder `parent` (`""` is the top level).
+pub fn join_folder(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+/// Whether `path` is `folder` or somewhere inside it.
+pub fn is_within(path: &str, folder: &str) -> bool {
+    path == folder
+        || path
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Why a folder could not be moved or renamed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FolderError {
+    /// The new place is inside the folder itself.
+    #[error("a folder cannot go inside itself")]
+    IntoItself,
+    /// A folder of that name is already there.
+    #[error("there is already a folder \"{0}\"")]
+    Exists(String),
 }
 
 /// All saved sites, as stored in `sites.json`.
@@ -280,9 +361,105 @@ impl Site {
 pub struct SiteBook {
     /// Sites in the order they are listed.
     pub sites: Vec<Site>,
+    /// Folders made by the user, kept even while they hold no sites. Folders that
+    /// sites are in exist whether listed here or not.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
 }
 
 impl SiteBook {
+    /// Every folder: those made by the user, those sites are in, and the folders above
+    /// them, sorted.
+    pub fn all_folders(&self) -> Vec<String> {
+        let mut all = std::collections::BTreeSet::new();
+        for path in self
+            .folders
+            .iter()
+            .chain(self.sites.iter().map(|site| &site.folder))
+        {
+            let mut path = path.as_str();
+            while !path.is_empty() {
+                all.insert(path.to_owned());
+                path = parent_folder(path);
+            }
+        }
+        all.into_iter().collect()
+    }
+
+    /// The folders directly inside `parent` (`""` is the top level), sorted by name
+    /// ignoring case.
+    pub fn child_folders(&self, parent: &str) -> Vec<String> {
+        let mut children: Vec<String> = self
+            .all_folders()
+            .into_iter()
+            .filter(|path| parent_folder(path) == parent)
+            .collect();
+        children.sort_by_key(|path| folder_name(path).to_lowercase());
+        children
+    }
+
+    /// Make an empty folder (nothing happens if it exists).
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The folder, like `Work/Clients`
+    pub fn add_folder(&mut self, path: &str) {
+        let path = normalize_folder(path);
+        if !path.is_empty() && !self.all_folders().contains(&path) {
+            self.folders.push(path);
+        }
+    }
+
+    /// Move or rename a folder, with the sites and folders in it.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - The folder now
+    /// * `to` - Its new path
+    ///
+    /// # Errors
+    ///
+    /// [`FolderError::IntoItself`] when `to` is inside `from`, [`FolderError::Exists`]
+    /// when a folder `to` is already there
+    pub fn move_folder(&mut self, from: &str, to: &str) -> Result<(), FolderError> {
+        if from == to {
+            return Ok(());
+        }
+        if is_within(to, from) {
+            return Err(FolderError::IntoItself);
+        }
+        if self.all_folders().iter().any(|path| path == to) {
+            return Err(FolderError::Exists(to.to_owned()));
+        }
+        self.replace_folder(from, to);
+        Ok(())
+    }
+
+    /// Delete a folder; the sites and folders in it move up to its parent.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The folder
+    pub fn delete_folder(&mut self, path: &str) {
+        self.replace_folder(path, parent_folder(path));
+    }
+
+    /// Put `to` in place of `from` at the start of every folder path that is in `from`.
+    fn replace_folder(&mut self, from: &str, to: &str) {
+        let replace = |path: &mut String| {
+            if is_within(path, from) {
+                *path = normalize_folder(&format!("{to}{}", &path[from.len()..]));
+            }
+        };
+        for site in &mut self.sites {
+            replace(&mut site.folder);
+        }
+        self.folders.iter_mut().for_each(replace);
+        let mut seen = std::collections::HashSet::new();
+        self.folders
+            .retain(|path| !path.is_empty() && seen.insert(path.clone()));
+    }
+
     /// Default location: `$XDG_CONFIG_HOME/shuttlescp/sites.json`.
     pub fn default_path() -> PathBuf {
         config::config_dir().join("sites.json")
@@ -299,9 +476,18 @@ impl SiteBook {
     /// Returns a [`ConfigError`] if the file exists but cannot be read or parsed
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let mut book: Self = config::load_json(path)?;
-        for site in book.sites.iter_mut().filter(|site| site.id.is_empty()) {
-            site.id = new_site_id();
+        for site in &mut book.sites {
+            if site.id.is_empty() {
+                site.id = new_site_id();
+            }
+            // Hand-edited files may have untidy folder paths.
+            site.folder = normalize_folder(&site.folder);
         }
+        book.folders = std::mem::take(&mut book.folders)
+            .iter()
+            .map(|path| normalize_folder(path))
+            .filter(|path| !path.is_empty())
+            .collect();
         Ok(book)
     }
 
@@ -365,7 +551,113 @@ mod tests {
             ftp: crate::sites::FtpOptions::default(),
             ssh: SshAuth::default(),
             files_at_once: DEFAULT_FILES_AT_ONCE,
+            alias: String::new(),
+            description: String::new(),
+            folder: String::new(),
         }
+    }
+
+    fn in_folder(folder: &str) -> Site {
+        Site {
+            folder: folder.to_owned(),
+            ..site("me", 22)
+        }
+    }
+
+    #[test]
+    fn label_prefers_the_given_name() {
+        let mut named = site("me", 22);
+        assert_eq!(named.label(), "me@example.com");
+        named.alias = String::from("  Web server ");
+        assert_eq!(named.label(), "Web server");
+    }
+
+    #[test]
+    fn folder_paths_are_tidied_and_split() {
+        assert_eq!(normalize_folder(" Work / /Clients/"), "Work/Clients");
+        assert_eq!(normalize_folder("  "), "");
+        assert_eq!(parent_folder("Work/Clients"), "Work");
+        assert_eq!(parent_folder("Work"), "");
+        assert_eq!(folder_name("Work/Clients"), "Clients");
+        assert_eq!(join_folder("", "Work"), "Work");
+        assert_eq!(join_folder("Work", "Clients"), "Work/Clients");
+        assert!(is_within("Work/Clients", "Work"));
+        assert!(is_within("Work", "Work"));
+        assert!(!is_within("Workshop", "Work"));
+    }
+
+    #[test]
+    fn folders_include_empty_ones_and_those_above_sites() {
+        let mut book = SiteBook {
+            sites: vec![in_folder("Work/Clients/Acme"), in_folder("")],
+            folders: Vec::new(),
+        };
+        book.add_folder("home lab");
+        book.add_folder("Work");
+
+        assert_eq!(
+            book.all_folders(),
+            ["Work", "Work/Clients", "Work/Clients/Acme", "home lab"]
+        );
+        assert_eq!(book.child_folders(""), ["home lab", "Work"]);
+        assert_eq!(book.child_folders("Work"), ["Work/Clients"]);
+        // "Work" already exists through a site: not stored twice.
+        assert_eq!(book.folders, ["home lab"]);
+    }
+
+    #[test]
+    fn moving_a_folder_takes_its_sites_and_folders() {
+        let mut book = SiteBook {
+            sites: vec![in_folder("Work/Clients"), in_folder("Workshop")],
+            folders: vec![String::from("Work/Clients/Empty")],
+        };
+
+        book.move_folder("Work", "Old/Work").expect("move");
+
+        assert_eq!(book.sites[0].folder, "Old/Work/Clients");
+        assert_eq!(book.sites[1].folder, "Workshop", "a lookalike name stays");
+        assert_eq!(book.folders, ["Old/Work/Clients/Empty"]);
+        assert_eq!(
+            book.move_folder("Old", "Old/Work/Old"),
+            Err(FolderError::IntoItself)
+        );
+        assert_eq!(
+            book.move_folder("Old/Work", "Workshop"),
+            Err(FolderError::Exists(String::from("Workshop")))
+        );
+    }
+
+    #[test]
+    fn deleting_a_folder_moves_its_contents_up() {
+        let mut book = SiteBook {
+            sites: vec![in_folder("Work/Clients"), in_folder("Work")],
+            folders: vec![String::from("Work/Clients/Empty")],
+        };
+
+        book.delete_folder("Work/Clients");
+
+        assert_eq!(book.sites[0].folder, "Work");
+        assert_eq!(book.folders, ["Work/Empty"]);
+        book.delete_folder("Work");
+        assert_eq!(book.sites[0].folder, "");
+        assert_eq!(book.all_folders(), ["Empty"]);
+    }
+
+    #[test]
+    fn load_tidies_folder_paths() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("sites.json");
+        std::fs::write(
+            &path,
+            r#"{"sites":[{"protocol":"sftp","host":"h","port":22,"user":"u","folder":"/Work/ "}],
+                "folders":[" ", "a//b"]}"#,
+        )
+        .expect("write file");
+
+        let book = SiteBook::load(&path).expect("load");
+
+        assert_eq!(book.sites[0].folder, "Work");
+        assert_eq!(book.folders, ["a/b"]);
     }
 
     #[test]
@@ -435,6 +727,7 @@ mod tests {
         // Arrange
         let mut book = SiteBook {
             sites: vec![site("me", 22)],
+            folders: Vec::new(),
         };
         let mut updated = book.sites[0].clone();
         updated.host = String::from("new.example.com");
@@ -472,6 +765,7 @@ mod tests {
         let path = temp.path().join("sites.json");
         let book = SiteBook {
             sites: vec![site("me", 22), site("", 2222)],
+            folders: Vec::new(),
         };
 
         // Act

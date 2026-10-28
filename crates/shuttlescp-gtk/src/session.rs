@@ -164,7 +164,7 @@ impl Session {
                 start_dir: SidePath::Remote(remote.home().clone()),
                 last_dir_on_disk: BTreeMap::new(),
                 remote: Some(remote.clone()),
-                title: site.display_name(),
+                title: site.label(),
                 cache: Some(ListingCache::for_site(&site.id)),
             },
             None => FilePaneInit {
@@ -278,7 +278,7 @@ impl Session {
             paused: 0,
             remote_in_use: Vec::new(),
             left_server: left.map(|(site, remote)| LeftServer {
-                name: site.display_name(),
+                name: site.label(),
                 site_id: site.id.clone(),
                 host: remote.host().to_owned(),
                 dir: remote.home().clone(),
@@ -396,7 +396,7 @@ impl Session {
                 start_dir: SidePath::Remote(start_dir.clone()),
                 last_dir_on_disk: BTreeMap::new(),
                 remote: Some(remote.clone()),
-                title: site.display_name(),
+                title: site.label(),
                 cache: Some(ListingCache::for_site(&site.id)),
             })
             .forward(sender.input_sender(), move |output| {
@@ -417,8 +417,7 @@ impl Session {
             },
         })));
         self.set_right(pane.widget());
-        self.transfer_tabs
-            .show_connection(Some(&site.display_name()));
+        self.transfer_tabs.show_connection(Some(&site.label()));
         self.transfers
             .emit(TransferPanelMsg::Connection(Some(PanelConnection {
                 site_id: site.id.clone(),
@@ -436,7 +435,7 @@ impl Session {
         })));
         tracing::info!("session {id}: connected to {}", site.display_name());
         self.connection = Some(Connection {
-            name: site.display_name(),
+            name: site.label(),
             host: remote.host().to_owned(),
             dir: start_dir,
             pane,

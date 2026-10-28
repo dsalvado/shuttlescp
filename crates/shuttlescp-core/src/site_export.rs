@@ -186,6 +186,13 @@ pub struct ExportedSite {
     /// default applies).
     #[serde(default = "crate::sites::default_files_at_once")]
     pub files_at_once: u8,
+    /// The site's alias, notes and folder (exports from older versions have none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
     /// Base64 of nonce followed by ciphertext, when the password was exported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
@@ -307,6 +314,9 @@ pub fn export_sites(
                 ..site.ssh.clone()
             },
             files_at_once: site.files_at_once,
+            alias: site.alias.clone(),
+            description: site.description.clone(),
+            folder: site.folder.clone(),
             password,
         });
     }
@@ -383,6 +393,9 @@ pub fn import_sites(
                     ..exported.ssh.clone()
                 },
                 files_at_once: exported.files_at_once,
+                alias: exported.alias.clone(),
+                description: exported.description.clone(),
+                folder: crate::sites::normalize_folder(&exported.folder),
             };
             Ok((site, password))
         })
@@ -507,6 +520,9 @@ mod tests {
             ftp: crate::sites::FtpOptions::default(),
             ssh: crate::sites::SshAuth::default(),
             files_at_once: 7,
+            alias: String::new(),
+            description: String::new(),
+            folder: String::new(),
         }
     }
 
@@ -545,7 +561,15 @@ mod tests {
     #[test]
     fn round_trip_restores_sites_and_passwords() {
         // Arrange
-        let sites = [site("a.example"), site("b.example")];
+        let sites = [
+            Site {
+                alias: String::from("Web"),
+                description: String::from("Live site\nBe careful"),
+                folder: String::from("Work/Clients"),
+                ..site("a.example")
+            },
+            site("b.example"),
+        ];
         let passwords = [(sites[0].id.clone(), secret("hunter2"))];
 
         // Act
@@ -559,6 +583,14 @@ mod tests {
         assert!(!text.contains("hunter2"), "password must be encrypted");
         assert_eq!(imported[0].0.host, "a.example");
         assert_eq!(imported[0].0.files_at_once, 7, "the site's files at once");
+        assert_eq!(
+            (
+                imported[0].0.alias.as_str(),
+                imported[0].0.description.as_str(),
+                imported[0].0.folder.as_str()
+            ),
+            ("Web", "Live site\nBe careful", "Work/Clients")
+        );
         assert_eq!(
             imported[0].1.as_ref().map(|p| p.expose_secret().to_owned()),
             Some(String::from("hunter2"))

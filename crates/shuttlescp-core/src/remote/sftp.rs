@@ -661,6 +661,9 @@ mod tests {
                 passphrase_saved: false,
             },
             files_at_once: crate::sites::DEFAULT_FILES_AT_ONCE,
+            alias: String::new(),
+            description: String::new(),
+            folder: String::new(),
         };
         let login = |site: Site| async move {
             connect(&site, Credentials::default(), None)
