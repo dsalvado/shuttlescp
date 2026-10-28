@@ -103,18 +103,89 @@ pub fn windows_safe_name(name: &str) -> Cow<'_, str> {
     Cow::Owned(safe)
 }
 
-/// The name a copy of `name` gets in `dest_dir`: the same, except in a folder on this
-/// computer on Windows, where a name Windows forbids is made usable (see
-/// [`windows_safe_name`]).
-pub(super) fn dest_name<'a>(name: &'a OsStr, dest_dir: &SidePath) -> Cow<'a, OsStr> {
-    if cfg!(windows)
-        && dest_dir.side() == Side::Local
-        && let Some(text) = name.to_str()
-        && let Cow::Owned(safe) = windows_safe_name(text)
-    {
-        return Cow::Owned(OsString::from(safe));
+/// The name [`windows_safe_name`] was given, for a name it wrote: "notes%3Av2.txt"
+/// becomes "notes:v2.txt" again. As WinSCP does, uploads from Windows use it, so a file
+/// downloaded and sent back keeps its name on the server. A name `windows_safe_name`
+/// would not have written (e.g. "100%41.txt", or "report.pdf") comes back unchanged.
+pub fn windows_restored_name(name: &str) -> Cow<'_, str> {
+    if !name.contains('%') {
+        return Cow::Borrowed(name);
     }
-    Cow::Borrowed(name)
+    // A code as `windows_safe_name` writes it: two hex digits, upper case.
+    let decode = |hex: &str| {
+        hex.bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+            .then(|| u8::from_str_radix(hex, 16).ok())
+            .flatten()
+            .map(char::from)
+    };
+    // Each code for a character Windows forbids, and a space or dot at the end.
+    let mut restored = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(at) = rest.find('%') {
+        restored.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        match after.get(..2).and_then(decode) {
+            Some(c)
+                if WINDOWS_FORBIDDEN.contains(&c)
+                    || c.is_control()
+                    || (after.len() == 2 && matches!(c, ' ' | '.')) =>
+            {
+                restored.push(c);
+                rest = &after[2..];
+            }
+            _ => {
+                restored.push('%');
+                rest = after;
+            }
+        }
+    }
+    restored.push_str(rest);
+    // The last letter of a device name's stem ("co%6E.txt" for "con.txt").
+    let stem_end = restored.find('.').unwrap_or(restored.len());
+    let stem_len = restored[..stem_end].trim_end().len();
+    if let Some(code) = stem_len.checked_sub(3)
+        && restored.is_char_boundary(code)
+        && restored[code..].starts_with('%')
+        && let Some(c) = decode(&restored[code + 1..stem_len])
+    {
+        let device = format!("{}{c}{}", &restored[..code], &restored[stem_len..]);
+        if windows_safe_name(&device) == name {
+            return Cow::Owned(device);
+        }
+    }
+    // Only a name that turns back into `name` is the one it was made from.
+    if restored != name && windows_safe_name(&restored) == name {
+        Cow::Owned(restored)
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
+/// The name a copy of `name` from `source_side` gets in `dest_dir`. On Windows, a copy
+/// to a folder on this computer gets a name Windows can use (see [`windows_safe_name`]),
+/// and an upload gets back a name made that way (see [`windows_restored_name`]). Any
+/// other copy keeps its name.
+pub(super) fn dest_name<'a>(
+    name: &'a OsStr,
+    source_side: Side,
+    dest_dir: &SidePath,
+) -> Cow<'a, OsStr> {
+    if !cfg!(windows) {
+        return Cow::Borrowed(name);
+    }
+    let Some(text) = name.to_str() else {
+        return Cow::Borrowed(name);
+    };
+    let renamed = match (source_side, dest_dir.side()) {
+        (_, Side::Local) => windows_safe_name(text),
+        (Side::Local, Side::Remote) => windows_restored_name(text),
+        (Side::Remote, Side::Remote) => Cow::Borrowed(text),
+    };
+    match renamed {
+        Cow::Owned(renamed) => Cow::Owned(OsString::from(renamed)),
+        Cow::Borrowed(_) => Cow::Borrowed(name),
+    }
 }
 
 /// Create a new folder called `name` in `parent`.

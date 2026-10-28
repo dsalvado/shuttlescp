@@ -187,8 +187,9 @@ fn push_item(
     existing: &Existing,
 ) -> usize {
     let id = items.len();
-    // On Windows a name from a server may need changing to be usable here.
-    let dest_name = super::ops::dest_name(name, dest_dir);
+    // On Windows a name from a server may need changing to be usable here, and an
+    // upload restores a name changed that way.
+    let dest_name = super::ops::dest_name(name, source.side(), dest_dir);
     let there = existing.get(&*dest_name);
     let mut partial_name = dest_name.to_os_string();
     partial_name.push(PARTIAL_SUFFIX);
