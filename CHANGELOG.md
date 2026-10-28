@@ -7,6 +7,41 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-28
+
+### Added
+
+- **Aliases, descriptions and folders for sites** in the Login dialog. A site can have
+  an alias, shown in the site lists with its address greyed after it, and on its
+  session's tab; left blank, the address is shown as before. A description, a few
+  lines of notes, shows when pointing at the site. Sites can be grouped in folders,
+  and folders inside folders: the new-folder button next to Edit makes one, Rename and
+  Delete act on a picked folder (deleting one moves what it holds up a level, never
+  deleting a site), and dragging a site or folder onto a folder moves it there. New
+  sites start at the top of the list. Exports carry the alias, description and folder.
+- **Hide finished files** is remembered: new sessions start the way it was last left.
+
+### Changed
+
+- Uploads from Windows restore names changed on download. A download to Windows
+  writes characters Windows forbids as `%XX` ("test:1" arrives as "test%3A1"); sending
+  that file back now names it "test:1" on the server again, as WinSCP does. Only names
+  a download would have written are changed: "50% off" stays as it is.
+- A crash is logged on one line, with its message and where it happened. A crash in a
+  background task no longer says the session ended (the app kept running), and a
+  crash that ends the app is logged once, like a normal end.
+- A release build run from the source code no longer takes over the desktop launcher;
+  only the AppImage replaces an existing launcher entry.
+
+### Security
+
+- Updated rustls-webpki to 0.103.16: checking an FTPS server's certificate could
+  accept intermediate certificates that should not be trusted (RUSTSEC-2026-0382).
+  Also updated crypto-bigint and ctutils for timing issues (RUSTSEC-2026-0387,
+  RUSTSEC-2026-0385).
+- The dependencies are now checked against the RustSec advisory database on every
+  change and every week.
+
 ## [0.18.0] - 2026-10-26
 
 ### Added
@@ -347,7 +382,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/dsalvado/shuttlescp/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/dsalvado/shuttlescp/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/dsalvado/shuttlescp/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/dsalvado/shuttlescp/compare/v0.17.0...v0.17.1
