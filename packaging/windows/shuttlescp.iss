@@ -44,9 +44,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 WizardStyle=modern
 SetupIconFile=shuttlescp.ico
-; The privacy policy, shown before installing (a condition of the SignPath Foundation's
-; free code signing, since the update check contacts GitHub). Plain text, so it is kept
-; to ASCII. A silent install (the app's own update) skips the page.
+; The privacy policy, shown before installing, since the update check contacts GitHub
+; (code-signing programs ask for this too). Plain text, so it is kept to ASCII. A silent
+; install (the app's own update) skips the page.
 InfoBeforeFile=..\..\PRIVACY.md
 UninstallDisplayIcon={app}\bin\shuttlescp.exe
 UninstallDisplayName=ShuttleSCP

@@ -149,8 +149,7 @@ jobs:
             echo "::error::CHANGELOG.md has no section for $version"
             exit 1
           fi
-          # Each release page links the code signing policy and the privacy policy (the
-          # SignPath Foundation asks for the first on every release page).
+          # Each release page links the code signing policy and the privacy policy.
           printf '\n---\n\n[Code signing policy](https://shuttlescp.dsalvado.ca/#code-signing-policy) · [Privacy policy](https://github.com/dsalvado/shuttlescp/blob/master/PRIVACY.md)\n' \
             >> dist/release-notes.md
 
