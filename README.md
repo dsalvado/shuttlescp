@@ -204,20 +204,17 @@ I'm David Salvador; more about me at [dsalvado.ca](https://dsalvado.ca).
 
 ## Code signing policy
 
-Windows releases are to be signed through the SignPath Foundation, which signs
-open-source programs for free. It was applied for in October 2026; until it is
-approved, the Windows installer is unsigned.
+The Windows program and installer are not signed with a code-signing certificate yet,
+which is why Windows SmartScreen asks before running the installer the first time.
 
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
-
-- **What is signed:** `shuttlescp.exe` and the Windows installer, built by GitHub Actions
-  from this repository's source by the [release workflow](.github/workflows/release.yml),
-  never on a personal computer. The GTK libraries and other components bundled with it
-  are their projects' own files, included unchanged.
-- **Team roles:** committers and reviewers: [David Salvador](https://github.com/dsalvado).
-  Approvers: [David Salvador](https://github.com/dsalvado). The code is written with
-  Claude Code (see [How this was built](#how-this-was-built)); every change is reviewed
-  and merged by the maintainer, and each release is approved for signing by hand.
+- **How releases are made:** every release is built by GitHub Actions from this
+  repository's source by the [release workflow](.github/workflows/release.yml), never on
+  a personal computer, and published with SHA-256 checksums. Updates are only installed
+  when signed with the ShuttleSCP release key. The GTK libraries and other components
+  bundled with it are their projects' own files, included unchanged.
+- **Team roles:** David Salvador ([dsalvado](https://github.com/dsalvado)) is the
+  maintainer, and reviews, merges and releases every change. The code is written with
+  Claude Code (see [How this was built](#how-this-was-built)).
 - **Privacy:** ShuttleSCP collects no information about you. It connects only to the
   servers you add and, to look for updates, to GitHub (which can be turned off). See the
   [privacy policy](PRIVACY.md).

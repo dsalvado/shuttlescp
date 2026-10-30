@@ -331,22 +331,18 @@ cargo run --release</code></pre>
     its GNU toolchain; see <a href="https://github.com/dsalvado/shuttlescp/blob/master/BUILDING.md">BUILDING.md</a>.</p>
 
   <h2 id="code-signing-policy">Code signing policy</h2>
-  <p>Windows releases are to be signed through the SignPath Foundation, which signs
-    open-source programs for free. It was applied for in October 2026; until it is
-    approved, the Windows installer is unsigned.</p>
-  <p>Free code signing provided by <a href="https://about.signpath.io">SignPath.io</a>,
-    certificate by <a href="https://signpath.org">SignPath Foundation</a></p>
+  <p>The Windows program and installer are not signed with a code-signing certificate yet,
+    which is why Windows SmartScreen asks before running the installer the first time.</p>
   <ul>
-    <li><strong>What is signed:</strong> <code>shuttlescp.exe</code> and the Windows installer, built
-      by GitHub Actions from the repository's source by its
+    <li><strong>How releases are made:</strong> every release is built by GitHub Actions from the
+      repository's source by its
       <a href="https://github.com/dsalvado/shuttlescp/blob/master/.github/workflows/release.yml">release workflow</a>,
-      never on a personal computer. The GTK libraries and other components bundled with it are
-      their projects' own files, included unchanged.</li>
-    <li><strong>Team roles:</strong> committers and reviewers:
-      <a href="https://github.com/dsalvado">David Salvador</a>. Approvers:
-      <a href="https://github.com/dsalvado">David Salvador</a>. The code is written with Claude
-      Code (see below); every change is reviewed and merged by the maintainer, and each release
-      is approved for signing by hand.</li>
+      never on a personal computer, and published with SHA-256 checksums. Updates are only
+      installed when signed with the ShuttleSCP release key. The GTK libraries and other
+      components bundled with it are their projects' own files, included unchanged.</li>
+    <li><strong>Team roles:</strong> <a href="https://github.com/dsalvado">David Salvador</a> is the
+      maintainer, and reviews, merges and releases every change. The code is written with Claude
+      Code (see below).</li>
     <li><strong>Privacy:</strong> ShuttleSCP collects no information about you. It connects only to
       the servers you add and, to look for updates, to GitHub (which can be turned off). See the
       <a href="https://github.com/dsalvado/shuttlescp/blob/master/PRIVACY.md">privacy policy</a>.</li>
