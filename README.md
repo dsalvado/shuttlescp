@@ -115,8 +115,8 @@ Download the installer (`ShuttleSCP-…-windows-x64-setup.exe`) from the
 installs ShuttleSCP for your user only (no administrator rights needed), with a Start
 menu entry and an uninstaller under Settings › Apps. It runs on 64-bit Windows 10 and 11.
 
-The installer is not signed with a paid code-signing certificate, so the first time
-Windows SmartScreen may say "Windows protected your PC": click "More info", then
+The installer is not signed yet (see [Code signing policy](#code-signing-policy)), so
+the first time Windows SmartScreen may say "Windows protected your PC": click "More info", then
 "Run anyway". ShuttleSCP checks for new versions and, when you agree, downloads the new
 installer (checked against the ShuttleSCP release key), runs it and restarts.
 
@@ -201,6 +201,26 @@ Commits made with Claude carry a `Co-Authored-By: Claude` line, so the history s
 exactly which they are.
 
 I'm David Salvador; more about me at [dsalvado.ca](https://dsalvado.ca).
+
+## Code signing policy
+
+Windows releases are to be signed through the SignPath Foundation, which signs
+open-source programs for free. It was applied for in October 2026; until it is
+approved, the Windows installer is unsigned.
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
+
+- **What is signed:** `shuttlescp.exe` and the Windows installer, built by GitHub Actions
+  from this repository's source by the [release workflow](.github/workflows/release.yml),
+  never on a personal computer. The GTK libraries and other components bundled with it
+  are their projects' own files, included unchanged.
+- **Team roles:** committers and reviewers: [David Salvador](https://github.com/dsalvado).
+  Approvers: [David Salvador](https://github.com/dsalvado). The code is written with
+  Claude Code (see [How this was built](#how-this-was-built)); every change is reviewed
+  and merged by the maintainer, and each release is approved for signing by hand.
+- **Privacy:** ShuttleSCP collects no information about you. It connects only to the
+  servers you add and, to look for updates, to GitHub (which can be turned off). See the
+  [privacy policy](PRIVACY.md).
 
 ## Security
 
