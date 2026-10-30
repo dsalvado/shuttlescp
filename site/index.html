@@ -232,12 +232,14 @@
       <a class="button secondary" id="download-windows" data-umami-event="download-windows" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for Windows</a>
       <a id="all-releases" data-umami-event="all-releases" href="https://github.com/dsalvado/shuttlescp/releases">All releases</a>
       <a id="checksums" data-umami-event="checksums" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>SHA-256 checksums</a>
+      <a id="signing-policy" href="#code-signing-policy">Code signing policy</a>
     </div>
     <div class="os-note" id="windows-note" hidden>
       <p><strong>On Windows, the first time you run the installer:</strong> if Windows says
         "Windows protected your PC", click "More info", then "Run anyway".</p>
-      <p>ShuttleSCP is free and its installer is not signed with a paid code-signing certificate,
-        so Windows SmartScreen asks this once. <a href="#install-windows">Install steps</a></p>
+      <p>ShuttleSCP is free and its installer is not signed yet (see the
+        <a href="#code-signing-policy">code signing policy</a>), so Windows SmartScreen asks this
+        once. <a href="#install-windows">Install steps</a></p>
     </div>
     <div class="os-note" id="mac-note">
       <p><strong>On a Mac, the first time you open it:</strong> right-click (or Control-click)
@@ -294,8 +296,8 @@
     <li>Download the installer above and run it. It installs ShuttleSCP for your user only, with
       no administrator rights needed, and adds it to the Start menu.</li>
     <li>The first time, Windows SmartScreen may say "Windows protected your PC": click "More info",
-      then "Run anyway". ShuttleSCP is free and its installer is not signed with a paid
-      code-signing certificate, so Windows asks this once.</li>
+      then "Run anyway". ShuttleSCP is free and its installer is not signed yet (see the
+      <a href="#code-signing-policy">code signing policy</a>), so Windows asks this once.</li>
     <li>ShuttleSCP checks for new versions and can update itself (Help › Check for Updates). To
       remove it, use Settings › Apps.</li>
   </ol>
@@ -328,6 +330,28 @@ cargo run --release</code></pre>
     Dock. On Windows, GTK comes from <a href="https://www.msys2.org">MSYS2</a> and Rust builds with
     its GNU toolchain; see <a href="https://github.com/dsalvado/shuttlescp/blob/master/BUILDING.md">BUILDING.md</a>.</p>
 
+  <h2 id="code-signing-policy">Code signing policy</h2>
+  <p>Windows releases are to be signed through the SignPath Foundation, which signs
+    open-source programs for free. It was applied for in October 2026; until it is
+    approved, the Windows installer is unsigned.</p>
+  <p>Free code signing provided by <a href="https://about.signpath.io">SignPath.io</a>,
+    certificate by <a href="https://signpath.org">SignPath Foundation</a></p>
+  <ul>
+    <li><strong>What is signed:</strong> <code>shuttlescp.exe</code> and the Windows installer, built
+      by GitHub Actions from the repository's source by its
+      <a href="https://github.com/dsalvado/shuttlescp/blob/master/.github/workflows/release.yml">release workflow</a>,
+      never on a personal computer. The GTK libraries and other components bundled with it are
+      their projects' own files, included unchanged.</li>
+    <li><strong>Team roles:</strong> committers and reviewers:
+      <a href="https://github.com/dsalvado">David Salvador</a>. Approvers:
+      <a href="https://github.com/dsalvado">David Salvador</a>. The code is written with Claude
+      Code (see below); every change is reviewed and merged by the maintainer, and each release
+      is approved for signing by hand.</li>
+    <li><strong>Privacy:</strong> ShuttleSCP collects no information about you. It connects only to
+      the servers you add and, to look for updates, to GitHub (which can be turned off). See the
+      <a href="https://github.com/dsalvado/shuttlescp/blob/master/PRIVACY.md">privacy policy</a>.</li>
+  </ul>
+
   <h2>How it was built</h2>
   <p>ShuttleSCP was built with <a href="https://claude.com/claude-code">Claude Code</a>,
     Anthropic's AI coding agent. After moving from Windows to Linux I missed WinSCP, so I
@@ -348,6 +372,7 @@ cargo run --release</code></pre>
     <a href="https://github.com/dsalvado/shuttlescp/blob/master/LICENSE">GNU GPL, version 3 or later</a>.
     Source code, issues and releases on <a href="https://github.com/dsalvado/shuttlescp">GitHub</a>.<br>
     Visits are counted with <a href="https://umami.is">Umami</a> on my own server, without cookies.
+    · <a href="https://github.com/dsalvado/shuttlescp/blob/master/PRIVACY.md">Privacy policy</a>
   </footer>
  </div>
 </main>
