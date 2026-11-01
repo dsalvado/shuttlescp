@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-11-01
+
 ### Fixed
 
 - On Linux with Wayland, the menus open from the keyboard again (Alt+F, Alt+V, Alt+T,
@@ -399,7 +401,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.19.2...HEAD
+[0.19.2]: https://github.com/dsalvado/shuttlescp/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/dsalvado/shuttlescp/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/dsalvado/shuttlescp/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/dsalvado/shuttlescp/compare/v0.17.2...v0.18.0
