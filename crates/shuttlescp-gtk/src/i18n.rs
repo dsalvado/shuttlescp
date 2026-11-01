@@ -19,6 +19,10 @@ static_loader! {
     static LOCALES = {
         locales: "./i18n",
         fallback_language: "en-US",
+        // Fluent wraps each value in invisible direction marks, which only right-to-
+        // left languages need; none is offered, and the marks would end up inside file
+        // names and tooltips. Turn them back on with such a translation.
+        customise: |bundle| bundle.set_use_isolating(false),
     };
 }
 
@@ -140,19 +144,90 @@ mod tests {
 
     #[test]
     fn variables_are_filled_in() {
-        let text = tr!("status-transfers-limited", running = 2, limit = 4);
-        // Fluent wraps each value in invisible direction marks, for right-to-left
-        // languages; the text without them reads normally.
-        let plain: String = text
-            .chars()
-            .filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
-            .collect();
-        assert_eq!(plain, "Transfers: 2 of 4");
+        assert_eq!(
+            tr!("status-transfers-limited", running = 2, limit = 4),
+            "Transfers: 2 of 4"
+        );
     }
 
     #[test]
     fn a_missing_text_shows_its_name() {
         assert_eq!(text("no-such-message"), "no-such-message");
+    }
+
+    /// Message names in a Fluent file: lines starting with a name and " =" (not
+    /// comments, terms `-name`, or the continuation of a message).
+    fn messages_in(ftl: &str) -> std::collections::BTreeSet<String> {
+        ftl.lines()
+            .filter_map(|line| line.split_once(" ="))
+            .map(|(name, _)| name)
+            .filter(|name| {
+                name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Message names the code asks for: every `tr!("name"` in the source files.
+    fn messages_used() -> std::collections::BTreeSet<String> {
+        fn scan(dir: &std::path::Path, used: &mut std::collections::BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir)
+                .expect("read source folder")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, used);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let source = std::fs::read_to_string(&path).expect("read source file");
+                    // The macro's own definition and documentation name examples.
+                    if path.ends_with("i18n.rs") {
+                        continue;
+                    }
+                    for (at, _) in source.match_indices("tr!(") {
+                        // `tr!` itself, not the end of a longer name (`include_str!`).
+                        let whole_word = source[..at]
+                            .chars()
+                            .next_back()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+                        // The name may be on the next line, where cargo fmt puts it.
+                        let rest = source[at + "tr!(".len()..].trim_start();
+                        if let Some((name, _)) = rest
+                            .strip_prefix('"')
+                            .and_then(|rest| rest.split_once('"'))
+                            .filter(|_| whole_word)
+                        {
+                            used.insert(name.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+        let mut used = std::collections::BTreeSet::new();
+        scan(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut used,
+        );
+        used
+    }
+
+    #[test]
+    fn every_text_the_code_uses_exists_and_every_text_is_used() {
+        let english = messages_in(include_str!("../i18n/en-US/shuttlescp.ftl"));
+        let used = messages_used();
+
+        let missing: Vec<_> = used.difference(&english).collect();
+        assert!(
+            missing.is_empty(),
+            "used in code, missing in en-US: {missing:?}"
+        );
+        // `language-name` is read by `languages`, not through `tr!`.
+        let unused: Vec<_> = english
+            .difference(&used)
+            .filter(|name| *name != "language-name")
+            .collect();
+        assert!(unused.is_empty(), "in en-US, used nowhere: {unused:?}");
     }
 
     #[test]

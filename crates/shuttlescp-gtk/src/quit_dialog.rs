@@ -8,6 +8,7 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 
 use crate::dialog::{self, ButtonKind, Dialog};
+use crate::i18n::tr;
 
 /// What to do with the unfinished transfers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,21 +35,17 @@ pub fn ask(
     paused: usize,
     on_choice: impl Fn(QuitChoice) + 'static,
 ) {
-    let dialog = Dialog::new(parent, "Quit");
+    let dialog = Dialog::new(parent, &tr!("quit-title"));
     dialog
         .content
-        .append(&dialog::text("Quit ShuttleSCP?", &["heading"]));
+        .append(&dialog::text(&tr!("quit-question"), &["heading"]));
     dialog.content.append(&dialog::text(
-        &format!(
-            "{} Keep them to resume the next time you connect, or delete their partial \
-             files.",
-            unfinished_text(running, paused)
-        ),
+        &tr!("quit-detail", unfinished = unfinished_text(running, paused)),
         &[],
     ));
     // Set by a button, read when the window closes, so `on_choice` runs at most once.
     let choice = Rc::new(Cell::new(None));
-    dialog.add_close_button("Cancel");
+    dialog.add_close_button(&tr!("dialog-cancel"));
     let choose = |label: &str, kind: ButtonKind, picked: QuitChoice| {
         let (choice, window) = (Rc::clone(&choice), dialog.window.clone());
         dialog.add_button(label, kind, move || {
@@ -57,15 +54,11 @@ pub fn ask(
         })
     };
     choose(
-        "Delete Partial Files and Quit",
+        &tr!("quit-discard"),
         ButtonKind::Destructive,
         QuitChoice::Discard,
     );
-    let keep = choose(
-        "Keep for Later and Quit",
-        ButtonKind::Suggested,
-        QuitChoice::Keep,
-    );
+    let keep = choose(&tr!("quit-keep"), ButtonKind::Suggested, QuitChoice::Keep);
     dialog.window.connect_close_request(move |_| {
         if let Some(choice) = choice.get() {
             on_choice(choice);
@@ -78,16 +71,15 @@ pub fn ask(
 
 /// "2 transfers are unfinished (1 running, 1 paused)." and the like.
 fn unfinished_text(running: usize, paused: usize) -> String {
-    let count = running + paused;
-    let subject = if count == 1 {
-        String::from("1 transfer is")
-    } else {
-        format!("{count} transfers are")
-    };
     match (running, paused) {
-        (_, 0) => format!("{subject} still running."),
-        (0, _) => format!("{subject} paused."),
-        _ => format!("{subject} unfinished ({running} running, {paused} paused)."),
+        (_, 0) => tr!("quit-running", count = running),
+        (0, _) => tr!("quit-paused", count = paused),
+        _ => tr!(
+            "quit-unfinished",
+            count = running + paused,
+            running = running,
+            paused = paused
+        ),
     }
 }
 

@@ -10,6 +10,7 @@ use shuttlescp_core::format::{format_modified, format_size};
 use shuttlescp_core::transfer::{ConflictAnswer, ConflictChoice, FileInfo};
 
 use crate::dialog::{self, ButtonKind, Dialog};
+use crate::i18n::tr;
 
 /// Ask over `parent` what to do about `name`, which already exists in `dest_dir`.
 /// `on_answer` is called exactly once; closing the prompt cancels the transfer, so
@@ -31,9 +32,13 @@ pub fn ask(
     incoming: FileInfo,
     on_answer: impl Fn(ConflictAnswer) + 'static,
 ) {
-    let dialog = Dialog::new(parent, "File Already Exists");
+    let dialog = Dialog::new(parent, &tr!("conflict-title"));
     let question = dialog::text(
-        &format!("{name} already exists in {dest_dir}"),
+        &tr!(
+            "conflict-question",
+            name = name.to_string(),
+            folder = dest_dir.to_string()
+        ),
         &["heading"],
     );
     let newer = match (existing.modified, incoming.modified) {
@@ -46,15 +51,15 @@ pub fn ask(
         .row_spacing(2)
         .build();
     for (row, (label, info, is_newer)) in [
-        ("Existing:", existing, newer.0),
-        ("New:", incoming, newer.1),
+        (tr!("conflict-existing"), existing, newer.0),
+        (tr!("conflict-new"), incoming, newer.1),
     ]
     .into_iter()
     .enumerate()
     {
         // `row` is 0 or 1, so it always fits.
         let row = i32::try_from(row).unwrap_or(0);
-        details.attach(&dim_label(label), 0, row, 1, 1);
+        details.attach(&dim_label(&label), 0, row, 1, 1);
         details.attach(
             &gtk::Label::builder()
                 .label(describe(info, is_newer))
@@ -66,7 +71,7 @@ pub fn ask(
             1,
         );
     }
-    let for_all = gtk::CheckButton::with_label("Do the same for the other existing files");
+    let for_all = gtk::CheckButton::with_label(&tr!("conflict-for-all"));
     dialog.content.append(&question);
     dialog.content.append(&details);
     dialog.content.append(&for_all);
@@ -77,19 +82,23 @@ pub fn ask(
     let mut skip = None;
     for (label, kind, picked) in [
         (
-            "Cancel Transfer",
+            tr!("conflict-cancel"),
             ButtonKind::Normal,
             ConflictChoice::CancelJob,
         ),
-        ("Skip", ButtonKind::Normal, ConflictChoice::Skip),
         (
-            "Overwrite",
+            tr!("conflict-skip"),
+            ButtonKind::Normal,
+            ConflictChoice::Skip,
+        ),
+        (
+            tr!("conflict-overwrite"),
             ButtonKind::Destructive,
             ConflictChoice::Overwrite,
         ),
     ] {
         let (choice, window) = (Rc::clone(&choice), dialog.window.clone());
-        let button = dialog.add_button(label, kind, move || {
+        let button = dialog.add_button(&label, kind, move || {
             choice.set(picked);
             window.close();
         });
@@ -121,7 +130,7 @@ fn describe(info: FileInfo, newer: bool) -> String {
         text.push_str(&format_modified(modified));
     }
     if newer {
-        text.push_str(" (newer)");
+        text.push_str(&tr!("conflict-newer"));
     }
     text
 }
