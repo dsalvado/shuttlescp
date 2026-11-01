@@ -240,3 +240,62 @@ about-authors = By { $authors }
 about-license = Free software: { $license }
 about-system-details = System details
 about-copy-details = Copy Details
+
+## The file panes (file_pane.rs). $name is a file, folder or server name; $folder a
+## folder's path; $saved when a saved listing was made, like 2026-11-01 10:02.
+
+pane-gathering = Gathering information...
+pane-gathering-tooltip = Gathering information
+pane-saved-gathering = Saved list from { $saved } · gathering information...
+pane-saved-stale = Saved list from { $saved }; could not check for changes: { $error }
+pane-refresh-tooltip = Refresh
+pane-items =
+    { $count ->
+        [one] 1 item
+       *[other] { $count } items
+    }
+pane-created = Created folder { $name }
+pane-renamed = Renamed to { $name }
+pane-new-folder-title = New Folder
+pane-new-folder-prompt = Create a folder in { $folder }:
+pane-new-folder-create = Create
+# The name first offered for a new folder.
+pane-new-folder-name = New Folder
+pane-rename-title = Rename
+pane-rename-prompt = New name for { $name }:
+pane-open-title = Open File
+pane-open-failed = Cannot open { $name }
+# $error: the system's reason, in its own language.
+pane-open-error = { $error }.
+pane-column-name = Name
+pane-column-size = Size
+pane-column-modified = Modified
+
+## The file panes' right-click menu. The underscore marks the keyboard letter.
+## $kind is upload, download or copy: the item copies files to the other pane,
+## named $name (another server, or "this computer").
+
+pane-transfer =
+    { $kind ->
+        [upload] _Upload
+        [download] _Download
+       *[copy] _Copy
+    }
+pane-transfer-to =
+    { $kind ->
+        [upload] _Upload to { $name }
+        [download] _Download to { $name }
+       *[copy] _Copy to { $name }
+    }
+pane-move = _Move
+pane-move-to = _Move to { $name }
+pane-menu-new-folder = _New Folder…
+pane-menu-rename = _Rename…
+pane-menu-delete = _Delete
+pane-menu-refresh = Re_fresh
+
+## The menu after dropping files with the right mouse button.
+
+pane-drop-copy = _Copy Here
+pane-drop-move = _Move Here
+pane-drop-cancel = C_ancel
