@@ -34,13 +34,16 @@ use shuttlescp_core::transfer::{self, JobKind, Side};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
+use crate::i18n::tr;
 use crate::key_passphrase_dialog::{self, KeyPassphrase};
 use crate::name_dialog::{self, NamePrompt};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
 use crate::transfer_panel::PendingStore;
 
 /// Label of the first entry in the site list, which starts a new site.
-const NEW_SITE_LABEL: &str = "New Site";
+fn new_site_label() -> String {
+    tr!("login-new-site")
+}
 /// Icon of the "New Site" entry.
 const NEW_SITE_ICON: &str = "list-add-symbolic";
 /// Icon of a saved site.
@@ -477,7 +480,10 @@ impl LoginDialog {
         };
         match detail {
             PairDetail::Protocol if site.protocol == Protocol::Ftp => {
-                format!("FTP \u{b7} {}", site.ftp.encryption.label())
+                tr!(
+                    "login-ftp-encryption",
+                    encryption = site.ftp.encryption.label()
+                )
             }
             PairDetail::Protocol => site.protocol.label().to_owned(),
             PairDetail::Address => format!("{}:{}", site.host, site.port),
@@ -497,18 +503,18 @@ impl LoginDialog {
                 let agent = site.protocol != Protocol::Ftp && site.ssh.use_agent;
                 let mut ways = Vec::new();
                 if let Some(key) = key {
-                    ways.push(format!("key file {key}"));
+                    ways.push(tr!("login-way-key", key = key));
                 }
                 if agent {
-                    ways.push(String::from("SSH agent"));
+                    ways.push(tr!("login-way-agent"));
                 }
                 if site.password_saved {
-                    ways.push(String::from("saved password"));
+                    ways.push(tr!("login-way-password"));
                 }
                 if ways.is_empty() {
-                    String::from("no saved password")
+                    tr!("login-way-none")
                 } else {
-                    ways.join(", then ")
+                    ways.join(&tr!("login-way-then"))
                 }
             }
         }
@@ -568,8 +574,8 @@ impl LoginDialog {
             return;
         };
         page.set_title(&match self.unfinished.len() {
-            0 => String::from("Unfinished"),
-            count => format!("Unfinished ({count})"),
+            0 => tr!("login-unfinished-tab"),
+            count => tr!("login-unfinished-tab-count", count = count),
         });
         // The tab button gets the `needs-attention` class (see style.css).
         page.set_needs_attention(!self.unfinished.is_empty());
@@ -581,7 +587,7 @@ impl LoginDialog {
             .sites
             .iter()
             .find(|site| site.id == site_id)
-            .map_or_else(|| String::from("(deleted site)"), Site::label)
+            .map_or_else(|| tr!("login-deleted-site"), Site::label)
     }
 
     /// Where an unfinished transfer runs: "site", or site to site "left ⇄ right".
@@ -619,9 +625,7 @@ impl LoginDialog {
         if ticked.iter().any(|pending| {
             pending.site_id != first.site_id || pending.left_site_id != first.left_site_id
         }) {
-            return Err(String::from(
-                "Tick transfers of one site (or one pair of sites) at a time.",
-            ));
+            return Err(tr!("login-unfinished-one-site"));
         }
         first
             .left_site_id
@@ -633,12 +637,7 @@ impl LoginDialog {
                     .iter()
                     .find(|site| &site.id == id)
                     .cloned()
-                    .ok_or_else(|| {
-                        String::from(
-                            "Its site was deleted, so it cannot be resumed. Discard \
-                             forgets it (delete any partial files by hand).",
-                        )
-                    })
+                    .ok_or_else(|| tr!("login-unfinished-site-gone"))
             })
             .collect()
     }
@@ -657,26 +656,39 @@ impl LoginDialog {
         // Which site each pane is: left is this computer or, site to site, a server.
         let pane_name = |pane: Side| match (pane, &pending.left_site_id) {
             (Side::Local, Some(left)) => self.site_name(left),
-            (Side::Local, None) => String::from("this computer"),
+            (Side::Local, None) => tr!("this-computer"),
             (Side::Remote, _) => self.site_name(&pending.site_id),
         };
         let folders = job.pane_folders();
         let folder = |index: usize| {
             folders
                 .get(index)
-                .map(|(pane, dir)| format!("{dir} ({})", pane_name(*pane)))
+                .map(|(pane, dir)| {
+                    tr!(
+                        "login-unfinished-folder",
+                        folder = dir.to_string(),
+                        place = pane_name(*pane)
+                    )
+                })
                 .unwrap_or_default()
         };
         match detail {
-            UnfinishedDetail::What => match job.kind {
-                JobKind::Copy => format!("Copy {}", job.subject()),
-                JobKind::Move => format!("Move {}", job.subject()),
-                JobKind::Delete => format!("Delete {}", job.subject()),
-            },
+            UnfinishedDetail::What => {
+                let kind = match job.kind {
+                    JobKind::Copy => "copy",
+                    JobKind::Move => "move",
+                    JobKind::Delete => "delete",
+                };
+                tr!(
+                    "login-unfinished-what",
+                    kind = kind,
+                    subject = job.subject()
+                )
+            }
             UnfinishedDetail::From => folder(0),
             UnfinishedDetail::To => folder(1),
             UnfinishedDetail::Saved => pending.saved_at.map_or_else(
-                || String::from("Unknown (saved by an older version)"),
+                || tr!("login-unfinished-saved-unknown"),
                 |seconds| format_modified(UNIX_EPOCH + Duration::from_secs(seconds)),
             ),
         }
@@ -695,7 +707,7 @@ impl LoginDialog {
                 let keys: Vec<String> = ticked.into_iter().map(|pending| pending.key).collect();
                 tracing::info!("forgetting {} transfers of deleted sites", keys.len());
                 self.pending.forget(&keys);
-                self.status = String::from("Forgotten");
+                self.status = tr!("login-forgotten");
                 self.refresh_unfinished(sender);
                 return;
             }
@@ -758,7 +770,7 @@ impl LoginDialog {
         sender: &ComponentSender<Self>,
     ) {
         self.busy = true;
-        self.status = String::from("Deleting partial files...");
+        self.status = tr!("login-deleting-partials");
         sender.oneshot_command(async move {
             let (mut keys, mut deleted, mut failed) = (Vec::new(), 0, Vec::new());
             for pending in jobs {
@@ -825,7 +837,7 @@ impl LoginDialog {
     /// Grey hint text of the Alias field: the name used when it is left blank.
     fn alias_placeholder(&self) -> String {
         match self.default_site_name() {
-            name if name.is_empty() => String::from("Optional"),
+            name if name.is_empty() => tr!("login-alias-optional"),
             name => name,
         }
     }
@@ -938,7 +950,7 @@ impl LoginDialog {
             .as_ref()
             .map(|pending| pending.passphrase.clone());
         self.busy = true;
-        self.status = format!("Connecting to {}...", site.label());
+        self.status = tr!("login-connecting", name = site.label());
         sender.oneshot_command(async move {
             let result = session::login(&site, typed, passphrase, approved_key).await;
             LoginCmd::Connected(result.map(|remote| (site, remote)))
@@ -959,23 +971,21 @@ impl LoginDialog {
     }
 
     /// Grey hint text for the password field, reflecting whether one is saved.
-    fn password_placeholder(&self) -> &'static str {
+    fn password_placeholder(&self) -> String {
         match (self.editing, self.password_saved()) {
-            (true, true) => "Saved - type to replace",
-            (true, false) => "",
-            (false, true) => {
-                "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022} (saved)"
-            }
-            (false, false) => "Not saved",
+            (true, true) => tr!("login-password-replace"),
+            (true, false) => String::new(),
+            (false, true) => tr!("login-password-dots"),
+            (false, false) => tr!("login-password-not-saved"),
         }
     }
 
     /// Text of the indicator under the form.
-    fn password_status(&self) -> &'static str {
+    fn password_status(&self) -> String {
         if self.password_saved() {
-            "Password saved in the keyring"
+            tr!("login-password-saved")
         } else {
-            "No saved password"
+            tr!("login-password-none")
         }
     }
 
@@ -1064,7 +1074,7 @@ impl LoginDialog {
 
         match (keyring_action, typed) {
             (KeyringAction::Store, Some(password)) => {
-                self.status = String::from("Saving password to the keyring...");
+                self.status = tr!("login-password-saving");
                 sender.oneshot_command(async move {
                     let result = secrets::store_password(&site_id, &label, &password).await;
                     LoginCmd::PasswordChanged {
@@ -1141,7 +1151,7 @@ impl LoginDialog {
     fn new_folder(&mut self, name: &str) {
         let path = join_folder(&self.picked_folder(), name.trim());
         if self.book.all_folders().contains(&path) {
-            self.status = format!("There is already a folder \"{path}\"");
+            self.status = tr!("login-folder-exists", folder = path);
             return;
         }
         self.book.add_folder(&path);
@@ -1168,7 +1178,13 @@ impl LoginDialog {
                 };
                 self.select(picked);
             }
-            Err(error) => self.status = format!("Cannot move \"{from}\": {error}"),
+            Err(error) => {
+                self.status = tr!(
+                    "login-folder-move-failed",
+                    folder = from.to_owned(),
+                    error = error.to_string()
+                );
+            }
         }
     }
 
@@ -1208,7 +1224,7 @@ impl LoginDialog {
             Ok(()) => tracing::info!("{done}"),
             Err(error) => {
                 tracing::error!("cannot save sites: {error}");
-                self.status = format!("Cannot save sites: {error}");
+                self.status = tr!("login-save-failed", error = error.to_string());
             }
         }
     }
@@ -1221,11 +1237,11 @@ impl LoginDialog {
     /// * `sender` - Receives the chosen file
     fn choose_key_file(&mut self, root: &gtk::Window, sender: &ComponentSender<Self>) {
         let chooser = gtk::FileChooserNative::new(
-            Some("Private Key File"),
+            Some(&tr!("login-key-chooser-title")),
             Some(root),
             gtk::FileChooserAction::Open,
-            Some("_Choose"),
-            Some("_Cancel"),
+            Some(&tr!("login-key-chooser-choose")),
+            Some(&tr!("login-chooser-cancel")),
         );
         if let Some(ssh) = std::env::home_dir().map(|home| home.join(".ssh"))
             && ssh.is_dir()
@@ -1252,10 +1268,10 @@ impl LoginDialog {
     /// * `sender` - Receives the chosen file
     fn choose_file(&mut self, root: &gtk::Window, exporting: bool, sender: &ComponentSender<Self>) {
         let chooser = gtk::FileChooserNative::new(
-            Some(if exporting {
-                "Export Sites"
+            Some(&if exporting {
+                tr!("passphrase-export-title")
             } else {
-                "Import Sites"
+                tr!("passphrase-import-title")
             }),
             Some(root),
             if exporting {
@@ -1263,11 +1279,15 @@ impl LoginDialog {
             } else {
                 gtk::FileChooserAction::Open
             },
-            Some(if exporting { "_Export" } else { "_Import" }),
-            Some("_Cancel"),
+            Some(&if exporting {
+                tr!("login-chooser-export")
+            } else {
+                tr!("login-chooser-import")
+            }),
+            Some(&tr!("login-chooser-cancel")),
         );
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some("Site exports (*.json)"));
+        filter.set_name(Some(&tr!("login-chooser-filter")));
         filter.add_pattern("*.json");
         chooser.add_filter(&filter);
         if exporting {
@@ -1298,7 +1318,7 @@ impl Component for LoginDialog {
 
     view! {
         gtk::Window {
-            set_title: Some("Login"),
+            set_title: Some(&tr!("login-title")),
             set_modal: true,
             // Closing only hides the dialog, so it can be shown again from the menu.
             set_hide_on_close: true,
@@ -1355,8 +1375,7 @@ impl Component for LoginDialog {
                                     gtk::Button {
                                         set_icon_name: "folder-new-symbolic",
                                         set_tooltip_text: Some(
-                                            "New folder (in the picked folder). Drag sites and \
-                                             folders onto a folder to move them.",
+                                            &tr!("login-new-folder-tooltip"),
                                         ),
                                         #[watch]
                                         set_sensitive: !model.editing && !model.busy,
@@ -1370,17 +1389,17 @@ impl Component for LoginDialog {
 
                                         gtk::Button {
                                             #[watch]
-                                            set_label: if matches!(model.selection, Selection::Folder(_)) {
-                                                "Rename"
+                                            set_label: &if matches!(model.selection, Selection::Folder(_)) {
+                                                tr!("login-rename")
                                             } else {
-                                                "Edit"
+                                                tr!("login-edit")
                                             },
                                             #[watch]
                                             set_sensitive: model.picked_idle(),
                                             connect_clicked => LoginMsg::Edit,
                                         },
                                         gtk::Button {
-                                            set_label: "Delete",
+                                            set_label: &tr!("delete-title"),
                                             add_css_class: "destructive-action",
                                             #[watch]
                                             set_sensitive: model.picked_idle(),
@@ -1401,7 +1420,7 @@ impl Component for LoginDialog {
                                 add_css_class: "session-group",
 
                                 gtk::Label {
-                                    set_label: "Session",
+                                    set_label: &tr!("login-session"),
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
                                 },
@@ -1412,13 +1431,12 @@ impl Component for LoginDialog {
                                     set_spacing: 2,
 
                                     gtk::Label {
-                                        set_label: "Alias:",
+                                        set_label: &tr!("login-alias"),
                                         set_xalign: 0.0,
                                     },
                                     gtk::Entry::with_buffer(&model.alias) {
                                         set_tooltip_text: Some(
-                                            "A name for the site, shown in the site list and on \
-                                             the session's tab; left blank, the address is shown",
+                                            &tr!("login-alias-tooltip"),
                                         ),
                                         #[watch]
                                         set_sensitive: model.editing,
@@ -1433,7 +1451,7 @@ impl Component for LoginDialog {
                                     set_spacing: 2,
 
                                     gtk::Label {
-                                        set_label: "File protocol:",
+                                        set_label: &tr!("login-protocol"),
                                         set_xalign: 0.0,
                                     },
                                     gtk::Box {
@@ -1453,7 +1471,7 @@ impl Component for LoginDialog {
                                         },
                                         // FTP only: encryption and passive mode.
                                         gtk::DropDown::from_strings(&encryption_labels) {
-                                            set_tooltip_text: Some("How the FTP connection is encrypted"),
+                                            set_tooltip_text: Some(&tr!("login-encryption-tooltip")),
                                             #[watch]
                                             set_visible: model.protocol == Protocol::Ftp,
                                             #[watch]
@@ -1464,10 +1482,9 @@ impl Component for LoginDialog {
                                                 sender.input(LoginMsg::EncryptionSelected(dropdown.selected()));
                                             },
                                         },
-                                        gtk::CheckButton::with_label("Passive mode") {
+                                        gtk::CheckButton::with_label(&tr!("login-passive")) {
                                             set_tooltip_text: Some(
-                                                "The client opens the data connections (works through \
-                                                 firewalls and NAT). Untick for active mode.",
+                                                &tr!("login-passive-tooltip"),
                                             ),
                                             #[watch]
                                             set_visible: model.protocol == Protocol::Ftp,
@@ -1493,7 +1510,7 @@ impl Component for LoginDialog {
                                         set_hexpand: true,
 
                                         gtk::Label {
-                                            set_label: "Host name:",
+                                            set_label: &tr!("login-host"),
                                             set_xalign: 0.0,
                                         },
                                         gtk::Entry::with_buffer(&model.host) {
@@ -1507,7 +1524,7 @@ impl Component for LoginDialog {
                                         set_spacing: 2,
 
                                         gtk::Label {
-                                            set_label: "Port:",
+                                            set_label: &tr!("login-port"),
                                             set_xalign: 0.0,
                                         },
                                         gtk::SpinButton::with_range(1.0, 65535.0, 1.0) {
@@ -1545,7 +1562,7 @@ impl Component for LoginDialog {
                                         set_spacing: 2,
 
                                         gtk::Label {
-                                            set_label: "User name:",
+                                            set_label: &tr!("login-user"),
                                             set_xalign: 0.0,
                                         },
                                         gtk::Entry::with_buffer(&model.user) {
@@ -1560,7 +1577,7 @@ impl Component for LoginDialog {
                                         set_spacing: 2,
 
                                         gtk::Label {
-                                            set_label: "Password:",
+                                            set_label: &tr!("login-password"),
                                             set_xalign: 0.0,
                                         },
                                         gtk::Entry::with_buffer(&model.password) {
@@ -1571,11 +1588,11 @@ impl Component for LoginDialog {
                                             #[watch]
                                             set_sensitive: model.editing || model.selected_site().is_some(),
                                             #[watch]
-                                            set_placeholder_text: Some(model.password_placeholder()),
+                                            set_placeholder_text: Some(&model.password_placeholder()),
                                             // Enter in the password field logs in.
                                             connect_activate => LoginMsg::Login,
                                             set_secondary_icon_name: Some(SHOW_PASSWORD_ICON),
-                                            set_secondary_icon_tooltip_text: Some("Show password"),
+                                            set_secondary_icon_tooltip_text: Some(&tr!("login-show-password")),
                                             connect_icon_press => move |entry, _| {
                                                 // Spelled out because `Widget` also has an `is_visible`.
                                                 let show = !EntryExt::is_visible(entry);
@@ -1588,12 +1605,11 @@ impl Component for LoginDialog {
                                             },
                                         },
                                         gtk::CheckButton {
-                                            set_label: Some("Save password"),
+                                            set_label: Some(&tr!("login-save-password")),
                                             #[watch]
                                             set_sensitive: model.editing,
                                             set_tooltip_text: Some(
-                                                "Keep the password in the desktop keyring (encrypted \
-                                                 with your login password)"
+                                                &tr!("login-save-password-tooltip")
                                             ),
                                             #[watch]
                                             set_active: model.save_password,
@@ -1613,7 +1629,7 @@ impl Component for LoginDialog {
                                     set_visible: model.protocol != Protocol::Ftp,
 
                                     gtk::Label {
-                                        set_label: "Private key file:",
+                                        set_label: &tr!("login-key-file"),
                                         set_xalign: 0.0,
                                     },
                                     gtk::Box {
@@ -1622,23 +1638,22 @@ impl Component for LoginDialog {
 
                                         gtk::Entry::with_buffer(&model.key_file) {
                                             set_hexpand: true,
-                                            set_placeholder_text: Some("None (OpenSSH or PuTTY .ppk key)"),
+                                            set_placeholder_text: Some(&tr!("login-key-file-placeholder")),
                                             #[watch]
                                             set_sensitive: model.editing,
                                             connect_changed => LoginMsg::FormEdited,
                                         },
                                         gtk::Button {
-                                            set_label: "Browse...",
-                                            set_tooltip_text: Some("Choose a private key file"),
+                                            set_label: &tr!("login-browse"),
+                                            set_tooltip_text: Some(&tr!("login-browse-tooltip")),
                                             #[watch]
                                             set_sensitive: model.editing,
                                             connect_clicked => LoginMsg::BrowseKeyFile,
                                         },
                                         gtk::CheckButton {
-                                            set_label: Some("Use SSH agent"),
+                                            set_label: Some(&tr!("login-use-agent")),
                                             set_tooltip_text: Some(
-                                                "Also try the keys held by the desktop's SSH agent \
-                                                 (as ssh does)"
+                                                &tr!("login-use-agent-tooltip")
                                             ),
                                             #[watch]
                                             set_sensitive: model.editing,
@@ -1657,7 +1672,7 @@ impl Component for LoginDialog {
                                     set_spacing: 2,
 
                                     gtk::Label {
-                                        set_label: "Description:",
+                                        set_label: &tr!("login-description"),
                                         set_xalign: 0.0,
                                     },
                                     gtk::ScrolledWindow {
@@ -1683,7 +1698,7 @@ impl Component for LoginDialog {
                                 // Settings few sites need, folded away; open for a site that
                                 // changed them, so a changed setting is never out of sight.
                                 gtk::Expander {
-                                    set_label: Some("Advanced"),
+                                    set_label: Some(&tr!("login-advanced")),
                                     #[watch]
                                     set_expanded: model.advanced_open,
                                     connect_expanded_notify[sender] => move |expander| {
@@ -1695,13 +1710,11 @@ impl Component for LoginDialog {
                                         set_spacing: 8,
                                         set_margin_top: 4,
                                         set_tooltip_text: Some(
-                                            "Files copied at the same time. More can be faster when \
-                                             the server limits each connection's speed; FTP opens a \
-                                             connection for each, and some servers allow only a few.",
+                                            &tr!("login-files-at-once-tooltip"),
                                         ),
 
                                         gtk::Label {
-                                            set_label: "Files at once:",
+                                            set_label: &tr!("login-files-at-once"),
                                         },
                                         gtk::SpinButton::with_range(1.0, f64::from(MAX_FILES_AT_ONCE), 1.0) {
                                             set_digits: 0,
@@ -1720,7 +1733,7 @@ impl Component for LoginDialog {
                                             },
                                         },
                                         gtk::Label {
-                                            set_label: &format!("(usually {DEFAULT_FILES_AT_ONCE})"),
+                                            set_label: &tr!("login-files-at-once-usual", count = DEFAULT_FILES_AT_ONCE),
                                             add_css_class: "dim-label",
                                         },
                                     },
@@ -1747,7 +1760,7 @@ impl Component for LoginDialog {
                                         gtk::Label {
                                             set_xalign: 0.0,
                                             #[watch]
-                                            set_label: model.password_status(),
+                                            set_label: &model.password_status(),
                                         },
                                     },
                                     // Keeps the buttons right-aligned when the indicator is hidden.
@@ -1758,13 +1771,13 @@ impl Component for LoginDialog {
                                     },
 
                                     gtk::Button {
-                                        set_label: "Save",
+                                        set_label: &tr!("login-save"),
                                         #[watch]
                                         set_sensitive: model.editing && model.can_save(),
                                         connect_clicked => LoginMsg::Save,
                                     },
                                     gtk::Button {
-                                        set_label: "Cancel",
+                                        set_label: &tr!("dialog-cancel"),
                                         #[watch]
                                         set_sensitive: model.editing,
                                         connect_clicked => LoginMsg::Cancel,
@@ -1773,7 +1786,7 @@ impl Component for LoginDialog {
                             },
                         } -> {
                             set_name: DIRECT_TAB,
-                            set_title: "Direct",
+                            set_title: &tr!("login-tab-direct"),
                         },
 
                         // Site to site: a saved site for each pane; copies between them
@@ -1783,9 +1796,7 @@ impl Component for LoginDialog {
                             set_spacing: 8,
 
                             gtk::Label {
-                                set_label: "Copies between the two servers are transferred through \
-                                            this computer. Pick a saved site for each connection, \
-                                            then Login.",
+                                set_label: &tr!("login-site-to-site-intro"),
                                 set_xalign: 0.0,
                                 set_wrap: true,
                                 add_css_class: "dim-label",
@@ -1804,8 +1815,8 @@ impl Component for LoginDialog {
                                 set_hexpand: true,
 
                                 gtk::Label {
-                                    set_label: "Connection 1",
-                                    set_tooltip_text: Some("Shown in the left pane"),
+                                    set_label: &tr!("login-connection-1"),
+                                    set_tooltip_text: Some(&tr!("login-connection-1-tooltip")),
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
                                 },
@@ -1828,7 +1839,7 @@ impl Component for LoginDialog {
                                     set_valign: gtk::Align::Start,
                                     add_css_class: "site-details",
                                     attach[0, 0, 1, 1] = &gtk::Label {
-                                        set_label: "Protocol:",
+                                        set_label: &tr!("login-detail-protocol"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1842,7 +1853,7 @@ impl Component for LoginDialog {
                                         set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Protocol)),
                                     },
                                     attach[0, 1, 1, 1] = &gtk::Label {
-                                        set_label: "Address:",
+                                        set_label: &tr!("login-detail-address"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1856,7 +1867,7 @@ impl Component for LoginDialog {
                                         set_tooltip_text: Some(&model.pair_detail(0, PairDetail::Address)),
                                     },
                                     attach[0, 2, 1, 1] = &gtk::Label {
-                                        set_label: "User:",
+                                        set_label: &tr!("login-detail-user"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1870,7 +1881,7 @@ impl Component for LoginDialog {
                                         set_tooltip_text: Some(&model.pair_detail(0, PairDetail::User)),
                                     },
                                     attach[0, 3, 1, 1] = &gtk::Label {
-                                        set_label: "Login:",
+                                        set_label: &tr!("login-detail-login"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1894,8 +1905,8 @@ impl Component for LoginDialog {
                                 set_hexpand: true,
 
                                 gtk::Label {
-                                    set_label: "Connection 2",
-                                    set_tooltip_text: Some("Shown in the right pane"),
+                                    set_label: &tr!("login-connection-2"),
+                                    set_tooltip_text: Some(&tr!("login-connection-2-tooltip")),
                                     set_xalign: 0.0,
                                     add_css_class: "heading",
                                 },
@@ -1918,7 +1929,7 @@ impl Component for LoginDialog {
                                     set_valign: gtk::Align::Start,
                                     add_css_class: "site-details",
                                     attach[0, 0, 1, 1] = &gtk::Label {
-                                        set_label: "Protocol:",
+                                        set_label: &tr!("login-detail-protocol"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1932,7 +1943,7 @@ impl Component for LoginDialog {
                                         set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Protocol)),
                                     },
                                     attach[0, 1, 1, 1] = &gtk::Label {
-                                        set_label: "Address:",
+                                        set_label: &tr!("login-detail-address"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1946,7 +1957,7 @@ impl Component for LoginDialog {
                                         set_tooltip_text: Some(&model.pair_detail(1, PairDetail::Address)),
                                     },
                                     attach[0, 2, 1, 1] = &gtk::Label {
-                                        set_label: "User:",
+                                        set_label: &tr!("login-detail-user"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1960,7 +1971,7 @@ impl Component for LoginDialog {
                                         set_tooltip_text: Some(&model.pair_detail(1, PairDetail::User)),
                                     },
                                     attach[0, 3, 1, 1] = &gtk::Label {
-                                        set_label: "Login:",
+                                        set_label: &tr!("login-detail-login"),
                                         set_xalign: 0.0,
                                         add_css_class: "dim-label",
                                     },
@@ -1978,7 +1989,7 @@ impl Component for LoginDialog {
                             },
                         } -> {
                             set_name: SITE_TO_SITE_TAB,
-                            set_title: "Site to site",
+                            set_title: &tr!("login-tab-site-to-site"),
                         },
 
                         // Unfinished: transfers interrupted earlier, to resume (logging in
@@ -1988,10 +1999,7 @@ impl Component for LoginDialog {
                             set_spacing: 8,
 
                             gtk::Label {
-                                set_label: "Transfers that did not finish. Tick the ones to resume: \
-                                            ShuttleSCP logs in to their site with its saved password \
-                                            or keys and opens it where they were. Discard deletes \
-                                            their partial files instead.",
+                                set_label: &tr!("login-unfinished-intro"),
                                 set_xalign: 0.0,
                                 set_wrap: true,
                                 add_css_class: "dim-label",
@@ -2012,7 +2020,7 @@ impl Component for LoginDialog {
                                 set_row_spacing: 3,
                                 add_css_class: "site-details",
                                 attach[0, 0, 1, 1] = &gtk::Label {
-                                    set_label: "Transfer:",
+                                    set_label: &tr!("login-detail-transfer"),
                                     set_xalign: 0.0,
                                     add_css_class: "dim-label",
                                 },
@@ -2026,7 +2034,7 @@ impl Component for LoginDialog {
                                     set_tooltip_text: Some(&model.unfinished_detail(UnfinishedDetail::What)),
                                 },
                                 attach[0, 1, 1, 1] = &gtk::Label {
-                                    set_label: "From:",
+                                    set_label: &tr!("login-detail-from"),
                                     set_xalign: 0.0,
                                     add_css_class: "dim-label",
                                 },
@@ -2040,7 +2048,7 @@ impl Component for LoginDialog {
                                     set_tooltip_text: Some(&model.unfinished_detail(UnfinishedDetail::From)),
                                 },
                                 attach[0, 2, 1, 1] = &gtk::Label {
-                                    set_label: "To:",
+                                    set_label: &tr!("login-detail-to"),
                                     set_xalign: 0.0,
                                     add_css_class: "dim-label",
                                 },
@@ -2054,7 +2062,7 @@ impl Component for LoginDialog {
                                     set_tooltip_text: Some(&model.unfinished_detail(UnfinishedDetail::To)),
                                 },
                                 attach[0, 3, 1, 1] = &gtk::Label {
-                                    set_label: "Saved:",
+                                    set_label: &tr!("login-detail-saved"),
                                     set_xalign: 0.0,
                                     add_css_class: "dim-label",
                                 },
@@ -2071,17 +2079,17 @@ impl Component for LoginDialog {
                                 set_halign: gtk::Align::End,
 
                                 gtk::Button {
-                                    set_label: "Discard",
+                                    set_label: &tr!("transfers-discard"),
                                     add_css_class: "destructive-action",
-                                    set_tooltip_text: Some("Log in, delete the ticked transfers' partial files, and forget them"),
+                                    set_tooltip_text: Some(&tr!("login-discard-tooltip")),
                                     #[watch]
                                     set_sensitive: !model.busy && !model.unfinished_ticked.is_empty(),
                                     connect_clicked => LoginMsg::DiscardUnfinished,
                                 },
                                 gtk::Button {
-                                    set_label: "Resume",
+                                    set_label: &tr!("transfers-resume"),
                                     add_css_class: "suggested-action",
-                                    set_tooltip_text: Some("Log in and continue the ticked transfers where they stopped"),
+                                    set_tooltip_text: Some(&tr!("login-resume-tooltip")),
                                     #[watch]
                                     set_sensitive: !model.busy && model.unfinished_sites().is_ok(),
                                     connect_clicked => LoginMsg::ResumeUnfinished,
@@ -2090,7 +2098,7 @@ impl Component for LoginDialog {
                         } -> {
                             set_name: UNFINISHED_TAB,
                             // With the count once there are any (`show_unfinished_count`).
-                            set_title: "Unfinished",
+                            set_title: &tr!("login-unfinished-tab"),
                         },
                 },
 
@@ -2099,8 +2107,8 @@ impl Component for LoginDialog {
                     set_spacing: 6,
 
                     gtk::CheckButton {
-                        set_label: Some("Show at startup"),
-                        set_tooltip_text: Some("Open this dialog when ShuttleSCP starts"),
+                        set_label: Some(&tr!("login-show-at-startup")),
+                        set_tooltip_text: Some(&tr!("login-show-at-startup-tooltip")),
                         set_margin_end: 6,
                         #[watch]
                         set_active: model.show_at_startup,
@@ -2109,15 +2117,15 @@ impl Component for LoginDialog {
                         },
                     },
                     gtk::Button {
-                        set_label: "Import...",
-                        set_tooltip_text: Some("Add sites from a ShuttleSCP export file"),
+                        set_label: &tr!("login-import"),
+                        set_tooltip_text: Some(&tr!("login-import-tooltip")),
                         #[watch]
                         set_sensitive: !model.editing && !model.busy,
                         connect_clicked => LoginMsg::ImportClicked,
                     },
                     gtk::Button {
-                        set_label: "Export...",
-                        set_tooltip_text: Some("Save all sites to a file for another computer"),
+                        set_label: &tr!("login-export"),
+                        set_tooltip_text: Some(&tr!("login-export-tooltip")),
                         #[watch]
                         set_sensitive: !model.editing && !model.busy && !model.book.sites.is_empty(),
                         connect_clicked => LoginMsg::ExportClicked,
@@ -2134,15 +2142,15 @@ impl Component for LoginDialog {
                         set_tooltip_text: Some(&model.status),
                     },
                     gtk::Button {
-                        set_label: "Login",
+                        set_label: &tr!("login-title"),
                         add_css_class: "suggested-action",
-                        set_tooltip_text: Some("Connect to the selected site"),
+                        set_tooltip_text: Some(&tr!("login-login-tooltip")),
                         #[watch]
                         set_sensitive: model.can_login(),
                         connect_clicked => LoginMsg::Login,
                     },
                     gtk::Button {
-                        set_label: "Close",
+                        set_label: &tr!("dialog-close"),
                         connect_clicked => LoginMsg::Close,
                     },
                 },
@@ -2189,7 +2197,7 @@ impl Component for LoginDialog {
         let unfinished_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .build();
-        let nothing = gtk::Label::new(Some("No unfinished transfers"));
+        let nothing = gtk::Label::new(Some(&tr!("login-unfinished-none")));
         nothing.add_css_class("dim-label");
         unfinished_list.set_placeholder(Some(&nothing));
         {
@@ -2265,7 +2273,7 @@ impl Component for LoginDialog {
                 });
         }
         // The same title bar and compact controls as the other dialogs.
-        dialog::style_window(&root, "Login");
+        dialog::style_window(&root, &tr!("login-title"));
         ComponentParts { model, widgets }
     }
 
@@ -2289,8 +2297,7 @@ impl Component for LoginDialog {
                 // Point out transfers waiting to be resumed (the tab is highlighted too).
                 self.status = match self.unfinished.len() {
                     0 => String::new(),
-                    1 => String::from("1 transfer did not finish: see the Unfinished tab"),
-                    count => format!("{count} transfers did not finish: see the Unfinished tab"),
+                    count => tr!("login-unfinished-notice", count = count),
                 };
                 root.present();
             }
@@ -2319,12 +2326,16 @@ impl Component for LoginDialog {
                 if let Selection::Folder(path) = &self.selection
                     && self.picked_idle()
                 {
-                    let prompt = format!("New name for the folder {}:", folder_name(path));
+                    let prompt = tr!(
+                        "login-rename-folder-prompt",
+                        folder = folder_name(path).to_owned()
+                    );
+                    let (title, confirm) = (tr!("login-rename-folder"), tr!("login-rename"));
                     let wording = NamePrompt {
-                        title: "Rename Folder",
+                        title: &title,
                         prompt: &prompt,
                         initial: folder_name(path),
-                        confirm_label: "Rename",
+                        confirm_label: &confirm,
                         side: Side::Remote,
                     };
                     let sender = sender.clone();
@@ -2339,22 +2350,23 @@ impl Component for LoginDialog {
                 if let Selection::Folder(path) = &self.selection
                     && self.picked_idle()
                 {
-                    let question = format!("Delete the folder {}?", folder_name(path));
+                    let question = tr!(
+                        "login-delete-folder-question",
+                        folder = folder_name(path).to_owned()
+                    );
                     let detail = match parent_folder(path) {
-                        "" => String::from(
-                            "The sites and folders in it move to the top of the list. No \
-                             site is deleted.",
-                        ),
-                        parent => format!(
-                            "The sites and folders in it move to {}. No site is deleted.",
-                            folder_name(parent)
+                        "" => tr!("login-delete-folder-to-top"),
+                        parent => tr!(
+                            "login-delete-folder-to-parent",
+                            folder = folder_name(parent).to_owned()
                         ),
                     };
+                    let (title, confirm) = (tr!("login-delete-folder"), tr!("delete-title"));
                     let wording = Confirmation {
-                        title: "Delete Folder",
+                        title: &title,
                         question: &question,
                         detail: &detail,
-                        confirm_label: "Delete",
+                        confirm_label: &confirm,
                     };
                     let sender = sender.clone();
                     confirm_dialog::ask(root.upcast_ref(), wording, move |confirmed| {
@@ -2370,18 +2382,18 @@ impl Component for LoginDialog {
                 let Some(site) = self.selected_site() else {
                     return;
                 };
-                let question = format!("Delete {}?", site.label());
+                let question = tr!("login-delete-site-question", name = site.label());
                 let detail = if site.password_saved {
-                    "The site and its saved password (in the keyring) will be removed. \
-                     This cannot be undone."
+                    tr!("login-delete-site-with-password")
                 } else {
-                    "The site will be removed. This cannot be undone."
+                    tr!("login-delete-site-detail")
                 };
+                let (title, confirm) = (tr!("login-delete-site"), tr!("delete-title"));
                 let wording = Confirmation {
-                    title: "Delete Site",
+                    title: &title,
                     question: &question,
-                    detail,
-                    confirm_label: "Delete",
+                    detail: &detail,
+                    confirm_label: &confirm,
                 };
                 let sender = sender.clone();
                 confirm_dialog::ask(root.upcast_ref(), wording, move |confirmed| {
@@ -2396,14 +2408,19 @@ impl Component for LoginDialog {
                     return;
                 }
                 let prompt = match self.picked_folder() {
-                    parent if parent.is_empty() => String::from("Name of the new folder:"),
-                    parent => format!("Name of the new folder in {}:", folder_name(&parent)),
+                    parent if parent.is_empty() => tr!("login-new-folder-prompt"),
+                    parent => tr!(
+                        "login-new-folder-prompt-in",
+                        folder = folder_name(&parent).to_owned()
+                    ),
                 };
+                let (title, confirm) =
+                    (tr!("pane-new-folder-title"), tr!("pane-new-folder-create"));
                 let wording = NamePrompt {
-                    title: "New Folder",
+                    title: &title,
                     prompt: &prompt,
                     initial: "",
-                    confirm_label: "Create",
+                    confirm_label: &confirm,
                     side: Side::Remote,
                 };
                 let sender = sender.clone();
@@ -2582,7 +2599,7 @@ impl Component for LoginDialog {
             }
             LoginMsg::ExportConfirmed { path, passphrase } => {
                 self.busy = true;
-                self.status = String::from("Exporting...");
+                self.status = tr!("login-exporting");
                 let sites = self.book.sites.clone();
                 sender.oneshot_command(async move {
                     LoginCmd::Exported(session::export_to_file(sites, path, passphrase).await)
@@ -2591,7 +2608,9 @@ impl Component for LoginDialog {
             LoginMsg::ImportFrom(path) => {
                 self.chooser = None;
                 match ExportFile::read(&path) {
-                    Err(error) => self.status = format!("Import failed: {error}"),
+                    Err(error) => {
+                        self.status = tr!("login-import-failed", error = error.to_string());
+                    }
                     Ok(file) if file.has_passwords() => {
                         let sender = sender.clone();
                         passphrase_dialog::ask(root, PassphrasePurpose::Import, move |answer| {
@@ -2616,7 +2635,7 @@ impl Component for LoginDialog {
             }
             LoginMsg::ImportConfirmed { file, passphrase } => {
                 self.busy = true;
-                self.status = String::from("Importing...");
+                self.status = tr!("login-importing");
                 sender.oneshot_command(async move {
                     LoginCmd::Imported(session::import_from_file(file, passphrase).await)
                 });
@@ -2640,15 +2659,8 @@ impl Component for LoginDialog {
                 self.pending.forget(&keys);
                 self.refresh_unfinished(&sender);
                 self.status = match failed.first() {
-                    Some(reason) => format!("Not discarded: {reason}"),
-                    None => format!(
-                        "Discarded {}: {deleted} partial {} deleted",
-                        match keys.len() {
-                            1 => String::from("1 transfer"),
-                            count => format!("{count} transfers"),
-                        },
-                        if deleted == 1 { "file" } else { "files" }
-                    ),
+                    Some(reason) => tr!("login-not-discarded", reason = reason.clone()),
+                    None => tr!("login-discarded", count = keys.len(), deleted = deleted),
                 };
             }
             LoginCmd::Connected(result) => {
@@ -2722,22 +2734,21 @@ impl Component for LoginDialog {
                         root.close();
                     }
                     Err(ConnectError::UnknownHostKey { fingerprint, key }) => {
-                        self.status = String::from("Waiting for you to check the server's key");
+                        self.status = tr!("login-waiting-key");
                         let host = self
                             .login_site()
                             .map_or_else(String::new, |s| s.host.clone());
-                        let question = format!("Trust the server {host}?");
-                        let detail = format!(
-                            "This is the first connection to this server, so its identity \
-                             cannot be checked yet. Its host key fingerprint is:\n\n\
-                             {fingerprint}\n\nIf it matches the server's real key, trust it: \
-                             it will be remembered in ~/.ssh/known_hosts."
+                        let question = tr!("login-trust-key-question", host = host);
+                        let detail = tr!(
+                            "login-trust-key-detail",
+                            fingerprint = fingerprint.to_string()
                         );
+                        let (title, confirm) = (tr!("login-trust-key"), tr!("login-trust"));
                         let wording = Confirmation {
-                            title: "Unknown Server",
+                            title: &title,
                             question: &question,
                             detail: &detail,
-                            confirm_label: "Trust and Connect",
+                            confirm_label: &confirm,
                         };
                         let sender = sender.clone();
                         confirm_dialog::ask(root.upcast_ref(), wording, move |trusted| {
@@ -2752,20 +2763,19 @@ impl Component for LoginDialog {
                         fingerprint,
                         reason,
                     }) => {
-                        self.status =
-                            String::from("Waiting for you to check the server's certificate");
-                        let question = format!("Trust the certificate of {host}?");
-                        let detail = format!(
-                            "The server's TLS certificate cannot be verified: {reason}. FTP \
-                             servers often use a self-signed certificate. Its fingerprint \
-                             is:\n\n{fingerprint}\n\nIf it matches the server's real \
-                             certificate, trust it: it will be remembered for this server."
+                        self.status = tr!("login-waiting-certificate");
+                        let question = tr!("login-trust-certificate-question", host = host.clone());
+                        let detail = tr!(
+                            "login-trust-certificate-detail",
+                            reason = reason.clone(),
+                            fingerprint = fingerprint.clone()
                         );
+                        let (title, confirm) = (tr!("login-trust-certificate"), tr!("login-trust"));
                         let wording = Confirmation {
-                            title: "Untrusted Certificate",
+                            title: &title,
                             question: &question,
                             detail: &detail,
-                            confirm_label: "Trust and Connect",
+                            confirm_label: &confirm,
                         };
                         let sender = sender.clone();
                         confirm_dialog::ask(root.upcast_ref(), wording, move |trusted| {
@@ -2783,7 +2793,7 @@ impl Component for LoginDialog {
                             .pending_passphrase
                             .take()
                             .is_some_and(|pending| pending.save);
-                        self.status = String::from("Waiting for the key's passphrase");
+                        self.status = tr!("login-waiting-passphrase");
                         let sender = sender.clone();
                         key_passphrase_dialog::ask(
                             root.upcast_ref(),
@@ -2807,10 +2817,7 @@ impl Component for LoginDialog {
                         // Site to site, say which site, and drop the other's connection.
                         self.status = match self.group_login.take() {
                             Some(pair) if matches!(error, ConnectError::PasswordRequired) => {
-                                format!(
-                                    "{} needs a password: save it on the Direct tab, or use SSH keys",
-                                    pair.current().label()
-                                )
+                                tr!("login-pair-needs-password", name = pair.current().label())
                             }
                             Some(pair) => format!("{}: {error}", pair.current().label()),
                             None => error.to_string(),
@@ -2840,24 +2847,22 @@ impl Component for LoginDialog {
                     {
                         self.save_password = saved;
                     }
-                    self.status = String::from(if saved {
-                        "Password saved in the keyring"
+                    self.status = if saved {
+                        tr!("login-password-saved")
                     } else {
-                        "Saved password removed"
-                    });
+                        tr!("login-password-removed")
+                    };
                 }
                 Err(error) => {
                     tracing::error!("keyring update failed: {error}");
-                    self.status = format!("Keyring: {error}");
+                    self.status = tr!("login-keyring-error", error = error.clone());
                     // Put the password back, so Login still works with it.
                     if let Some(password) = unsaved
                         && !self.editing
                         && self.selected_site().is_some_and(|site| site.id == site_id)
                     {
                         self.password.set_text(password.expose_secret());
-                        self.status = format!(
-                            "Password not saved ({error}); it stays in the field for this login"
-                        );
+                        self.status = tr!("login-password-kept", error = error.clone());
                     }
                 }
             },
@@ -2879,16 +2884,16 @@ impl Component for LoginDialog {
                 self.busy = false;
                 self.status = match result {
                     Ok(report) => {
-                        let mut summary = format!(
-                            "Exported {} sites ({} with passwords) to {}",
-                            report.sites,
-                            report.with_passwords,
-                            report.path.display()
+                        let mut summary = tr!(
+                            "login-exported",
+                            count = report.sites,
+                            passwords = report.with_passwords,
+                            file = report.path.display().to_string()
                         );
                         if report.unreadable > 0 {
-                            summary.push_str(&format!(
-                                "; {} passwords could not be read",
-                                report.unreadable
+                            summary.push_str(&tr!(
+                                "login-exported-unreadable",
+                                count = report.unreadable
                             ));
                         }
                         tracing::info!("{summary}");
@@ -2896,7 +2901,7 @@ impl Component for LoginDialog {
                     }
                     Err(error) => {
                         tracing::error!("export failed: {error}");
-                        format!("Export failed: {error}")
+                        tr!("login-export-failed", error = error.clone())
                     }
                 };
             }
@@ -2909,14 +2914,17 @@ impl Component for LoginDialog {
                     }) => {
                         let with_passwords = sites.iter().filter(|s| s.password_saved).count();
                         let (added, replaced) = self.book.merge(sites);
-                        let mut summary = format!(
-                            "Imported {} sites ({added} new, {replaced} updated, \
-                             {with_passwords} with passwords)",
-                            added + replaced
+                        let mut summary = tr!(
+                            "login-imported",
+                            count = added + replaced,
+                            added = added,
+                            replaced = replaced,
+                            passwords = with_passwords
                         );
                         if failed_passwords > 0 {
-                            summary.push_str(&format!(
-                                "; {failed_passwords} passwords could not be stored"
+                            summary.push_str(&tr!(
+                                "login-imported-unstored",
+                                count = failed_passwords
                             ));
                         }
                         self.write_sites(&summary);
@@ -2925,7 +2933,7 @@ impl Component for LoginDialog {
                     }
                     Err(error) => {
                         tracing::error!("import failed: {error}");
-                        self.status = format!("Import failed: {error}");
+                        self.status = tr!("login-import-failed", error = error.clone());
                     }
                 }
             }
@@ -3193,7 +3201,7 @@ impl SiteListInner {
         let (icon, name, tooltip, has_password, dragged, folder) = match entry {
             ListRow::NewSite => (
                 NEW_SITE_ICON,
-                NEW_SITE_LABEL.to_owned(),
+                new_site_label(),
                 None,
                 false,
                 None,
@@ -3206,7 +3214,11 @@ impl SiteListInner {
                 } else {
                     FOLDER_CLOSED_ICON
                 });
-                arrow.set_tooltip_text(Some(if open { "Close folder" } else { "Open folder" }));
+                arrow.set_tooltip_text(Some(&if open {
+                    tr!("login-folder-close")
+                } else {
+                    tr!("login-folder-open")
+                }));
                 let click = gtk::GestureClick::new();
                 let (weak, toggled) = (Rc::downgrade(self), path.clone());
                 click.connect_pressed(move |gesture, _, _, _| {
@@ -3270,7 +3282,7 @@ impl SiteListInner {
         line.append(&label);
         if has_password {
             let key = gtk::Image::from_icon_name(PASSWORD_ICON);
-            key.set_tooltip_text(Some("Password saved"));
+            key.set_tooltip_text(Some(&tr!("login-password-saved-tooltip")));
             key.add_css_class("dim-label");
             line.append(&key);
         }
@@ -3364,8 +3376,18 @@ fn unfinished_row(
 ) -> gtk::ListBoxRow {
     let job = &pending.job;
     let title = match (&pending.left_site_id, job.kind) {
-        (Some(_), JobKind::Move) => format!("Move {}", job.subject()),
-        (Some(_), _) => format!("Copy {}", job.subject()),
+        (Some(_), JobKind::Move) => {
+            tr!(
+                "login-unfinished-what",
+                kind = "move",
+                subject = job.subject()
+            )
+        }
+        (Some(_), _) => tr!(
+            "login-unfinished-what",
+            kind = "copy",
+            subject = job.subject()
+        ),
         (None, _) => job.title(),
     };
     let when = pending.saved_at.map_or_else(String::new, |seconds| {
@@ -3377,7 +3399,7 @@ fn unfinished_row(
     let check = gtk::CheckButton::builder()
         .active(ticked)
         .valign(gtk::Align::Center)
-        .tooltip_text("Resume or discard this transfer")
+        .tooltip_text(tr!("login-unfinished-tick-tooltip"))
         .build();
     {
         let (sender, key) = (sender.clone(), pending.key.clone());

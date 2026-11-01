@@ -151,6 +151,27 @@ mod tests {
     }
 
     #[test]
+    fn blank_lines_in_a_message_are_kept() {
+        let detail = tr!("login-trust-key-detail", fingerprint = "SHA256:abc");
+        assert!(
+            detail.contains("fingerprint is:\n\nSHA256:abc\n\nIf it matches"),
+            "{detail:?}"
+        );
+    }
+
+    #[test]
+    fn plurals_can_nest() {
+        assert_eq!(
+            tr!("login-discarded", count = 2, deleted = 1),
+            "Discarded 2 transfers: 1 partial file deleted"
+        );
+        assert_eq!(
+            tr!("login-discarded", count = 1, deleted = 3),
+            "Discarded 1 transfer: 3 partial files deleted"
+        );
+    }
+
+    #[test]
     fn a_missing_text_shows_its_name() {
         assert_eq!(text("no-such-message"), "no-such-message");
     }

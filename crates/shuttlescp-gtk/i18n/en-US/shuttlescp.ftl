@@ -397,3 +397,208 @@ item-pause-file = Pause this file; the rest goes on
 item-pause-folder = Pause the files in this folder; the rest goes on
 item-resume-file = Resume this file
 item-resume-folder = Resume this folder
+
+## The Login dialog (login_dialog.rs). $name is a site's name (its alias, or like
+## me@example.com); $folder a site folder's path, like Work/Clients.
+
+login-new-site = New Site
+login-alias-optional = Optional
+login-connecting = Connecting to { $name }...
+login-deleted-site = (deleted site)
+login-forgotten = Forgotten
+login-deleting-partials = Deleting partial files...
+login-save-failed = Cannot save sites: { $error }
+login-folder-exists = There is already a folder "{ $folder }"
+login-folder-move-failed = Cannot move "{ $folder }": { $error }
+
+## The password field and the line under the form.
+
+login-password-replace = Saved - type to replace
+# Shown in the empty password field when a password is saved: eight dots, then.
+login-password-dots = •••••••• (saved)
+login-password-not-saved = Not saved
+login-password-saved = Password saved in the keyring
+login-password-none = No saved password
+login-password-saving = Saving password to the keyring...
+
+## A picked site's summary on the Site to site tab: how it logs in, in the order
+## tried, like "key file id_ed25519, then SSH agent, then saved password".
+## $encryption: how an FTP site is encrypted (in English, from the program).
+
+login-ftp-encryption = FTP · { $encryption }
+login-way-key = key file { $key }
+login-way-agent = SSH agent
+login-way-password = saved password
+login-way-none = no saved password
+login-way-then = {", then "}
+
+## File choosers.
+
+login-key-chooser-title = Private Key File
+login-key-chooser-choose = _Choose
+login-chooser-export = _Export
+login-chooser-import = _Import
+login-chooser-cancel = _Cancel
+login-chooser-filter = Site exports (*.json)
+
+## The Unfinished tab. $count: transfers; $subject: what a transfer copies (a name,
+## or "3 items"); $place: this computer or a site's name.
+
+login-unfinished-tab = Unfinished
+login-unfinished-tab-count = Unfinished ({ $count })
+login-unfinished-one-site = Tick transfers of one site (or one pair of sites) at a time.
+login-unfinished-site-gone = Its site was deleted, so it cannot be resumed. Discard forgets it (delete any partial files by hand).
+login-unfinished-folder = { $folder } ({ $place })
+login-unfinished-what =
+    { $kind ->
+        [move] Move { $subject }
+        [delete] Delete { $subject }
+       *[copy] Copy { $subject }
+    }
+login-unfinished-saved-unknown = Unknown (saved by an older version)
+
+## The Login dialog's window: the site list, the site form ("Session"), the
+## three tabs and the buttons along the bottom. Labels ending in a colon name
+## the field after them.
+
+login-title = Login
+login-new-folder-tooltip = New folder (in the picked folder). Drag sites and folders onto a folder to move them.
+login-rename = Rename
+login-edit = Edit
+login-session = Session
+login-alias = Alias:
+login-alias-tooltip = A name for the site, shown in the site list and on the session's tab; left blank, the address is shown
+login-protocol = File protocol:
+login-encryption-tooltip = How the FTP connection is encrypted
+login-passive = Passive mode
+login-passive-tooltip = The client opens the data connections (works through firewalls and NAT). Untick for active mode.
+login-host = Host name:
+login-port = Port:
+login-user = User name:
+login-password = Password:
+login-show-password = Show password
+login-save-password = Save password
+login-save-password-tooltip = Keep the password in the desktop keyring (encrypted with your login password)
+login-key-file = Private key file:
+login-key-file-placeholder = None (OpenSSH or PuTTY .ppk key)
+login-browse = Browse...
+login-browse-tooltip = Choose a private key file
+login-use-agent = Use SSH agent
+login-use-agent-tooltip = Also try the keys held by the desktop's SSH agent (as ssh does)
+login-description = Description:
+login-advanced = Advanced
+login-files-at-once-tooltip = Files copied at the same time. More can be faster when the server limits each connection's speed; FTP opens a connection for each, and some servers allow only a few.
+login-files-at-once = Files at once:
+login-save = Save
+login-tab-direct = Direct
+login-site-to-site-intro = Copies between the two servers are transferred through this computer. Pick a saved site for each connection, then Login.
+login-connection-1 = Connection 1
+login-connection-1-tooltip = Shown in the left pane
+login-detail-protocol = Protocol:
+login-detail-address = Address:
+login-detail-user = User:
+login-detail-login = Login:
+login-connection-2 = Connection 2
+login-connection-2-tooltip = Shown in the right pane
+login-tab-site-to-site = Site to site
+login-unfinished-intro = Transfers that did not finish. Tick the ones to resume: { -app-name } logs in to their site with its saved password or keys and opens it where they were. Discard deletes their partial files instead.
+login-detail-transfer = Transfer:
+login-detail-from = From:
+login-detail-to = To:
+login-detail-saved = Saved:
+login-discard-tooltip = Log in, delete the ticked transfers' partial files, and forget them
+login-resume-tooltip = Log in and continue the ticked transfers where they stopped
+login-show-at-startup = Show at startup
+login-show-at-startup-tooltip = Open this dialog when { -app-name } starts
+login-import = Import...
+login-import-tooltip = Add sites from a { -app-name } export file
+login-export = Export...
+login-export-tooltip = Save all sites to a file for another computer
+login-login-tooltip = Connect to the selected site
+# Shown after the Files at once field; $count is the usual number.
+login-files-at-once-usual = (usually { $count })
+
+## The Login dialog's prompts and results. $count: a number of sites, transfers or
+## passwords as the message says; $host: a server's address; $error, $reason: what
+## went wrong (in English, from the program).
+
+login-unfinished-none = No unfinished transfers
+login-unfinished-notice =
+    { $count ->
+        [one] 1 transfer did not finish: see the Unfinished tab
+       *[other] { $count } transfers did not finish: see the Unfinished tab
+    }
+login-unfinished-tick-tooltip = Resume or discard this transfer
+login-folder-open = Open folder
+login-folder-close = Close folder
+login-password-saved-tooltip = Password saved
+login-rename-folder = Rename Folder
+login-rename-folder-prompt = New name for the folder { $folder }:
+login-new-folder-prompt = Name of the new folder:
+login-new-folder-prompt-in = Name of the new folder in { $folder }:
+login-delete-folder = Delete Folder
+login-delete-folder-question = Delete the folder { $folder }?
+login-delete-folder-to-top = The sites and folders in it move to the top of the list. No site is deleted.
+login-delete-folder-to-parent = The sites and folders in it move to { $folder }. No site is deleted.
+login-delete-site = Delete Site
+login-delete-site-question = Delete { $name }?
+login-delete-site-with-password = The site and its saved password (in the keyring) will be removed. This cannot be undone.
+login-delete-site-detail = The site will be removed. This cannot be undone.
+login-exporting = Exporting...
+login-importing = Importing...
+# $file: where the export was written.
+login-exported =
+    { $count ->
+        [one] Exported 1 site ({ $passwords } with passwords) to { $file }
+       *[other] Exported { $count } sites ({ $passwords } with passwords) to { $file }
+    }
+login-exported-unreadable = ; { $count } passwords could not be read
+login-export-failed = Export failed: { $error }
+login-imported =
+    { $count ->
+        [one] Imported 1 site ({ $added } new, { $replaced } updated, { $passwords } with passwords)
+       *[other] Imported { $count } sites ({ $added } new, { $replaced } updated, { $passwords } with passwords)
+    }
+login-imported-unstored = ; { $count } passwords could not be stored
+login-import-failed = Import failed: { $error }
+login-not-discarded = Not discarded: { $reason }
+# $deleted: how many partial files were deleted.
+login-discarded =
+    { $count ->
+        [one] Discarded 1 transfer: { $deleted ->
+            [one] 1 partial file deleted
+           *[other] { $deleted } partial files deleted
+        }
+       *[other] Discarded { $count } transfers: { $deleted ->
+            [one] 1 partial file deleted
+           *[other] { $deleted } partial files deleted
+        }
+    }
+login-password-removed = Saved password removed
+login-keyring-error = Keyring: { $error }
+login-password-kept = Password not saved ({ $error }); it stays in the field for this login
+login-pair-needs-password = { $name } needs a password: save it on the Direct tab, or use SSH keys
+
+## Checking a server's identity on the first connection. $fingerprint: the key's or
+## certificate's fingerprint, shown alone on its line; keep the blank lines.
+
+login-waiting-key = Waiting for you to check the server's key
+login-waiting-certificate = Waiting for you to check the server's certificate
+login-waiting-passphrase = Waiting for the key's passphrase
+login-trust = Trust and Connect
+login-trust-key = Unknown Server
+login-trust-key-question = Trust the server { $host }?
+login-trust-key-detail =
+    This is the first connection to this server, so its identity cannot be checked yet. Its host key fingerprint is:
+
+    { $fingerprint }
+
+    If it matches the server's real key, trust it: it will be remembered in ~/.ssh/known_hosts.
+login-trust-certificate = Untrusted Certificate
+login-trust-certificate-question = Trust the certificate of { $host }?
+login-trust-certificate-detail =
+    The server's TLS certificate cannot be verified: { $reason }. FTP servers often use a self-signed certificate. Its fingerprint is:
+
+    { $fingerprint }
+
+    If it matches the server's real certificate, trust it: it will be remembered for this server.
