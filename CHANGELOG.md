@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- **Preferences window** (File › Preferences, Ctrl+,), with the interface language.
+- **Interface languages:** French, Spanish, German, Brazilian Portuguese and Simplified
+  Chinese, besides English. Pick one in Preferences and restart. The translations were
+  made with AI and are marked "machine translation" in the language list until a native
+  speaker has reviewed them; corrections are welcome (see CONTRIBUTING.md). Messages
+  from servers, the system and parts of the program's core (such as some errors and
+  transfer titles) are still in English.
+
 ## [0.20.0] - 2026-11-01
 
 ### Added
