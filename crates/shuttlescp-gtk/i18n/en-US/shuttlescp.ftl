@@ -124,3 +124,119 @@ update-downloading = Downloading...
 update-install = Install and Restart
 update-downloading-progress = Downloading... { $done } of { $total }
 update-failed = { $error }. You can download it from the { -app-name } web page instead.
+
+## The menus (app.rs). The underscore marks each item's keyboard letter: pick
+## letters that are unique within each menu.
+
+menu-file = _File
+menu-edit = _Edit
+menu-view = _View
+menu-tools = _Tools
+menu-window = _Window
+menu-help = _Help
+menu-login = _Login…
+menu-disconnect = _Disconnect
+menu-preferences = _Preferences…
+# The macOS name of Preferences.
+menu-settings = _Settings…
+menu-quit = _Quit
+menu-theme = Theme
+menu-log-level = _Log Level
+menu-open-log = _Open Log File
+menu-check-updates = Check for _Updates…
+menu-auto-updates = Check for Updates at _Startup
+menu-about = _About { -app-name }
+
+## The macOS Edit menu (app.rs).
+
+edit-undo = Undo
+edit-redo = Redo
+edit-cut = Cut
+edit-copy = Copy
+edit-paste = Paste
+edit-delete = Delete
+edit-select-all = Select All
+
+## The main window (app.rs, session.rs). $name is a server or connection name, like
+## me@example.com; $left and $right the two servers of a site-to-site session.
+
+not-connected = Not connected
+new-connection = New Connection
+new-connection-tooltip = Connect to another server in a new tab
+# The local pane's title; $name is this computer's name.
+this-computer-title = This computer · { $name }
+# As in "Copy to this computer".
+this-computer = this computer
+status-connected = Connected to { $name }
+status-connected-pair = Connected to { $left } and { $right }
+status-transfers-tooltip = Transfers running at once, over all connections. Click to limit them.
+# $level: Error, Warn, Info, Debug or Trace (not translated).
+status-log-level = Log level: { $level }
+session-activity = Transfers running
+session-close = Disconnect and close this session
+close-session-title = Close Session
+close-session-question = Close the session?
+stop-transfers-detail =
+    { $count ->
+        [one] A transfer is still running. It will stop, and can be resumed the next time you connect to this server.
+       *[other] { $count } transfers are still running. They will stop, and can be resumed the next time you connect to this server.
+    }
+delete-title = Delete
+delete-detail = Folders are deleted with everything in them. This cannot be undone.
+
+## The status bar's update notice (app.rs). $version, $current: version numbers.
+
+update-notice-available = Update available: { $version }
+update-notice-waiting = Update waits for transfers
+update-notice-restart = Restart to finish updating
+update-notice-available-tooltip = { -app-name } { $version } is available (you have { $current }). Click to see it.
+update-notice-waiting-tooltip = { -app-name } restarts into { $version } once the running transfers finish. Click to restart now or later instead.
+update-notice-restart-tooltip = { -app-name } { $version } is ready. Click to restart into it.
+update-notice-hide = Hide this notice
+
+## The transfer limit's panel, from the status bar (app.rs).
+
+limit-title = Transfers running at once
+limit-unlimited = Unlimited
+limit-at-most = At most
+limit-hint = Over all connections. More wait in the Queue and start as others finish.
+
+## Site to site: the picture between the two panes (session.rs).
+
+relay-tooltip = Files copied between the two servers pass through this computer
+relay-to-right = Copying from the left server to the right one
+relay-to-left = Copying from the right server to the left one
+relay-receiving = Receiving from the server copies come from
+relay-sending = Sending to the server copies go to
+
+## The bottom panel's tabs (app.rs, session.rs). A tab shows "Queue (2)" while
+## jobs run; $list is one of the list-…-tooltip names.
+
+panel-log = Log
+list-queue = Queue
+list-completed = Completed
+list-failed = Failed
+list-queue-tooltip = Transfers
+list-completed-tooltip = Completed transfers
+list-failed-tooltip = Failed transfers
+list-for-connection = { $list } for { $name }
+list-not-connected = { $list } (not connected)
+log-unavailable = Logging to a file is not available, so there is nothing to show.
+
+## The theme list in the View menu (theme_list.rs) and the disk picker.
+
+theme-system = System default
+theme-swatch = Window and accent colours
+disk-tooltip = Disk
+
+## The About window (build_info.rs). The system details below it stay in English,
+## for bug reports.
+
+about-title = About { -app-name }
+# $revision: the build's code revision, like 4b9928b.
+about-version = Version { $version } ({ $revision })
+about-description = A graphical SFTP, SCP and FTP client for Linux, macOS and Windows, inspired by WinSCP.
+about-authors = By { $authors }
+about-license = Free software: { $license }
+about-system-details = System details
+about-copy-details = Copy Details

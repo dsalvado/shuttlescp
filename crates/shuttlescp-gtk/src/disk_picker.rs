@@ -10,6 +10,8 @@ use relm4::gtk::{gio, glib};
 use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::path::SidePath;
 
+use crate::i18n::tr;
+
 /// Display name of the root filesystem entry: its path, as Linux users know it.
 const ROOT_DISK_NAME: &str = "/";
 /// Theme icon of the root filesystem entry.
@@ -68,7 +70,7 @@ impl DiskPicker {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let dropdown = gtk::DropDown::new(Some(store.clone()), None::<gtk::Expression>);
         dropdown.set_factory(Some(&disk_row_factory()));
-        dropdown.set_tooltip_text(Some("Disk"));
+        dropdown.set_tooltip_text(Some(&tr!("disk-tooltip")));
         let selected_handler =
             dropdown.connect_selected_notify(move |dropdown| on_select(dropdown.selected()));
         Self {

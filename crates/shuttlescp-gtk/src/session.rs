@@ -28,8 +28,9 @@ use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::Site;
 use shuttlescp_core::transfer::{Job, JobKind, Side};
 
-use crate::app::{App, AppMsg, NOT_CONNECTED};
+use crate::app::{App, AppMsg, not_connected};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
+use crate::i18n::tr;
 use crate::login_dialog::Resume;
 use crate::transfer_panel::{
     LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelInit,
@@ -178,7 +179,7 @@ impl Session {
                 start_dir: SidePath::Local(start_dir.clone()),
                 last_dir_on_disk,
                 remote: None,
-                title: format!("This computer \u{b7} {}", crate::app::computer_name()),
+                title: tr!("this-computer-title", name = crate::app::computer_name()),
                 cache: None,
             },
         };
@@ -190,7 +191,7 @@ impl Session {
         if let Some((_, remote)) = &left {
             ask_server_name(id, Side::Local, remote.clone(), sender);
         }
-        let placeholder = gtk::Label::new(Some(NOT_CONNECTED));
+        let placeholder = gtk::Label::new(Some(&not_connected()));
         placeholder.add_css_class("dim-label");
         placeholder.set_hexpand(true);
         // Site to site, the right half starts with the picture of this computer.
@@ -367,7 +368,7 @@ impl Session {
             let right = self
                 .connection
                 .as_ref()
-                .map_or(NOT_CONNECTED, |connection| connection.host.as_str());
+                .map_or_else(not_connected, |connection| connection.host.clone());
             return format!("{} \u{21c4} {right}", left.host);
         }
         let (host, dir) = match &self.connection {
@@ -383,12 +384,17 @@ impl Session {
     /// Connection text for the status bar.
     pub fn status(&self) -> String {
         if let (Some(left), Some(right)) = (&self.left_server, &self.connection) {
-            return format!("Connected to {} and {}", left.name, right.name);
+            return tr!(
+                "status-connected-pair",
+                left = left.name.clone(),
+                right = right.name.clone()
+            );
         }
-        self.connection.as_ref().map_or_else(
-            || String::from(NOT_CONNECTED),
-            |connection| format!("Connected to {}", connection.name),
-        )
+        self.connection
+            .as_ref()
+            .map_or_else(not_connected, |connection| {
+                tr!("status-connected", name = connection.name.clone())
+            })
     }
 
     /// Show a newly connected server in the right half, replacing any previous
@@ -424,7 +430,7 @@ impl Session {
                 is_server: true,
             },
             None => Peer {
-                name: String::from("this computer"),
+                name: tr!("this-computer"),
                 is_server: false,
             },
         })));
@@ -609,13 +615,13 @@ impl SessionTab {
         let activity = gtk::Image::from_icon_name(ACTIVITY_ICON);
         activity.add_css_class("session-activity");
         activity.set_visible(false);
-        activity.set_tooltip_text(Some("Transfers running"));
+        activity.set_tooltip_text(Some(&tr!("session-activity")));
         let label = gtk::Label::new(None);
         let close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
             .has_frame(false)
             .css_classes(["tab-close"])
-            .tooltip_text("Disconnect and close this session")
+            .tooltip_text(tr!("session-close"))
             .build();
         let sender = sender.clone();
         close.connect_clicked(move |_| sender.input(AppMsg::CloseSession(id)));
@@ -670,7 +676,7 @@ impl RelayPicture {
             .valign(gtk::Align::Center)
             .vexpand(true)
             .css_classes(["relay-picture"])
-            .tooltip_text("Files copied between the two servers pass through this computer")
+            .tooltip_text(tr!("relay-tooltip"))
             .build();
         root.append(&picture);
         // The arrows keep their place while hidden (see `show_directions`), so nothing
@@ -682,14 +688,8 @@ impl RelayPicture {
             image.set_opacity(0.0);
             image
         };
-        let to_right = arrow(
-            "go-next-symbolic",
-            "Copying from the left server to the right one",
-        );
-        let to_left = arrow(
-            "go-previous-symbolic",
-            "Copying from the right server to the left one",
-        );
+        let to_right = arrow("go-next-symbolic", &tr!("relay-to-right"));
+        let to_left = arrow("go-previous-symbolic", &tr!("relay-to-left"));
         picture.append(&to_right);
         let computer = gtk::Image::from_icon_name("computer-symbolic");
         computer.set_pixel_size(32);
@@ -701,8 +701,8 @@ impl RelayPicture {
             .css_classes(["relay-lights"])
             .build();
         for (class, tooltip) in [
-            ("receive", "Receiving from the server copies come from"),
-            ("send", "Sending to the server copies go to"),
+            ("receive", tr!("relay-receiving")),
+            ("send", tr!("relay-sending")),
         ] {
             let light = gtk::Box::builder()
                 .css_classes(["relay-light", class])
@@ -768,15 +768,16 @@ impl TransferTabs {
 
     /// Name the lists after their connection, or none.
     fn show_connection(&self, connection: Option<&str>) {
-        let tooltip = |list: &str| match connection {
-            Some(name) => format!("{list} for {name}"),
-            None => format!("{list} (not connected)"),
+        let tooltip = |list: String| match connection {
+            Some(name) => tr!("list-for-connection", list = list, name = name.to_owned()),
+            None => tr!("list-not-connected", list = list),
         };
-        self.queue_tab.set_tooltip_text(Some(&tooltip("Transfers")));
+        self.queue_tab
+            .set_tooltip_text(Some(&tooltip(tr!("list-queue-tooltip"))));
         self.completed_tab
-            .set_tooltip_text(Some(&tooltip("Completed transfers")));
+            .set_tooltip_text(Some(&tooltip(tr!("list-completed-tooltip"))));
         self.failed_tab
-            .set_tooltip_text(Some(&tooltip("Failed transfers")));
+            .set_tooltip_text(Some(&tooltip(tr!("list-failed-tooltip"))));
         self.connection.replace(connection.map(str::to_owned));
         self.update_queue_title();
     }
@@ -786,8 +787,9 @@ impl TransferTabs {
     fn show_counts(&self, running: usize, completed: usize, failed: usize) {
         let (_, completed_before, _) = self.counts.replace((running, completed, failed));
         self.update_queue_title();
-        self.completed.set_label(&titled("Completed", completed));
-        self.failed.set_label(&titled("Failed", failed));
+        self.completed
+            .set_label(&titled(&tr!("list-completed"), completed));
+        self.failed.set_label(&titled(&tr!("list-failed"), failed));
         if completed > completed_before {
             self.completed_tab.add_css_class("tab-highlight");
             let tab = self.completed_tab.clone();
@@ -799,7 +801,7 @@ impl TransferTabs {
 
     /// "Queue (2) · me@host": the running count and the connection, shortened to fit.
     fn update_queue_title(&self) {
-        let mut title = titled("Queue", self.counts.get().0);
+        let mut title = titled(&tr!("list-queue"), self.counts.get().0);
         if let Some(name) = self.connection.borrow().as_deref() {
             title.push_str(" · ");
             title.push_str(name);

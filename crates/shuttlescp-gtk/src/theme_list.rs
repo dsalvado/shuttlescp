@@ -12,6 +12,7 @@ use relm4::gtk::prelude::*;
 
 use shuttlescp_core::config::ThemeChoice;
 
+use crate::i18n::tr;
 use crate::theme::{self, Swatch};
 
 /// Action every row triggers; its target is the row's `ThemeChoice::key()`.
@@ -19,7 +20,9 @@ const THEME_ACTION: &str = "win.theme";
 /// Tallest the list grows before it scrolls, in pixels (about ten rows).
 const MAX_HEIGHT: i32 = 240;
 /// Label of the entry that follows the desktop theme.
-const SYSTEM_THEME_LABEL: &str = "System default";
+fn system_theme_label() -> String {
+    tr!("theme-system")
+}
 /// Icon marking the current theme.
 const CHECK_ICON: &str = "object-select-symbolic";
 /// Width of the list, in pixels: wide enough to centre the names with room either side.
@@ -154,8 +157,8 @@ fn theme_row(choice: &ThemeChoice, checked: bool, swatch: Option<Swatch>) -> gtk
     check.set_opacity(if checked { 1.0 } else { 0.0 });
     let label = gtk::Label::builder()
         .label(match choice {
-            ThemeChoice::System => SYSTEM_THEME_LABEL,
-            ThemeChoice::Named(name) => name,
+            ThemeChoice::System => system_theme_label(),
+            ThemeChoice::Named(name) => name.clone(),
         })
         .xalign(0.5)
         .hexpand(true)
@@ -183,7 +186,7 @@ fn swatch_area(swatch: Option<Swatch>) -> gtk::DrawingArea {
     let Some(swatch) = swatch else {
         return area;
     };
-    area.set_tooltip_text(Some("Window and accent colours"));
+    area.set_tooltip_text(Some(&tr!("theme-swatch")));
     area.set_draw_func(move |_, cairo, width, height| {
         let (width, height) = (f64::from(width), f64::from(height));
         let rounded = |cairo: &gtk::cairo::Context| {
