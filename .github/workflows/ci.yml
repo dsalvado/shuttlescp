@@ -113,12 +113,13 @@ jobs:
 
   # macOS: lint and test there too (it compiles the Mac-only code: the Keychain, the
   # Finder icons), then build the .dmg exactly as a release would and keep it as an
-  # artifact. macos-14 is the oldest macOS runner GitHub offers; Homebrew builds its
-  # libraries for the system it runs on, so this sets the oldest macOS the app runs
-  # on (see packaging/macos/build-app.sh). Apple silicon, like the runner.
+  # artifact. Homebrew builds its libraries for the system it runs on, so the runner's
+  # macOS is the oldest the app runs on (see packaging/macos/build-app.sh): macOS 26,
+  # since GitHub retired its macOS 14 runners on 2026-11-02. Apple silicon, like the
+  # runner.
   macos:
     name: macOS app
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - name: Check out the code
