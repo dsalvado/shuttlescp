@@ -18,6 +18,7 @@ use shuttlescp_core::format::format_size;
 use shuttlescp_core::update::{self, Manifest};
 
 use crate::dialog::{self, ButtonKind, Dialog};
+use crate::i18n::tr;
 
 /// How often the dialog shows the download's progress.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -57,20 +58,14 @@ pub fn ask_restart(
     running: usize,
     on_choice: impl Fn(RestartChoice) + 'static,
 ) {
-    let dialog = Dialog::new(parent, "Restart");
+    let dialog = Dialog::new(parent, &tr!("update-restart-title"));
     dialog.content.append(&dialog::text(
-        &format!("Restart into ShuttleSCP {version}?"),
+        &tr!("update-restart-question", version = version.to_owned()),
         &["heading"],
     ));
-    let running = match running {
-        1 => String::from("A transfer is still running."),
-        count => format!("{count} transfers are still running."),
-    };
+    let running = tr!("update-restart-running", count = running);
     dialog.content.append(&dialog::text(
-        &format!(
-            "{running} ShuttleSCP can restart by itself once they finish, or now: they \
-             stop, and can be resumed the next time you connect to the server."
-        ),
+        &tr!("update-restart-detail", running = running),
         &[],
     ));
     // Set by a button, read when the window closes, so `on_choice` runs at most once.
@@ -82,10 +77,18 @@ pub fn ask_restart(
             window.close();
         })
     };
-    choose("Later", ButtonKind::Normal, RestartChoice::Later);
-    choose("Restart Now", ButtonKind::Destructive, RestartChoice::Now);
+    choose(
+        &tr!("update-later"),
+        ButtonKind::Normal,
+        RestartChoice::Later,
+    );
+    choose(
+        &tr!("update-restart-now"),
+        ButtonKind::Destructive,
+        RestartChoice::Now,
+    );
     let when_finished = choose(
-        "When Transfers Finish",
+        &tr!("update-when-finished"),
         ButtonKind::Suggested,
         RestartChoice::WhenTransfersFinish,
     );
@@ -101,32 +104,30 @@ pub fn ask_restart(
 
 /// Say that the running version is the latest.
 pub fn report_up_to_date(parent: &gtk::Window) {
-    let dialog = Dialog::new(parent, "Check for Updates");
+    let dialog = Dialog::new(parent, &tr!("update-check-title"));
     dialog
         .content
-        .append(&dialog::text("ShuttleSCP is up to date", &["heading"]));
+        .append(&dialog::text(&tr!("update-up-to-date"), &["heading"]));
     dialog.content.append(&dialog::text(
-        &format!(
-            "Version {} is the latest release.",
-            env!("CARGO_PKG_VERSION")
-        ),
+        &tr!("update-latest", version = env!("CARGO_PKG_VERSION")),
         &[],
     ));
-    let close = dialog.add_close_button("Close");
+    let close = dialog.add_close_button(&tr!("dialog-close"));
     dialog.window.present();
     close.grab_focus();
 }
 
 /// Say that looking for an update did not work.
 pub fn report_error(parent: &gtk::Window, error: &str) {
-    let dialog = Dialog::new(parent, "Check for Updates");
+    let dialog = Dialog::new(parent, &tr!("update-check-title"));
     dialog
         .content
-        .append(&dialog::text("Cannot check for updates", &["heading"]));
-    dialog
-        .content
-        .append(&dialog::text(&format!("{}.", capitalised(error)), &[]));
-    let close = dialog.add_close_button("Close");
+        .append(&dialog::text(&tr!("update-check-failed"), &["heading"]));
+    dialog.content.append(&dialog::text(
+        &tr!("update-check-error", error = capitalised(error)),
+        &[],
+    ));
+    let close = dialog.add_close_button(&tr!("dialog-close"));
     dialog.window.present();
     close.grab_focus();
 }
@@ -142,22 +143,23 @@ pub fn report_error(parent: &gtk::Window, error: &str) {
 /// * `on_installed` - Called once the download is in place, with the program to start
 ///   after quitting: the new AppImage, or on Windows the installer
 pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(PathBuf) + 'static) {
-    let dialog = Dialog::new(parent, "Update Available");
+    let dialog = Dialog::new(parent, &tr!("update-available-title"));
     dialog.content.append(&dialog::text(
-        &format!("ShuttleSCP {} is available", manifest.version),
+        &tr!("update-available", version = manifest.version.clone()),
         &["heading"],
     ));
     let published = manifest.published.get(..10).unwrap_or(&manifest.published);
     dialog.content.append(&dialog::text(
-        &format!(
-            "You have version {}. The new version was released on {published}.",
-            env!("CARGO_PKG_VERSION")
+        &tr!(
+            "update-you-have",
+            current = env!("CARGO_PKG_VERSION"),
+            date = published.to_owned()
         ),
         &[],
     ));
     let notes = gtk::LinkButton::with_label(
         &manifest.notes_url,
-        &format!("What's new in {}", manifest.version),
+        &tr!("update-whats-new", version = manifest.version.clone()),
     );
     notes.set_halign(gtk::Align::Start);
     notes.add_css_class("about-link");
@@ -169,14 +171,12 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
     if cfg!(target_os = "macos")
         && let Some(dmg) = &manifest.macos
     {
-        dialog.content.append(&dialog::text(
-            "Download it, open the disk image and drag ShuttleSCP onto Applications, \
-             replacing this version.",
-            &["dim-label"],
-        ));
-        dialog.add_close_button("Later");
+        dialog
+            .content
+            .append(&dialog::text(&tr!("update-mac-steps"), &["dim-label"]));
+        dialog.add_close_button(&tr!("update-later"));
         let (window, url) = (dialog.window.clone(), dmg.url.clone());
-        dialog.add_button("Download", ButtonKind::Suggested, move || {
+        dialog.add_button(&tr!("update-download"), ButtonKind::Suggested, move || {
             open_uri(&url);
             window.close();
         });
@@ -185,13 +185,12 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
     }
     let Some((asset, target)) = self_update(&manifest) else {
         // E.g. built from source on Linux: nothing here can be replaced.
-        dialog.content.append(&dialog::text(
-            "Download the new version from the ShuttleSCP web page.",
-            &["dim-label"],
-        ));
-        dialog.add_close_button("Later");
+        dialog
+            .content
+            .append(&dialog::text(&tr!("update-from-page"), &["dim-label"]));
+        dialog.add_close_button(&tr!("update-later"));
         let window = dialog.window.clone();
-        dialog.add_button("Open Download Page", ButtonKind::Suggested, move || {
+        dialog.add_button(&tr!("update-open-page"), ButtonKind::Suggested, move || {
             open_uri(about::HOMEPAGE);
             window.close();
         });
@@ -204,7 +203,7 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
     status.set_visible(false);
     dialog.content.append(&bar);
     dialog.content.append(&status);
-    let later = dialog.add_close_button("Later");
+    let later = dialog.add_close_button(&tr!("update-later"));
     let cancel = Arc::new(AtomicBool::new(false));
     let started = Rc::new(Cell::new(false));
     let install = {
@@ -220,10 +219,10 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
         move |button: &gtk::Button| {
             started.set(true);
             button.set_sensitive(false);
-            later.set_label("Cancel");
+            later.set_label(&tr!("dialog-cancel"));
             bar.set_visible(true);
             status.set_visible(true);
-            status.set_label("Downloading...");
+            status.set_label(&tr!("update-downloading"));
             start_download(
                 asset.clone(),
                 target.clone(),
@@ -239,7 +238,7 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
             );
         }
     };
-    let install_button = dialog.add_button("Install and Restart", ButtonKind::Suggested, || {});
+    let install_button = dialog.add_button(&tr!("update-install"), ButtonKind::Suggested, || {});
     install_button.connect_clicked(install);
     // Closing the dialog (Cancel, Escape or its title bar) stops a download.
     dialog.window.connect_close_request(move |_| {
@@ -292,10 +291,10 @@ fn start_download(
                     widgets
                         .bar
                         .set_fraction(shuttlescp_core::transfer::fraction(done, total));
-                    widgets.status.set_label(&format!(
-                        "Downloading... {} of {}",
-                        format_size(done),
-                        format_size(total)
+                    widgets.status.set_label(&tr!(
+                        "update-downloading-progress",
+                        done = format_size(done),
+                        total = format_size(total)
                     ));
                 }
                 Download::Done(result) => {
@@ -327,12 +326,11 @@ fn finish(
             tracing::warn!("update not installed: {error}");
             widgets.bar.set_visible(false);
             widgets.status.add_css_class("error");
-            widgets.status.set_label(&format!(
-                "{}. You can download it from the ShuttleSCP web page instead.",
-                capitalised(&error)
-            ));
-            widgets.later.set_label("Close");
-            widgets.install.set_label("Open Download Page");
+            widgets
+                .status
+                .set_label(&tr!("update-failed", error = capitalised(&error)));
+            widgets.later.set_label(&tr!("dialog-close"));
+            widgets.install.set_label(&tr!("update-open-page"));
             widgets.install.set_sensitive(true);
             // Only the download page is offered from now on.
             let window = widgets.window.clone();

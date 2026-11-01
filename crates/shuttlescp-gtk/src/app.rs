@@ -27,8 +27,10 @@ use shuttlescp_core::update::{self, Manifest};
 use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
+use crate::i18n::tr;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput, Resume};
+use crate::preferences_dialog;
 use crate::quit_dialog::{self, QuitChoice};
 use crate::resize_grips;
 use crate::session::{self, Session, SessionId, SessionInit};
@@ -77,7 +79,9 @@ const NEW_TAB_ICON: &str = "tab-new-symbolic";
 /// Initial height of the session area above the bottom panel, in pixels.
 const SESSION_AREA_HEIGHT: i32 = 470;
 /// Text shown in the remote half of the split (and the transfers tab) while not connected.
-pub const NOT_CONNECTED: &str = "Not connected";
+pub fn not_connected() -> String {
+    tr!("not-connected")
+}
 /// Pause between the main window's first frame and opening the Login dialog.
 const LOGIN_AFTER_FIRST_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -89,6 +93,7 @@ relm4::new_stateless_action!(LoginAction, WindowActions, "login");
 relm4::new_stateless_action!(DisconnectAction, WindowActions, "disconnect");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
 relm4::new_stateless_action!(AboutAction, WindowActions, "about");
+relm4::new_stateless_action!(PreferencesAction, WindowActions, "preferences");
 relm4::new_stateless_action!(CheckUpdatesAction, WindowActions, "check-updates");
 // A check item: its state says whether updates are looked for at startup.
 relm4::new_stateful_action!(AutoUpdateAction, WindowActions, "auto-update", (), bool);
@@ -307,6 +312,10 @@ pub enum AppMsg {
     /// Transfers started, ended or began waiting, or the limit changed: refresh the
     /// status bar.
     TransferLimitChanged,
+    /// Open the Preferences window.
+    ShowPreferences,
+    /// The user picked an interface language (a language tag), for the next start.
+    LanguageChosen(String),
     /// The user set the limit on transfers running at once.
     SetTransferLimit {
         /// Whether transfers are limited at all.
@@ -369,6 +378,8 @@ pub struct App {
     pending: Rc<PendingStore>,
     /// The limit on transfers running at once, shared by every session's transfer lists.
     transfer_limit: Rc<TransferLimit>,
+    /// The interface language the app started in (a change applies at the next start).
+    ui_language: String,
     /// Name of this computer, for the titles of sessions that are not connected.
     host: String,
     config: Config,
@@ -508,7 +519,7 @@ impl SimpleComponent for App {
                             gtk::Button {
                                 add_css_class: "flat",
                                 set_icon_name: "window-close-symbolic",
-                                set_tooltip_text: Some("Hide this notice"),
+                                set_tooltip_text: Some(&tr!("update-notice-hide")),
                                 connect_clicked => AppMsg::DismissUpdateNotice,
                             },
                         },
@@ -523,10 +534,7 @@ impl SimpleComponent for App {
                             set_has_frame: false,
                             set_direction: gtk::ArrowType::Up,
                             set_popover: Some(&limit_popover),
-                            set_tooltip_text: Some(
-                                "Transfers running at once, over all connections. Click to \
-                                 limit them.",
-                            ),
+                            set_tooltip_text: Some(&tr!("status-transfers-tooltip")),
                             #[watch]
                             set_label: &model.transfer_limit_text(),
                         },
@@ -535,7 +543,7 @@ impl SimpleComponent for App {
                         },
                         gtk::Label {
                             #[watch]
-                            set_label: &format!("Log level: {}", model.logger.level().label()),
+                            set_label: &tr!("status-log-level", level = model.logger.level().label()),
                         },
                         gtk::Separator {
                             set_orientation: gtk::Orientation::Vertical,
@@ -634,12 +642,14 @@ impl SimpleComponent for App {
         // and the Login dialog, which lists them.
         let pending = PendingStore::load(PendingTransfers::default_path());
         let transfer_limit = TransferLimit::new(config.transfer_limit());
+        let ui_language = config.language().to_owned();
         let mut model = Self {
             sessions: Vec::new(),
             next_session: 0,
             session_notebook: session_notebook.clone(),
             pending: Rc::clone(&pending),
             transfer_limit,
+            ui_language,
             host: computer_name(),
             config,
             config_path,
@@ -689,8 +699,8 @@ impl SimpleComponent for App {
         // The "New Connection" tab, always last: clicking it opens the Login dialog.
         let new_tab = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         new_tab.append(&gtk::Image::from_icon_name(NEW_TAB_ICON));
-        new_tab.append(&gtk::Label::new(Some("New Connection")));
-        new_tab.set_tooltip_text(Some("Connect to another server in a new tab"));
+        new_tab.append(&gtk::Label::new(Some(&tr!("new-connection"))));
+        new_tab.set_tooltip_text(Some(&tr!("new-connection-tooltip")));
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
         model.add_session(start_dir, window_size.width / 2, None, &sender);
         {
@@ -970,9 +980,9 @@ impl SimpleComponent for App {
                 if running > 0 {
                     self.confirm_stopping_transfers(
                         running,
-                        "Close Session",
-                        "Close the session?",
-                        "Close Session",
+                        &tr!("close-session-title"),
+                        &tr!("close-session-question"),
+                        &tr!("close-session-title"),
                         &sender,
                         move || AppMsg::CloseSessionNow(id),
                     );
@@ -981,6 +991,22 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::CloseSessionNow(id) => self.close_session(id),
+            AppMsg::ShowPreferences => {
+                let sender = sender.clone();
+                preferences_dialog::show(
+                    self.window.upcast_ref(),
+                    self.config.language(),
+                    &self.ui_language,
+                    move |language| sender.input(AppMsg::LanguageChosen(language)),
+                );
+            }
+            AppMsg::LanguageChosen(language) => {
+                if language != self.config.language() {
+                    tracing::info!("interface language: {language} (from the next start)");
+                    self.config.set_language(&language);
+                    self.save_config();
+                }
+            }
             // Nothing to store: the update itself refreshes the status bar.
             AppMsg::TransferLimitChanged => {}
             AppMsg::SetTransferLimit { limited, number } => {
@@ -1436,18 +1462,18 @@ impl App {
     fn transfer_limit_text(&self) -> String {
         let (limit, running, waiting) = self.transfer_limit.counts();
         let mut text = match limit {
-            None => String::from("Transfers: unlimited"),
-            Some(limit) => format!("Transfers: {running} of {limit}"),
+            None => tr!("status-transfers-unlimited"),
+            Some(limit) => tr!("status-transfers-limited", running = running, limit = limit),
         };
         if waiting > 0 {
-            text.push_str(&format!(" \u{b7} {waiting} waiting"));
+            text.push_str(" \u{b7} ");
+            text.push_str(&tr!("status-transfers-waiting", count = waiting));
         }
         text
     }
 
     fn connection_status(&self) -> String {
-        self.current()
-            .map_or_else(|| String::from(NOT_CONNECTED), Session::status)
+        self.current().map_or_else(not_connected, Session::status)
     }
 
     /// Whether the automatic update check should run now: it is on, and the last one
@@ -1506,12 +1532,15 @@ impl App {
     fn update_notice_text(&self) -> String {
         match &self.update_notice {
             Some(UpdateNotice::Available(manifest)) => {
-                format!("Update available: {}", manifest.version)
+                tr!(
+                    "update-notice-available",
+                    version = manifest.version.clone()
+                )
             }
             Some(UpdateNotice::Installed {
                 when_idle: true, ..
-            }) => String::from("Update waits for transfers"),
-            Some(UpdateNotice::Installed { .. }) => String::from("Restart to finish updating"),
+            }) => tr!("update-notice-waiting"),
+            Some(UpdateNotice::Installed { .. }) => tr!("update-notice-restart"),
             None => String::new(),
         }
     }
@@ -1519,21 +1548,18 @@ impl App {
     /// What clicking the status bar's update notice does.
     fn update_notice_tooltip(&self) -> String {
         match &self.update_notice {
-            Some(UpdateNotice::Available(manifest)) => format!(
-                "ShuttleSCP {} is available (you have {}). Click to see it.",
-                manifest.version,
-                env!("CARGO_PKG_VERSION")
+            Some(UpdateNotice::Available(manifest)) => tr!(
+                "update-notice-available-tooltip",
+                version = manifest.version.clone(),
+                current = env!("CARGO_PKG_VERSION")
             ),
             Some(UpdateNotice::Installed {
                 version,
                 when_idle: true,
                 ..
-            }) => format!(
-                "ShuttleSCP restarts into {version} once the running transfers finish. \
-                 Click to restart now or later instead."
-            ),
+            }) => tr!("update-notice-waiting-tooltip", version = version.clone()),
             Some(UpdateNotice::Installed { version, .. }) => {
-                format!("ShuttleSCP {version} is ready. Click to restart into it.")
+                tr!("update-notice-restart-tooltip", version = version.clone())
             }
             None => String::new(),
         }
@@ -1621,16 +1647,7 @@ impl App {
         sender: &ComponentSender<Self>,
         on_yes: impl Fn() -> AppMsg + 'static,
     ) {
-        let detail = match running {
-            1 => String::from(
-                "A transfer is still running. It will stop, and can be resumed the next \
-                 time you connect to this server.",
-            ),
-            count => format!(
-                "{count} transfers are still running. They will stop, and can be resumed \
-                 the next time you connect to this server."
-            ),
-        };
+        let detail = tr!("stop-transfers-detail", count = running);
         let sender = sender.clone();
         confirm_dialog::ask(
             self.window.upcast_ref(),
@@ -1698,10 +1715,10 @@ impl App {
         confirm_dialog::ask(
             self.window.upcast_ref(),
             Confirmation {
-                title: "Delete",
+                title: &tr!("delete-title"),
                 question: &question,
-                detail: "Folders are deleted with everything in them. This cannot be undone.",
-                confirm_label: "Delete",
+                detail: &tr!("delete-detail"),
+                confirm_label: &tr!("delete-title"),
             },
             move |confirmed| {
                 if confirmed {
@@ -1794,6 +1811,11 @@ fn register_actions(
         }
     });
 
+    let preferences_sender = sender.clone();
+    let preferences = RelmAction::<PreferencesAction>::new_stateless(move |_| {
+        preferences_sender.input(AppMsg::ShowPreferences);
+    });
+
     let check_sender = sender.clone();
     let check_updates = RelmAction::<CheckUpdatesAction>::new_stateless(move |_| {
         check_sender.input(AppMsg::CheckForUpdates { asked: true });
@@ -1832,6 +1854,7 @@ fn register_actions(
     group.add_action(quit);
     group.add_action(open_log);
     group.add_action(about);
+    group.add_action(preferences);
     group.add_action(check_updates);
     group.add_action(auto_update);
     group.add_action(theme_action);
@@ -1852,6 +1875,10 @@ fn register_actions(
     }
     let group = bar.group();
     app.set_accels_for_action(&format!("{group}.{}", LoginAction::NAME), &["<primary>l"]);
+    app.set_accels_for_action(
+        &format!("{group}.{}", PreferencesAction::NAME),
+        &["<primary>comma"],
+    );
     // On macOS GTK already gives "app.quit" Cmd+Q.
     if bar == MenuBar::InWindow {
         app.set_accels_for_action(&format!("{group}.{}", QuitAction::NAME), &["<primary>q"]);
@@ -2029,7 +2056,7 @@ fn bottom_panel(log_path: Option<PathBuf>) -> gtk::Notebook {
     panel.add_css_class("bottom-panel");
     panel.set_scrollable(true);
     let (log_tab, log_label) = session::panel_tab("text-x-generic-symbolic");
-    log_label.set_label("Log");
+    log_label.set_label(&tr!("panel-log"));
     panel.append_page(&log_tail(log_path), Some(&log_tab));
     panel
 }
@@ -2067,8 +2094,8 @@ fn transfer_limit_popover(
     number: u32,
     sender: &ComponentSender<App>,
 ) -> gtk::Popover {
-    let unlimited = gtk::CheckButton::with_label("Unlimited");
-    let at_most = gtk::CheckButton::with_label("At most");
+    let unlimited = gtk::CheckButton::with_label(&tr!("limit-unlimited"));
+    let at_most = gtk::CheckButton::with_label(&tr!("limit-at-most"));
     // In one group, the two are radio buttons: picking one clears the other.
     at_most.set_group(Some(&unlimited));
     let number_field = gtk::SpinButton::with_range(1.0, f64::from(MAX_TRANSFER_LIMIT), 1.0);
@@ -2121,7 +2148,7 @@ fn transfer_limit_popover(
         });
     }
 
-    let title = gtk::Label::new(Some("Transfers running at once"));
+    let title = gtk::Label::new(Some(&tr!("limit-title")));
     title.set_xalign(0.0);
     title.add_css_class("heading");
     let limited_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -2135,9 +2162,7 @@ fn transfer_limit_popover(
     content.append(&title);
     content.append(&unlimited);
     content.append(&limited_row);
-    let hint = gtk::Label::new(Some(
-        "Over all connections. More wait in the Queue and start as others finish.",
-    ));
+    let hint = gtk::Label::new(Some(&tr!("limit-hint")));
     hint.set_xalign(0.0);
     hint.set_wrap(true);
     hint.set_max_width_chars(32);
@@ -2221,12 +2246,20 @@ fn build_menu(bar: MenuBar) -> gio::Menu {
     let in_window = bar == MenuBar::InWindow;
     let file_menu = gio::Menu::new();
     let session_section = gio::Menu::new();
-    session_section.append_item(&bar.item::<LoginAction>("_Login…"));
-    session_section.append_item(&bar.item::<DisconnectAction>("_Disconnect"));
+    session_section.append_item(&bar.item::<LoginAction>(&tr!("menu-login")));
+    session_section.append_item(&bar.item::<DisconnectAction>(&tr!("menu-disconnect")));
     file_menu.append_section(None, &session_section);
+    // Its own section: the menu draws a separator above and below it.
+    let preferences_section = gio::Menu::new();
+    preferences_section.append_item(&bar.item::<PreferencesAction>(&if in_window {
+        tr!("menu-preferences")
+    } else {
+        tr!("menu-settings")
+    }));
+    file_menu.append_section(None, &preferences_section);
     if in_window {
         let quit_section = gio::Menu::new();
-        quit_section.append_item(&bar.item::<QuitAction>("_Quit"));
+        quit_section.append_item(&bar.item::<QuitAction>(&tr!("menu-quit")));
         file_menu.append_section(None, &quit_section);
     }
 
@@ -2235,48 +2268,48 @@ fn build_menu(bar: MenuBar) -> gio::Menu {
     theme_list_item.set_attribute_value("custom", Some(&THEME_LIST_ID.to_variant()));
     theme_section.append_item(&theme_list_item);
     let view_menu = gio::Menu::new();
-    view_menu.append_section(Some("Theme"), &theme_section);
+    view_menu.append_section(Some(&tr!("menu-theme")), &theme_section);
 
     let level_menu = gio::Menu::new();
     for level in LogLevel::ALL {
         level_menu.append_item(&bar.radio_item::<LogLevelAction>(level.label(), level.as_str()));
     }
     let tools_menu = gio::Menu::new();
-    tools_menu.append_submenu(Some("_Log Level"), &level_menu);
-    tools_menu.append_item(&bar.item::<OpenLogAction>("_Open Log File"));
+    tools_menu.append_submenu(Some(&tr!("menu-log-level")), &level_menu);
+    tools_menu.append_item(&bar.item::<OpenLogAction>(&tr!("menu-open-log")));
 
     let update_section = gio::Menu::new();
-    update_section.append_item(&bar.item::<CheckUpdatesAction>("Check for _Updates…"));
-    update_section.append_item(&bar.item::<AutoUpdateAction>("Check for Updates at _Startup"));
+    update_section.append_item(&bar.item::<CheckUpdatesAction>(&tr!("menu-check-updates")));
+    update_section.append_item(&bar.item::<AutoUpdateAction>(&tr!("menu-auto-updates")));
     let help_menu = gio::Menu::new();
     help_menu.append_section(None, &update_section);
     if in_window {
-        help_menu.append_item(&bar.item::<AboutAction>("_About ShuttleSCP"));
+        help_menu.append_item(&bar.item::<AboutAction>(&tr!("menu-about")));
     }
 
     let menu_bar = gio::Menu::new();
-    menu_bar.append_submenu(Some("_File"), &file_menu);
+    menu_bar.append_submenu(Some(&tr!("menu-file")), &file_menu);
     if !in_window {
-        menu_bar.append_submenu(Some("_Edit"), &edit_menu());
+        menu_bar.append_submenu(Some(&tr!("menu-edit")), &edit_menu());
     }
     if in_window {
-        menu_bar.append_submenu(Some("_View"), &view_menu);
+        menu_bar.append_submenu(Some(&tr!("menu-view")), &view_menu);
     }
-    menu_bar.append_submenu(Some("_Tools"), &tools_menu);
+    menu_bar.append_submenu(Some(&tr!("menu-tools")), &tools_menu);
     if !in_window {
         // GTK fills it with the system's window items (Minimize, Zoom, the open windows).
-        let window_menu = gio::MenuItem::new_submenu(Some("_Window"), &gio::Menu::new());
+        let window_menu = gio::MenuItem::new_submenu(Some(&tr!("menu-window")), &gio::Menu::new());
         window_menu.set_attribute_value("gtk-macos-special", Some(&"window-submenu".to_variant()));
         menu_bar.append_item(&window_menu);
     }
-    menu_bar.append_submenu(Some("_Help"), &help_menu);
+    menu_bar.append_submenu(Some(&tr!("menu-help")), &help_menu);
     menu_bar
 }
 
 /// The macOS Edit menu: GTK's standard items, which act on the focused text field
 /// (also in the system's own windows, such as the file chooser).
 fn edit_menu() -> gio::Menu {
-    let section = |items: &[(&str, &str)]| {
+    let section = |items: &[(String, &str)]| {
         let section = gio::Menu::new();
         for (label, action) in items {
             section.append(Some(label), Some(action));
@@ -2286,16 +2319,19 @@ fn edit_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append_section(
         None,
-        &section(&[("Undo", "text.undo"), ("Redo", "text.redo")]),
+        &section(&[
+            (tr!("edit-undo"), "text.undo"),
+            (tr!("edit-redo"), "text.redo"),
+        ]),
     );
     menu.append_section(
         None,
         &section(&[
-            ("Cut", "clipboard.cut"),
-            ("Copy", "clipboard.copy"),
-            ("Paste", "clipboard.paste"),
-            ("Delete", "selection.delete"),
-            ("Select All", "selection.select-all"),
+            (tr!("edit-cut"), "clipboard.cut"),
+            (tr!("edit-copy"), "clipboard.copy"),
+            (tr!("edit-paste"), "clipboard.paste"),
+            (tr!("edit-delete"), "selection.delete"),
+            (tr!("edit-select-all"), "selection.select-all"),
         ]),
     );
     menu

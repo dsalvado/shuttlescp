@@ -14,6 +14,8 @@ use relm4::gtk::{gdk, glib};
 use shuttlescp_core::log_reader::{LogReader, line_level};
 use shuttlescp_core::logging::LogLevel;
 
+use crate::i18n::tr;
+
 /// How often the file is checked for new lines.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Lines kept in the view; older ones are dropped.
@@ -48,8 +50,7 @@ pub fn log_tail(path: Option<PathBuf>) -> gtk::ScrolledWindow {
     follow_the_end(&scroller);
 
     let Some(path) = path else {
-        view.buffer()
-            .set_text("Logging to a file is not available, so there is nothing to show.");
+        view.buffer().set_text(&tr!("log-unavailable"));
         return scroller;
     };
 

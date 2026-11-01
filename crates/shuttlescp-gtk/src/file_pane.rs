@@ -32,6 +32,7 @@ use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
 use crate::dialog::{self, Dialog};
 use crate::disk_picker::DiskPicker;
+use crate::i18n::tr;
 use crate::name_dialog::{self, NamePrompt};
 use crate::tooltip::TooltipExt;
 
@@ -69,7 +70,9 @@ const DROP_CANCEL_ACTION: &str = "drop-cancel";
 /// CSS class of the text of an item a running transfer uses (see style.css).
 const IN_USE_CLASS: &str = "in-transfer";
 /// Name suggested for a new folder.
-const NEW_FOLDER_NAME: &str = "New Folder";
+fn new_folder_name() -> String {
+    tr!("pane-new-folder-name")
+}
 
 /// CSS class of the parts of a row that drag its files: the icon and the name in the
 /// Name column. Pressing anywhere else in the list starts a selection box instead.
@@ -413,19 +416,22 @@ pub struct Peer {
 /// * `this_is_server` - This pane shows a server
 /// * `peer` - The other pane
 fn transfer_labels(this_is_server: bool, peer: Option<&Peer>) -> (String, String) {
-    let verb = match (this_is_server, peer.is_some_and(|peer| peer.is_server)) {
-        (false, _) => "_Upload",
-        (true, false) => "_Download",
-        (true, true) => "_Copy",
+    let kind = match (this_is_server, peer.is_some_and(|peer| peer.is_server)) {
+        (false, _) => "upload",
+        (true, false) => "download",
+        (true, true) => "copy",
     };
     match peer {
         // An underscore marks the keyboard shortcut letter: one in a name is doubled to
         // show as itself.
         Some(peer) => {
             let name = peer.name.replace('_', "__");
-            (format!("{verb} to {name}"), format!("_Move to {name}"))
+            (
+                tr!("pane-transfer-to", kind = kind, name = name.clone()),
+                tr!("pane-move-to", name = name),
+            )
         }
-        None => (verb.to_owned(), String::from("_Move")),
+        None => (tr!("pane-transfer", kind = kind), tr!("pane-move")),
     }
 }
 
@@ -448,7 +454,7 @@ impl FilePane {
         tracing::debug!("listing {dir}");
         self.requested_dir = dir.clone();
         self.loading = true;
-        self.status = String::from("Gathering information...");
+        self.status = tr!("pane-gathering");
         // Another folder (or the first): show its saved listing meanwhile, if any. A
         // refresh keeps what is shown.
         if (!self.listed || dir != self.current_dir)
@@ -458,9 +464,9 @@ impl FilePane {
             tracing::debug!("showing the saved listing of {dir}");
             self.show_listing(dir.clone(), saved.entries, sender);
             self.saved_from = Some(saved.saved_at);
-            self.status = format!(
-                "Saved list from {} \u{b7} gathering information...",
-                format_modified(saved.saved_at)
+            self.status = tr!(
+                "pane-saved-gathering",
+                saved = format_modified(saved.saved_at)
             );
         }
         match (&dir, self.remote.clone()) {
@@ -542,15 +548,19 @@ impl FilePane {
                     || file.display().to_string(),
                     |name| name.to_string_lossy().into_owned(),
                 );
-                let dialog = Dialog::new(&window, "Open File");
-                dialog
-                    .content
-                    .append(&dialog::text(&format!("Cannot open {name}"), &["heading"]));
+                let dialog = Dialog::new(&window, &tr!("pane-open-title"));
                 dialog.content.append(&dialog::text(
-                    &format!("{}.", error.message().trim_end_matches('.')),
+                    &tr!("pane-open-failed", name = name),
+                    &["heading"],
+                ));
+                dialog.content.append(&dialog::text(
+                    &tr!(
+                        "pane-open-error",
+                        error = error.message().trim_end_matches('.').to_owned()
+                    ),
                     &[],
                 ));
-                let close = dialog.add_close_button("Close");
+                let close = dialog.add_close_button(&tr!("dialog-close"));
                 dialog.window.present();
                 close.grab_focus();
             },
@@ -675,7 +685,7 @@ impl Component for FilePane {
                     set_spinning: model.loading,
                 },
                 gtk::Label {
-                    set_label: "Gathering information...",
+                    set_label: &tr!("pane-gathering"),
                 },
             },
 
@@ -707,7 +717,7 @@ impl Component for FilePane {
                 gtk::Spinner {
                     #[watch]
                     set_spinning: model.loading,
-                    set_tooltip_text: Some("Gathering information"),
+                    set_tooltip_text: Some(&tr!("pane-gathering-tooltip")),
                 },
             },
 
@@ -720,7 +730,7 @@ impl Component for FilePane {
                 gtk::Button {
                     set_has_frame: false,
                     set_icon_name: "view-refresh-symbolic",
-                    set_tooltip_text: Some("Refresh"),
+                    set_tooltip_text: Some(&tr!("pane-refresh-tooltip")),
                     connect_clicked => FilePaneMsg::Refresh,
                 },
                 // `#[local_ref]` embeds a widget created in `init` instead of building a new one.
@@ -808,6 +818,24 @@ impl Component for FilePane {
         entries.append_column::<NameColumn>();
         entries.append_column::<SizeColumn>();
         entries.append_column::<ModifiedColumn>();
+        // Their titles in the interface language (relm4 takes a fixed name).
+        let columns = entries.view.columns();
+        for (index, title) in [
+            tr!("pane-column-name"),
+            tr!("pane-column-size"),
+            tr!("pane-column-modified"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if let Some(column) = u32::try_from(index)
+                .ok()
+                .and_then(|index| columns.item(index))
+                .and_downcast::<gtk::ColumnViewColumn>()
+            {
+                column.set_title(Some(title));
+            }
+        }
         pin_parent_row(&entries);
 
         // Each callback owns its own sender clone, since both outlive this function.
@@ -1056,10 +1084,13 @@ impl Component for FilePane {
             FilePaneMsg::NewFolder => Self::ask_name(
                 root,
                 NamePrompt {
-                    title: "New Folder",
-                    prompt: &format!("Create a folder in {}:", self.current_dir),
-                    initial: NEW_FOLDER_NAME,
-                    confirm_label: "Create",
+                    title: &tr!("pane-new-folder-title"),
+                    prompt: &tr!(
+                        "pane-new-folder-prompt",
+                        folder = self.current_dir.to_string()
+                    ),
+                    initial: &new_folder_name(),
+                    confirm_label: &tr!("pane-new-folder-create"),
                     side: self.current_dir.side(),
                 },
                 &sender,
@@ -1078,10 +1109,10 @@ impl Component for FilePane {
                 Self::ask_name(
                     root,
                     NamePrompt {
-                        title: "Rename",
-                        prompt: &format!("New name for {name}:"),
+                        title: &tr!("pane-rename-title"),
+                        prompt: &tr!("pane-rename-prompt", name = name.clone()),
                         initial: &name,
-                        confirm_label: "Rename",
+                        confirm_label: &tr!("pane-rename-title"),
                         side: path.side(),
                     },
                     &sender,
@@ -1097,7 +1128,7 @@ impl Component for FilePane {
                     PaneCommand::Operation(
                         transfer::create_folder(remote.as_ref(), &dir, &name)
                             .await
-                            .map(|_| format!("Created folder {name}")),
+                            .map(|_| tr!("pane-created", name = name)),
                     )
                 });
             }
@@ -1107,7 +1138,7 @@ impl Component for FilePane {
                     PaneCommand::Operation(
                         transfer::rename(remote.as_ref(), &path, &name)
                             .await
-                            .map(|_| format!("Renamed to {name}")),
+                            .map(|_| tr!("pane-renamed", name = name)),
                     )
                 });
             }
@@ -1190,9 +1221,10 @@ impl Component for FilePane {
             // Showing a saved listing: keep it, and say it could not be read again.
             Err(error) if self.saved_from.is_some() => {
                 tracing::warn!("{error}");
-                self.status = format!(
-                    "Saved list from {}; could not check for changes: {error}",
-                    self.saved_from.map(format_modified).unwrap_or_default()
+                self.status = tr!(
+                    "pane-saved-stale",
+                    saved = self.saved_from.map(format_modified).unwrap_or_default(),
+                    error = error
                 );
                 self.requested_dir = self.current_dir.clone();
             }
@@ -1217,10 +1249,7 @@ impl FilePane {
         entries: Vec<FileEntry>,
         sender: &ComponentSender<Self>,
     ) {
-        let count = match entries.len() {
-            1 => String::from("1 item"),
-            count => format!("{count} items"),
-        };
+        let count = tr!("pane-items", count = entries.len());
         self.status = match self.notice.take() {
             Some(notice) => format!("{notice} · {count}"),
             None => count,
@@ -1344,31 +1373,31 @@ fn context_menu(
     root.insert_action_group(ACTION_GROUP, Some(&group));
 
     let edit_section = gio::Menu::new();
-    edit_section.append(Some("_New Folder…"), Some("pane.new-folder"));
-    edit_section.append(Some("_Rename…"), Some("pane.rename"));
+    edit_section.append(Some(&tr!("pane-menu-new-folder")), Some("pane.new-folder"));
+    edit_section.append(Some(&tr!("pane-menu-rename")), Some("pane.rename"));
     let delete_section = gio::Menu::new();
-    delete_section.append(Some("_Delete"), Some("pane.delete"));
+    delete_section.append(Some(&tr!("pane-menu-delete")), Some("pane.delete"));
     let menu = gio::Menu::new();
     menu.append_section(None, &transfer_section);
     menu.append_section(None, &edit_section);
     let refresh_section = gio::Menu::new();
-    refresh_section.append(Some("Re_fresh"), Some("pane.refresh"));
+    refresh_section.append(Some(&tr!("pane-menu-refresh")), Some("pane.refresh"));
     menu.append_section(None, &refresh_section);
     // The one destructive item comes last, away from the others.
     menu.append_section(None, &delete_section);
 
     let choice_section = gio::Menu::new();
     choice_section.append(
-        Some("_Copy Here"),
+        Some(&tr!("pane-drop-copy")),
         Some(&format!("{ACTION_GROUP}.{DROP_COPY_ACTION}")),
     );
     choice_section.append(
-        Some("_Move Here"),
+        Some(&tr!("pane-drop-move")),
         Some(&format!("{ACTION_GROUP}.{DROP_MOVE_ACTION}")),
     );
     let cancel_section = gio::Menu::new();
     cancel_section.append(
-        Some("C_ancel"),
+        Some(&tr!("pane-drop-cancel")),
         Some(&format!("{ACTION_GROUP}.{DROP_CANCEL_ACTION}")),
     );
     let drop_menu = gio::Menu::new();

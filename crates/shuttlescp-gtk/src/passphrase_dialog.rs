@@ -11,6 +11,7 @@ pub use shuttlescp_core::site_export::PassphrasePurpose;
 use shuttlescp_core::site_export::passphrase_problem;
 
 use crate::dialog::{self, ButtonKind, Dialog};
+use crate::i18n::tr;
 
 /// What the user decided.
 #[derive(Debug)]
@@ -37,33 +38,31 @@ pub fn ask(
     let exporting = purpose == PassphrasePurpose::Export;
     let dialog = Dialog::new(
         parent,
-        if exporting {
-            "Export Sites"
+        &if exporting {
+            tr!("passphrase-export-title")
         } else {
-            "Import Sites"
+            tr!("passphrase-import-title")
         },
     );
     let explanation = dialog::text(
-        if exporting {
-            "Saved passwords are encrypted with a passphrase you choose. You will need it \
-             to import the file on another computer."
+        &if exporting {
+            tr!("passphrase-export-explain")
         } else {
-            "This file contains encrypted passwords. Enter the passphrase it was exported \
-             with."
+            tr!("passphrase-import-explain")
         },
         &[],
     );
     let include = gtk::CheckButton::builder()
-        .label("Include saved passwords")
+        .label(tr!("passphrase-include"))
         .active(true)
         .visible(exporting)
         .build();
-    let passphrase = password_entry(if exporting {
-        "Passphrase (at least 8 characters)"
+    let passphrase = password_entry(&if exporting {
+        tr!("passphrase-new")
     } else {
-        "Passphrase"
+        tr!("passphrase-field")
     });
-    let confirm = password_entry("Repeat passphrase");
+    let confirm = password_entry(&tr!("passphrase-repeat"));
     confirm.set_visible(exporting);
     let hint = dialog::text("", &["hint"]);
     for widget in [
@@ -76,10 +75,14 @@ pub fn ask(
         dialog.content.append(widget);
     }
 
-    dialog.add_close_button("Cancel");
+    dialog.add_close_button(&tr!("dialog-cancel"));
     // Its action is connected below, once the answer slot exists.
     let ok = dialog.add_button(
-        if exporting { "Export" } else { "Import" },
+        &if exporting {
+            tr!("passphrase-export")
+        } else {
+            tr!("passphrase-import")
+        },
         ButtonKind::Suggested,
         || {},
     );

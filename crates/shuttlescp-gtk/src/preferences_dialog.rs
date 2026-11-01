@@ -1,0 +1,67 @@
+//! The Preferences window (File > Preferences): settings that apply to the whole app.
+//! For now, the interface language.
+
+use relm4::gtk;
+use relm4::gtk::prelude::*;
+
+use crate::dialog::{self, Dialog};
+use crate::i18n::{self, tr};
+
+/// Open the Preferences window over `parent`.
+///
+/// # Arguments
+///
+/// * `parent` - The main window
+/// * `chosen` - The interface language in the settings
+/// * `running` - The interface language the app runs in (it changes at the next start)
+/// * `on_language` - Receives the language tag the user picks
+pub fn show(
+    parent: &gtk::Window,
+    chosen: &str,
+    running: &str,
+    on_language: impl Fn(String) + 'static,
+) {
+    let dialog = Dialog::new(parent, &tr!("preferences-title"));
+
+    // Each translation's own name for its language, English first.
+    let offered = i18n::languages();
+    let names: Vec<&str> = offered.iter().map(|(_, name)| name.as_str()).collect();
+    let languages = gtk::DropDown::from_strings(&names);
+    let position = offered
+        .iter()
+        .position(|(tag, _)| tag == chosen)
+        .unwrap_or(0);
+    languages.set_selected(u32::try_from(position).unwrap_or(0));
+
+    let label = gtk::Label::with_mnemonic(&tr!("preferences-language"));
+    label.set_xalign(0.0);
+    label.set_mnemonic_widget(Some(&languages));
+    let grid = gtk::Grid::builder()
+        .column_spacing(12)
+        .row_spacing(dialog::SPACING)
+        .build();
+    grid.attach(&label, 0, 0, 1, 1);
+    grid.attach(&languages, 1, 0, 1, 1);
+    dialog.content.append(&grid);
+
+    // Shown while the language picked is not the one the app runs in.
+    let restart = dialog::text(&tr!("preferences-restart"), &["dim-label"]);
+    restart.set_visible(chosen != running);
+    dialog.content.append(&restart);
+
+    let running = running.to_owned();
+    languages.connect_selected_notify(move |languages| {
+        let Some((tag, _)) = usize::try_from(languages.selected())
+            .ok()
+            .and_then(|index| offered.get(index))
+        else {
+            return;
+        };
+        restart.set_visible(*tag != running);
+        on_language(tag.clone());
+    });
+
+    let close = dialog.add_close_button(&tr!("dialog-close"));
+    dialog.window.set_default_widget(Some(&close));
+    dialog.window.present();
+}

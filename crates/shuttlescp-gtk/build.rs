@@ -127,6 +127,9 @@ fn build_time() -> String {
 fn rerun_when_source_or_git_changes() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src");
+    // The translations, built into the program by `static_loader!` (src/i18n.rs): a new
+    // language folder or a changed text must rebuild it.
+    println!("cargo:rerun-if-changed=i18n");
     println!("cargo:rerun-if-changed=../shuttlescp-core/src");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {

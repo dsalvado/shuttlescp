@@ -7,6 +7,7 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 
 use crate::dialog::{self, ButtonKind, Dialog};
+use crate::i18n::tr;
 
 /// Wording of a confirmation prompt.
 #[derive(Debug, Clone, Copy)]
@@ -41,7 +42,7 @@ pub fn ask(parent: &gtk::Window, wording: Confirmation<'_>, on_answer: impl Fn(b
     // Set by the confirm button, read when the window closes, so `on_answer` runs once
     // whichever way the prompt is dismissed (Cancel, Escape or the title bar).
     let confirmed = Rc::new(Cell::new(false));
-    let cancel = dialog.add_close_button("Cancel");
+    let cancel = dialog.add_close_button(&tr!("dialog-cancel"));
     {
         let (confirmed, window) = (Rc::clone(&confirmed), dialog.window.clone());
         dialog.add_button(wording.confirm_label, ButtonKind::Destructive, move || {

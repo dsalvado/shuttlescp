@@ -6,6 +6,7 @@ use relm4::gtk::prelude::*;
 use shuttlescp_core::transfer::{Side, check_name};
 
 use crate::dialog::{self, ButtonKind, Dialog};
+use crate::i18n::tr;
 
 /// Wording and starting text of a name prompt.
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +48,7 @@ pub fn ask(parent: &gtk::Window, wording: NamePrompt<'_>, on_name: impl Fn(Strin
     dialog.content.append(&entry);
     dialog.content.append(&problem);
 
-    dialog.add_close_button("Cancel");
+    dialog.add_close_button(&tr!("dialog-cancel"));
     let confirm = {
         let (window, entry) = (dialog.window.clone(), entry.clone());
         dialog.add_button(wording.confirm_label, ButtonKind::Suggested, move || {

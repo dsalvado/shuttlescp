@@ -110,6 +110,12 @@ pub fn run(
             }),
         ),
         (
+            "preferences",
+            Box::new(|window| {
+                let _ = WidgetExt::activate_action(window, "win.preferences", None);
+            }),
+        ),
+        (
             "confirm",
             Box::new(|window| {
                 confirm_dialog::ask(

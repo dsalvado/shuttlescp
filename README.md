@@ -73,6 +73,24 @@ Written in Rust with [relm4](https://relm4.org) and GTK 4.
   system's light or dark appearance, Mac-style icons.
 - A log of every session and transfer, with selectable detail, shown in the app and
   kept in a file.
+- In English, French, Spanish, German, Brazilian Portuguese or Simplified Chinese
+  (see [Languages](#languages)).
+
+## Languages
+
+ShuttleSCP's interface is in English, French, Spanish, German, Brazilian Portuguese and
+Simplified Chinese. Pick one in File › Preferences (Ctrl+,), then restart ShuttleSCP.
+
+The translations other than English were made with AI and have not yet been reviewed
+by native speakers, so they may contain mistakes; each is marked "machine translation"
+in the language list until someone has checked it. Corrections, and new languages, are
+very welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Messages that come from servers
+or the system, and a few from deep inside the program (such as some error messages),
+are still in English.
+
+On Linux, Chinese needs a Chinese font, which most desktops install (for example Noto
+Sans CJK, `fonts-noto-cjk` on Debian and Ubuntu); without one, the text shows as empty
+boxes.
 
 ## Installing
 
