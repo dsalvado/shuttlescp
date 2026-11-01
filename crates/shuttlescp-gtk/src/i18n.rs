@@ -251,6 +251,130 @@ mod tests {
         assert!(unused.is_empty(), "in en-US, used nowhere: {unused:?}");
     }
 
+    /// Each message of a Fluent file with its whole text (a message continues on the
+    /// indented lines after its first).
+    fn message_texts(ftl: &str) -> std::collections::BTreeMap<String, String> {
+        let mut messages = std::collections::BTreeMap::new();
+        let mut current: Option<String> = None;
+        for line in ftl.lines() {
+            let continues = line.starts_with(' ') || line.is_empty();
+            match line.split_once(" =") {
+                Some((name, rest))
+                    if !continues
+                        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') =>
+                {
+                    messages.insert(name.to_owned(), rest.to_owned());
+                    current = Some(name.to_owned());
+                }
+                _ if continues => {
+                    if let Some(text) = current.as_ref().and_then(|name| messages.get_mut(name)) {
+                        text.push('\n');
+                        text.push_str(line);
+                    }
+                }
+                // A comment, a term or a section header ends the message.
+                _ => current = None,
+            }
+        }
+        messages
+    }
+
+    /// The variables a message's text uses: every `$name` in it.
+    fn variables(text: &str) -> std::collections::BTreeSet<String> {
+        text.split('$')
+            .skip(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn every_translation_matches_the_english_messages() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("i18n");
+        let english = message_texts(include_str!("../i18n/en-US/shuttlescp.ftl"));
+        for entry in std::fs::read_dir(&folder)
+            .expect("read i18n folder")
+            .flatten()
+        {
+            let language = entry.file_name().to_string_lossy().into_owned();
+            if language == FALLBACK {
+                continue;
+            }
+            let ftl = std::fs::read_to_string(entry.path().join("shuttlescp.ftl"))
+                .unwrap_or_else(|error| panic!("{language}: {error}"));
+            let translated = message_texts(&ftl);
+
+            let names = |messages: &std::collections::BTreeMap<String, String>| {
+                messages
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            let missing: Vec<_> = names(&english)
+                .difference(&names(&translated))
+                .cloned()
+                .collect();
+            let extra: Vec<_> = names(&translated)
+                .difference(&names(&english))
+                .cloned()
+                .collect();
+            assert!(missing.is_empty(), "{language} lacks: {missing:?}");
+            assert!(
+                extra.is_empty(),
+                "{language} has messages English lacks: {extra:?}"
+            );
+
+            for (name, text) in &translated {
+                let original = &english[name];
+                // Every value the program fills in, and no other.
+                assert_eq!(
+                    variables(text),
+                    variables(original),
+                    "{language} {name}: not the same variables as in English"
+                );
+                // No web address the English text does not have (spam, phishing).
+                for marker in ["http", "www.", "://"] {
+                    assert!(
+                        !text.contains(marker) || original.contains(marker),
+                        "{language} {name}: a web address English does not have"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_translation_loads() {
+        // Loading every language parses every file: a syntax error fails here.
+        let languages = languages();
+        assert!(languages.iter().all(|(_, name)| !name.is_empty()));
+        // And every folder made it into the program (they are read when it is built).
+        let folders =
+            std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("i18n"))
+                .expect("read i18n folder")
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .count();
+        assert_eq!(languages.len(), folders, "built in: {languages:?}");
+    }
+
+    #[test]
+    fn french_counts_zero_as_one() {
+        let french: LanguageIdentifier = "fr-FR".parse().expect("language tag");
+        let items = |count: usize| {
+            let args = HashMap::from([(Cow::Borrowed("count"), FluentValue::from(count))]);
+            LOCALES.try_lookup_with_args(&french, "pane-items", &args)
+        };
+        assert_eq!(items(0).as_deref(), Some("0 élément"));
+        assert_eq!(items(1).as_deref(), Some("1 élément"));
+        assert_eq!(items(2).as_deref(), Some("2 éléments"));
+    }
+
     #[test]
     fn english_is_offered_first() {
         assert_eq!(
