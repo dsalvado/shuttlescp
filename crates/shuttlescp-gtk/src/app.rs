@@ -668,9 +668,11 @@ impl SimpleComponent for App {
             if on_wayland() {
                 // GTK's menu bar can lock up the window on Wayland (see `click_menu_bar`).
                 let click_bar = click_menu_bar(&menu_model, theme_list.upcast_ref());
-                widgets.menu_bar.set_visible(false);
+                // Taken out, not just hidden: hidden, it kept its shortcuts (Alt+F,
+                // Alt+V, ...) and took them from the buttons.
                 if let Some(parent) = widgets.menu_bar.parent().and_downcast::<gtk::Box>() {
                     parent.insert_child_after(&click_bar, Some(&widgets.menu_bar));
+                    parent.remove(&widgets.menu_bar);
                 }
             } else {
                 widgets.menu_bar.add_child(theme_list, THEME_LIST_ID);

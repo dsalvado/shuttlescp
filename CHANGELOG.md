@@ -7,6 +7,12 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Linux with Wayland, the menus open from the keyboard again (Alt+F, Alt+V, Alt+T,
+  Alt+H). Since 0.19.1 the shortcuts went to GTK's own menu bar, hidden behind the
+  new one, so nothing opened.
+
 ## [0.19.1] - 2026-11-01
 
 ### Fixed
