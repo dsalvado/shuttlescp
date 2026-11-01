@@ -99,7 +99,7 @@ release key. An update can wait until running transfers finish.
 Download the disk image (`.dmg`) from the [ShuttleSCP web page](https://shuttlescp.dsalvado.ca/)
 or the [latest release](https://github.com/dsalvado/shuttlescp/releases/latest), open it
 and drag ShuttleSCP onto Applications. It runs on Macs with Apple silicon (M1 or later)
-and macOS 14 (Sonoma) or newer.
+and macOS 26 (Tahoe) or newer.
 
 ShuttleSCP is not signed with a paid Apple Developer ID, so the first time macOS asks to
 confirm it: right-click (or Control-click) ShuttleSCP in Applications, choose Open, then

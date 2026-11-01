@@ -17,12 +17,13 @@ permissions:
   contents: write
 
 jobs:
-  # The macOS disk image, built on the oldest macOS runner: the app then runs on that
-  # macOS or newer (see packaging/macos/build-app.sh). It is handed to the publishing
-  # job below as an artifact. Nothing here is signed with a secret.
+  # The macOS disk image. The app runs on the runner's macOS or newer (see
+  # packaging/macos/build-app.sh): macOS 26, since GitHub retired its macOS 14 runners
+  # on 2026-11-02. It is handed to the publishing job below as an artifact. Nothing
+  # here is signed with a secret.
   macos:
     name: macOS disk image
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - name: Check out the code
