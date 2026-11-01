@@ -69,6 +69,19 @@ window.csd.tiled-left {
     font-size: smaller;
 }
 
+/* The transfer limit: a flat, compact button without a drop-down arrow. */
+.statusbar .transfer-limit > button {
+    min-height: 0;
+    padding: 0 4px;
+}
+
+.statusbar .transfer-limit arrow {
+    -gtk-icon-source: none;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+}
+
 /* The status bar's update notice: as low as the bar's text, in the accent colour so it
    is noticed, with a small close button after it. */
 .statusbar .update-notice button {

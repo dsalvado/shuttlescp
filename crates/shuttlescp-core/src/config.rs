@@ -108,6 +108,11 @@ impl WindowSize {
     }
 }
 
+/// The transfer limit's number until the user picks one.
+pub const DEFAULT_TRANSFER_LIMIT: u32 = 10;
+/// The highest transfer limit that can be set.
+pub const MAX_TRANSFER_LIMIT: u32 = 99;
+
 /// Persisted user preferences.
 // `#[serde(default)]` fills fields missing from older files from `Config::default()`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -124,6 +129,11 @@ pub struct Config {
     show_login_at_startup: bool,
     /// Leave finished files out of the transfer list ("Hide finished files").
     hide_finished_files: bool,
+    /// Limit how many transfers run at once (see `transfer_limit`).
+    limit_transfers: bool,
+    /// Most transfers running at once while `limit_transfers` is on; kept while it is
+    /// off, for when it is turned on again.
+    transfer_limit: u32,
     /// Main window size when the app was last closed (its normal size, even if it was
     /// maximized then); `None` until the app has been closed once.
     window_size: Option<WindowSize>,
@@ -146,6 +156,8 @@ impl Default for Config {
             log_level: LogLevel::default(),
             show_login_at_startup: true,
             hide_finished_files: true,
+            limit_transfers: false,
+            transfer_limit: DEFAULT_TRANSFER_LIMIT,
             window_size: None,
             window_maximized: false,
             check_for_updates: true,
@@ -412,6 +424,29 @@ impl Config {
         self.hide_finished_files = hide;
     }
 
+    /// Most transfers to run at once: `None` for no limit.
+    pub fn transfer_limit(&self) -> Option<usize> {
+        self.limit_transfers
+            .then(|| self.transfer_limit_number() as usize)
+    }
+
+    /// The limit's number, whether the limit is on or not (within 1 and
+    /// [`MAX_TRANSFER_LIMIT`], whatever the file says).
+    pub fn transfer_limit_number(&self) -> u32 {
+        self.transfer_limit.clamp(1, MAX_TRANSFER_LIMIT)
+    }
+
+    /// Change the transfer limit (call [`Config::save`] to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `limited` - Whether to limit transfers at all
+    /// * `number` - Most transfers at once when limited
+    pub fn set_transfer_limit(&mut self, limited: bool, number: u32) {
+        self.limit_transfers = limited;
+        self.transfer_limit = number.clamp(1, MAX_TRANSFER_LIMIT);
+    }
+
     /// Whether to look for a newer release at startup.
     pub fn check_for_updates(&self) -> bool {
         self.check_for_updates
@@ -547,6 +582,7 @@ mod tests {
         });
         config.set_window_maximized(true);
         config.set_hide_finished_files(false);
+        config.set_transfer_limit(true, 4);
 
         // Act
         config.save(&path).expect("save config");
@@ -568,6 +604,9 @@ mod tests {
         assert!(loaded.show_login_at_startup());
         // And keep hiding finished files, as before the choice was saved.
         assert!(loaded.hide_finished_files());
+        // Transfers are not limited until the user says so; the number starts at 10.
+        assert_eq!(loaded.transfer_limit(), None);
+        assert_eq!(loaded.transfer_limit_number(), DEFAULT_TRANSFER_LIMIT);
 
         fs::write(&path, "not json").expect("write file");
         assert!(matches!(Config::load(&path), Err(ConfigError::Json { .. })));

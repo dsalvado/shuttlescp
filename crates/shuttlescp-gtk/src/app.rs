@@ -12,7 +12,9 @@ use relm4::gtk::prelude::*;
 use relm4::gtk::{gio, glib};
 use relm4::prelude::*;
 
-use shuttlescp_core::config::{Config, ThemeChoice, WindowSize};
+use shuttlescp_core::config::{
+    Config, DEFAULT_TRANSFER_LIMIT, MAX_TRANSFER_LIMIT, ThemeChoice, WindowSize,
+};
 use shuttlescp_core::local_fs;
 use shuttlescp_core::logging::{LogLevel, Logger};
 use shuttlescp_core::path::{RemotePath, SidePath};
@@ -34,6 +36,7 @@ use crate::theme;
 use crate::theme_list::ThemeList;
 use crate::tooltip::TooltipExt;
 use crate::transfer_panel::{PendingStore, TransferPanelMsg};
+use crate::transfer_slots::TransferLimit;
 use crate::update_dialog::{self, RestartChoice};
 
 /// Window size the first time the app opens; after that, the size it was closed at.
@@ -301,6 +304,16 @@ pub enum AppMsg {
     TransfersDiscarded(SessionId),
     /// "Hide finished files" was ticked or cleared: new sessions start that way.
     HideFinishedFiles(bool),
+    /// Transfers started, ended or began waiting, or the limit changed: refresh the
+    /// status bar.
+    TransferLimitChanged,
+    /// The user set the limit on transfers running at once.
+    SetTransferLimit {
+        /// Whether transfers are limited at all.
+        limited: bool,
+        /// Most transfers at once when limited.
+        number: u32,
+    },
     /// Quit, after giving up the unfinished transfers and deleting their partial files.
     QuitDiscarding(&'static str),
     /// Look for a newer release: asked for (Help > Check for Updates) or automatic.
@@ -354,6 +367,8 @@ pub struct App {
     session_notebook: gtk::Notebook,
     /// Unfinished transfers, shared by every session's transfer lists.
     pending: Rc<PendingStore>,
+    /// The limit on transfers running at once, shared by every session's transfer lists.
+    transfer_limit: Rc<TransferLimit>,
     /// Name of this computer, for the titles of sessions that are not connected.
     host: String,
     config: Config,
@@ -502,6 +517,22 @@ impl SimpleComponent for App {
                             #[watch]
                             set_visible: model.update_notice.is_some(),
                         },
+                        // How many transfers run at once; click to change the limit.
+                        gtk::MenuButton {
+                            add_css_class: "transfer-limit",
+                            set_has_frame: false,
+                            set_direction: gtk::ArrowType::Up,
+                            set_popover: Some(&limit_popover),
+                            set_tooltip_text: Some(
+                                "Transfers running at once, over all connections. Click to \
+                                 limit them.",
+                            ),
+                            #[watch]
+                            set_label: &model.transfer_limit_text(),
+                        },
+                        gtk::Separator {
+                            set_orientation: gtk::Orientation::Vertical,
+                        },
                         gtk::Label {
                             #[watch]
                             set_label: &format!("Log level: {}", model.logger.level().label()),
@@ -602,11 +633,13 @@ impl SimpleComponent for App {
         // Shared by the transfer panels, which record and resume unfinished transfers,
         // and the Login dialog, which lists them.
         let pending = PendingStore::load(PendingTransfers::default_path());
+        let transfer_limit = TransferLimit::new(config.transfer_limit());
         let mut model = Self {
             sessions: Vec::new(),
             next_session: 0,
             session_notebook: session_notebook.clone(),
             pending: Rc::clone(&pending),
+            transfer_limit,
             host: computer_name(),
             config,
             config_path,
@@ -660,6 +693,17 @@ impl SimpleComponent for App {
         new_tab.set_tooltip_text(Some("Connect to another server in a new tab"));
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
         model.add_session(start_dir, window_size.width / 2, None, &sender);
+        {
+            let sender = sender.clone();
+            model
+                .transfer_limit
+                .set_on_change(move || sender.input(AppMsg::TransferLimitChanged));
+        }
+        let limit_popover = transfer_limit_popover(
+            model.config.transfer_limit().is_some(),
+            model.config.transfer_limit_number(),
+            &sender,
+        );
         // `#[local_ref]` in the view takes a reference.
         let session_notebook = &session_notebook;
         let widgets = view_output!();
@@ -937,6 +981,23 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::CloseSessionNow(id) => self.close_session(id),
+            // Nothing to store: the update itself refreshes the status bar.
+            AppMsg::TransferLimitChanged => {}
+            AppMsg::SetTransferLimit { limited, number } => {
+                if limited == self.config.transfer_limit().is_some()
+                    && number == self.config.transfer_limit_number()
+                {
+                    return;
+                }
+                self.config.set_transfer_limit(limited, number);
+                let limit = self.config.transfer_limit();
+                match limit {
+                    Some(limit) => tracing::info!("transfers limited to {limit} at once"),
+                    None => tracing::info!("transfers not limited"),
+                }
+                self.save_config();
+                self.transfer_limit.set_limit(limit);
+            }
             AppMsg::HideFinishedFiles(hide) => {
                 tracing::info!("hide finished files: {hide}");
                 self.config.set_hide_finished_files(hide);
@@ -1154,6 +1215,7 @@ impl App {
             start_dir,
             last_dir_on_disk: self.config.last_dir_on_disk().clone(),
             pending: Rc::clone(&self.pending),
+            transfer_limit: Rc::clone(&self.transfer_limit),
             split_position,
             hide_finished: self.config.hide_finished_files(),
             left,
@@ -1369,6 +1431,20 @@ impl App {
     }
 
     /// Title of the current session, for the window's status bar.
+    /// The status bar's transfer limit: "Transfers: unlimited", or "Transfers: 3 of 10",
+    /// with "· 15 waiting" while jobs wait for room.
+    fn transfer_limit_text(&self) -> String {
+        let (limit, running, waiting) = self.transfer_limit.counts();
+        let mut text = match limit {
+            None => String::from("Transfers: unlimited"),
+            Some(limit) => format!("Transfers: {running} of {limit}"),
+        };
+        if waiting > 0 {
+            text.push_str(&format!(" \u{b7} {waiting} waiting"));
+        }
+        text
+    }
+
     fn connection_status(&self) -> String {
         self.current()
             .map_or_else(|| String::from(NOT_CONNECTED), Session::status)
@@ -1976,6 +2052,98 @@ fn quit_on_signals(sender: &ComponentSender<App>) {
             glib::ControlFlow::Continue
         });
     }
+}
+
+/// The transfer limit's panel, opened from the status bar: no limit, or at most a
+/// number of transfers at once. Every change is sent as [`AppMsg::SetTransferLimit`].
+///
+/// # Arguments
+///
+/// * `limited` - Whether transfers are limited now
+/// * `number` - The limit's number
+/// * `sender` - Receives the changes
+fn transfer_limit_popover(
+    limited: bool,
+    number: u32,
+    sender: &ComponentSender<App>,
+) -> gtk::Popover {
+    let unlimited = gtk::CheckButton::with_label("Unlimited");
+    let at_most = gtk::CheckButton::with_label("At most");
+    // In one group, the two are radio buttons: picking one clears the other.
+    at_most.set_group(Some(&unlimited));
+    let number_field = gtk::SpinButton::with_range(1.0, f64::from(MAX_TRANSFER_LIMIT), 1.0);
+    number_field.set_digits(0);
+    number_field.set_width_chars(2);
+    number_field.set_value(f64::from(number));
+    if limited {
+        at_most.set_active(true);
+    } else {
+        unlimited.set_active(true);
+    }
+
+    // Read the choice from the widgets and send it. Weak references: the widgets own
+    // the signal handlers that hold this, so strong ones would keep each other alive.
+    let send = {
+        let (at_most, number_field, sender) = (
+            at_most.downgrade(),
+            number_field.downgrade(),
+            sender.clone(),
+        );
+        Rc::new(move || {
+            let (Some(at_most), Some(number_field)) = (at_most.upgrade(), number_field.upgrade())
+            else {
+                return;
+            };
+            sender.input(AppMsg::SetTransferLimit {
+                limited: at_most.is_active(),
+                number: u32::try_from(number_field.value_as_int())
+                    .unwrap_or(DEFAULT_TRANSFER_LIMIT),
+            });
+        })
+    };
+    for button in [&unlimited, &at_most] {
+        let send = Rc::clone(&send);
+        // Each change toggles both buttons; act once, on the one turned on.
+        button.connect_toggled(move |button| {
+            if button.is_active() {
+                send();
+            }
+        });
+    }
+    {
+        let at_most = at_most.downgrade();
+        number_field.connect_value_changed(move |_| {
+            match at_most.upgrade() {
+                // Changing the number while unlimited means limiting to it.
+                Some(at_most) if !at_most.is_active() => at_most.set_active(true),
+                _ => send(),
+            }
+        });
+    }
+
+    let title = gtk::Label::new(Some("Transfers running at once"));
+    title.set_xalign(0.0);
+    title.add_css_class("heading");
+    let limited_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    limited_row.append(&at_most);
+    limited_row.append(&number_field);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    content.set_margin_top(4);
+    content.set_margin_bottom(4);
+    content.set_margin_start(4);
+    content.set_margin_end(4);
+    content.append(&title);
+    content.append(&unlimited);
+    content.append(&limited_row);
+    let hint = gtk::Label::new(Some(
+        "Over all connections. More wait in the Queue and start as others finish.",
+    ));
+    hint.set_xalign(0.0);
+    hint.set_wrap(true);
+    hint.set_max_width_chars(32);
+    hint.add_css_class("dim-label");
+    content.append(&hint);
+    gtk::Popover::builder().child(&content).build()
 }
 
 /// Whether the app runs on Wayland (rather than X11, Windows or macOS).

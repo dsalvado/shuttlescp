@@ -7,6 +7,22 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- **A limit on transfers running at once,** over all connections, set from the status
+  bar: click "Transfers: unlimited" and pick "At most" a number (1 to 99). Transfers
+  beyond it wait in the Queue ("Waiting for a free transfer slot") and start, oldest
+  first, as others finish. Raising the limit starts waiting transfers; lowering it
+  pauses the ones started last, which continue by themselves, where they stopped, when
+  there is room. The status bar shows how many run and wait, e.g. "Transfers: 2 of 4 ·
+  3 waiting". Unlimited unless set; the choice is saved.
+
+### Changed
+
+- The files of a paused transfer say "Paused" (with a pause icon) instead of
+  "Cancelled", and a transfer resumed in the Queue keeps its place in the list instead
+  of moving to the end.
+
 ## [0.19.2] - 2026-11-01
 
 ### Fixed
