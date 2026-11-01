@@ -31,6 +31,7 @@ use shuttlescp_core::transfer::{
 };
 
 use crate::conflict_dialog;
+use crate::i18n::tr;
 use crate::session::SessionId;
 use crate::tooltip::TooltipExt;
 use crate::transfer_slots::{JobRef, TransferLimit};
@@ -540,12 +541,12 @@ impl Component for TransferPanel {
                     set_xalign: 0.0,
                 },
                 gtk::Button {
-                    set_label: "Resume",
+                    set_label: &tr!("transfers-resume"),
                     connect_clicked => TransferPanelMsg::ResumeInterrupted,
                 },
                 gtk::Button {
-                    set_label: "Discard",
-                    set_tooltip_text: Some("Forget them; their partial files stay where they are"),
+                    set_label: &tr!("transfers-discard"),
+                    set_tooltip_text: Some(&tr!("transfers-discard-tooltip")),
                     connect_clicked => TransferPanelMsg::DiscardInterrupted,
                 },
             },
@@ -554,13 +555,10 @@ impl Component for TransferPanel {
                 set_halign: gtk::Align::End,
 
                 gtk::CheckButton {
-                    set_label: Some("Hide finished files"),
+                    set_label: Some(&tr!("transfers-hide-finished")),
                     // Before `connect_toggled`, so starting ticked is not a change.
                     set_active: hide_finished,
-                    set_tooltip_text: Some(
-                        "Leave files copied without problems out of the list, so the ones \
-                         being copied stay at the top",
-                    ),
+                    set_tooltip_text: Some(&tr!("transfers-hide-finished-tooltip")),
                     connect_toggled[sender] => move |check| {
                         sender.input(TransferPanelMsg::HideFinished(check.is_active()));
                     },
@@ -607,12 +605,12 @@ impl Component for TransferPanel {
             list
         });
         let placeholders = [
-            "Queue empty",
-            "No completed transfers",
-            "No failed transfers",
+            tr!("transfers-queue-empty"),
+            tr!("transfers-completed-empty"),
+            tr!("transfers-failed-empty"),
         ]
         .map(|text| {
-            let placeholder = gtk::Label::new(Some(text));
+            let placeholder = gtk::Label::new(Some(&text));
             placeholder.add_css_class("dim-label");
             // Clicks go through to the list underneath.
             placeholder.set_can_target(false);
@@ -620,7 +618,7 @@ impl Component for TransferPanel {
         });
         let clear_buttons = [ListKind::Completed, ListKind::Failed].map(|kind| {
             let button = gtk::Button::builder()
-                .label("Clear")
+                .label(tr!("transfers-clear"))
                 .has_frame(false)
                 .sensitive(false)
                 .build();
@@ -1003,10 +1001,7 @@ impl TransferPanel {
             self.job_finished(
                 id,
                 JobSummary {
-                    error: Some(format!(
-                        "Not started: \"{other}\" is using the same files. Retry once it has \
-                         finished."
-                    )),
+                    error: Some(tr!("transfers-blocked", other = other)),
                     ..JobSummary::default()
                 },
                 sender,
@@ -1455,10 +1450,8 @@ impl TransferPanel {
     fn show_interrupted(&self) {
         let count = self.interrupted.len();
         self.banner.set_visible(count > 0);
-        self.banner_text.set_label(&match count {
-            1 => String::from("1 transfer was interrupted and can be resumed."),
-            count => format!("{count} transfers were interrupted and can be resumed."),
-        });
+        self.banner_text
+            .set_label(&tr!("transfers-interrupted", count = count));
     }
 
     /// Ask the user what to do about a file already at the destination.
@@ -2093,16 +2086,16 @@ struct RowView {
     status: Option<&'static str>,
     can_cancel: bool,
     /// What the Cancel button does, as its tooltip.
-    cancel_tooltip: &'static str,
+    cancel_tooltip: String,
     can_pause: bool,
     /// What the Pause button does, as its tooltip.
-    pause_tooltip: &'static str,
+    pause_tooltip: String,
     /// Data is moving now (not waiting, paused or finished): the bar's stripes slide.
     moving: bool,
     can_retry: bool,
     /// The Retry button's icon and tooltip (it resumes a paused job).
     retry_icon: &'static str,
-    retry_tooltip: &'static str,
+    retry_tooltip: String,
     /// A finished job's header: it can be removed from the list.
     can_remove: bool,
 }
@@ -2148,16 +2141,16 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     widgets.cancel.set_visible(row.can_cancel);
     widgets
         .cancel
-        .set_tooltip_if_changed(Some(row.cancel_tooltip));
+        .set_tooltip_if_changed(Some(&row.cancel_tooltip));
     widgets.pause.set_visible(row.can_pause);
     widgets
         .pause
-        .set_tooltip_if_changed(Some(row.pause_tooltip));
+        .set_tooltip_if_changed(Some(&row.pause_tooltip));
     widgets.retry.set_visible(row.can_retry);
     widgets.retry.set_icon_name(row.retry_icon);
     widgets
         .retry
-        .set_tooltip_if_changed(Some(row.retry_tooltip));
+        .set_tooltip_if_changed(Some(&row.retry_tooltip));
     widgets
         .status
         .set_visible(!row.can_cancel && !row.can_retry);
@@ -2194,19 +2187,26 @@ fn set_class(widget: &impl IsA<gtk::Widget>, class: &str, on: bool) {
 /// at its end (hovering shows it all): "55% · 14:20 left · 2.6 MiB/s · 1204 of 2165
 /// files · 2.6 GiB of 4.8 GiB". The file count is where hidden finished files show.
 fn copy_progress(job: &JobState, now: Instant) -> String {
-    let mut parts = vec![format!("{}%", transfer::percent(job.done, job.total))];
+    let mut parts = vec![tr!(
+        "progress-percent",
+        percent = transfer::percent(job.done, job.total)
+    )];
     if let Some(left) = job.meter.time_left(job.done, job.total, now) {
-        parts.push(format!("{} left", format_duration(left)));
+        parts.push(tr!("progress-left", time = format_duration(left)));
     }
     if let Some(rate) = job.meter.bytes_per_second() {
         // Rounded to whole bytes for display.
-        parts.push(format!("{}/s", format_size(rate as u64)));
+        parts.push(tr!("progress-speed", size = format_size(rate as u64)));
     }
-    parts.push(format!("{} of {} files", job.finished_files, job.files));
-    parts.push(format!(
-        "{} of {}",
-        format_size(job.done),
-        format_size(job.total)
+    parts.push(tr!(
+        "progress-files",
+        done = job.finished_files,
+        total = job.files
+    ));
+    parts.push(tr!(
+        "progress-bytes",
+        done = format_size(job.done),
+        total = format_size(job.total)
     ));
     parts.join(" · ")
 }
@@ -2228,25 +2228,27 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         transfer::fraction(job.done, job.total)
     };
     let (info, error, status) = match &job.summary {
-        _ if job.waiting || (job.held && job.summary.is_some()) => (
-            String::from("Waiting for a free transfer slot"),
-            false,
-            None,
-        ),
-        None if job.paused => (String::from("Pausing..."), false, None),
-        Some(_) if job.paused && job.total == 0 => (String::from("Paused"), false, None),
+        _ if job.waiting || (job.held && job.summary.is_some()) => {
+            (tr!("job-waiting-slot"), false, None)
+        }
+        None if job.paused => (tr!("job-pausing"), false, None),
+        Some(_) if job.paused && job.total == 0 => (tr!("job-paused"), false, None),
         Some(_) if job.paused => (
-            format!(
-                "Paused: {} of {} copied",
-                format_size(job.done),
-                format_size(job.total)
+            tr!(
+                "job-paused-copied",
+                done = format_size(job.done),
+                total = format_size(job.total)
             ),
             false,
             None,
         ),
-        None if !job.planned => (String::from("Preparing..."), false, None),
+        None if !job.planned => (tr!("job-preparing"), false, None),
         None if deleting => (
-            format!("{} of {} deleted", job.finished_items, job.items.len()),
+            tr!(
+                "job-deleting",
+                done = job.finished_items,
+                total = job.items.len()
+            ),
             false,
             None,
         ),
@@ -2258,22 +2260,34 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         // The left pane's server first, whichever way the files go, like the panes:
         // "Copy report.pdf: left-server → right-server" or "...: left-server ← right-server".
         Some((from, to)) => {
-            let verb = if job.job.kind == JobKind::Move {
-                "Move"
+            let kind = if job.job.kind == JobKind::Move {
+                "move"
             } else {
-                "Copy"
+                "copy"
             };
-            let subject = job.job.subject();
+            let (subject, from, to) = (job.job.subject(), from.clone(), to.clone());
             if job.job.source_pane() == Side::Local {
-                format!("{verb} {subject}: {from} \u{2192} {to}")
+                tr!(
+                    "job-relay-right",
+                    kind = kind,
+                    subject = subject,
+                    from = from,
+                    to = to
+                )
             } else {
-                format!("{verb} {subject}: {to} \u{2190} {from}")
+                tr!(
+                    "job-relay-left",
+                    kind = kind,
+                    subject = subject,
+                    from = from,
+                    to = to
+                )
             }
         }
         None => job.job.title(),
     };
     let title = if job.job.resume {
-        format!("{title} (resumed)")
+        tr!("job-resumed", title = title)
     } else {
         title
     };
@@ -2297,13 +2311,13 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         status,
         can_cancel: job.is_running() || job.paused,
         cancel_tooltip: if job.paused {
-            "Cancel the paused transfer"
+            tr!("job-cancel-paused")
         } else {
-            "Cancel the whole transfer"
+            tr!("job-cancel")
         },
         // Deletes are quick, and have nothing to continue.
         can_pause: job.is_running() && !job.paused && !job.waiting && !deleting,
-        pause_tooltip: "Pause: stop for now, keeping what is copied",
+        pause_tooltip: tr!("job-pause"),
         moving: job.is_running() && !job.paused && !job.waiting && job.planned && !deleting,
         // A job held back by the limit continues by itself.
         can_retry: !job.is_running()
@@ -2318,9 +2332,9 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             "view-refresh-symbolic"
         },
         retry_tooltip: if job.paused {
-            "Resume: continue where it was paused"
+            tr!("job-resume")
         } else {
-            "Retry: continue where it stopped"
+            tr!("job-retry")
         },
         // Finished jobs in the Queue are on their way out on their own.
         can_remove: !job.is_running() && job.list != ListKind::Queue,
@@ -2329,51 +2343,65 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
 
 /// The text, error flag and icon of a finished job.
 fn summary_text(job: &JobState, summary: &JobSummary) -> (String, bool, Option<&'static str>) {
-    let count = |count: usize, what: &str| {
+    // The counts after the main part, each only if any: ", 2 cancelled, 1 skipped".
+    let extra = |count: usize, text: String| {
         if count > 0 {
-            format!(", {count} {what}")
+            format!("{}{text}", tr!("summary-separator"))
         } else {
             String::new()
         }
     };
-    let (cancelled, skipped) = (
-        count(summary.cancelled, "cancelled"),
-        // Stopped and skipped items alike were left out on purpose.
-        format!(
-            "{}{}",
-            count(summary.skipped, "skipped"),
-            count(summary.stopped, "stopped")
-        ),
+    // Stopped and skipped items alike were left out on purpose.
+    let left_out = extra(
+        summary.skipped,
+        tr!("summary-skipped", count = summary.skipped),
+    ) + &extra(
+        summary.stopped,
+        tr!("summary-stopped", count = summary.stopped),
     );
+    let all_extras = extra(
+        summary.cancelled,
+        tr!("summary-cancelled", count = summary.cancelled),
+    ) + &left_out;
     if let Some(error) = &summary.error {
         (error.clone(), true, Some(FAILED_ICON))
     } else if summary.failed > 0 {
         (
             format!(
-                "{} done, {} failed{cancelled}{skipped}",
-                summary.done, summary.failed
+                "{}{all_extras}",
+                tr!(
+                    "summary-failed",
+                    done = summary.done,
+                    failed = summary.failed
+                )
             ),
             true,
             Some(FAILED_ICON),
         )
     } else if summary.cancelled > 0 {
         (
-            format!("Cancelled: {} done{cancelled}{skipped}", summary.done),
+            format!(
+                "{}{all_extras}",
+                tr!("summary-cancelled-job", done = summary.done)
+            ),
             false,
             Some(STOPPED_ICON),
         )
     } else if job.job.kind == JobKind::Delete {
         (
-            format!("{} deleted{skipped}", items_text(summary.done)),
+            format!("{}{left_out}", tr!("summary-deleted", count = summary.done)),
             false,
             Some(DONE_ICON),
         )
     } else {
         (
             format!(
-                "{} · {}{skipped}",
-                items_text(summary.done + summary.skipped),
-                format_size(job.total)
+                "{}{left_out}",
+                tr!(
+                    "summary-copied",
+                    count = summary.done + summary.skipped,
+                    size = format_size(job.total)
+                )
             ),
             false,
             Some(DONE_ICON),
@@ -2385,53 +2413,46 @@ fn summary_text(job: &JobState, summary: &JobSummary) -> (String, bool, Option<&
 fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
     let deleting = job.job.kind == JobKind::Delete;
     let (info, error, status) = match &item.outcome {
-        Some(ItemOutcome::Done) if deleting => (String::from("Deleted"), false, Some(DONE_ICON)),
+        Some(ItemOutcome::Done) if deleting => (tr!("item-deleted"), false, Some(DONE_ICON)),
         Some(ItemOutcome::Done) => (format_size(item.size), false, Some(DONE_ICON)),
-        Some(ItemOutcome::Skipped) => (
-            String::from("Skipped: the existing file was kept"),
-            false,
-            Some(STOPPED_ICON),
-        ),
+        Some(ItemOutcome::Skipped) => (tr!("item-skipped"), false, Some(STOPPED_ICON)),
         Some(ItemOutcome::Failed(error)) => (error.clone(), true, Some(FAILED_ICON)),
         // Pausing stops the job's unfinished files the way cancelling does; they wait to
         // be continued (held back by the transfer limit: until there is room).
-        Some(ItemOutcome::Cancelled) if job.held => (
-            String::from("Paused: waiting for a free transfer slot"),
-            false,
-            Some(PAUSED_ICON),
-        ),
-        Some(ItemOutcome::Cancelled) if job.paused => {
-            (String::from("Paused"), false, Some(PAUSED_ICON))
+        Some(ItemOutcome::Cancelled) if job.held => {
+            (tr!("item-paused-slot"), false, Some(PAUSED_ICON))
         }
-        Some(ItemOutcome::Cancelled) => (String::from("Cancelled"), false, Some(STOPPED_ICON)),
-        Some(ItemOutcome::Stopped) if deleting => (
-            String::from("Stopped: not deleted"),
-            false,
-            Some(STOPPED_ICON),
-        ),
-        Some(ItemOutcome::Stopped) => (String::from("Stopped"), false, Some(STOPPED_ICON)),
-        None if item.asking => (
-            String::from("Already exists: waiting for your answer"),
-            false,
-            None,
-        ),
+        Some(ItemOutcome::Cancelled) if job.paused => {
+            (tr!("item-paused"), false, Some(PAUSED_ICON))
+        }
+        Some(ItemOutcome::Cancelled) => (tr!("item-cancelled"), false, Some(STOPPED_ICON)),
+        Some(ItemOutcome::Stopped) if deleting => {
+            (tr!("item-stopped-delete"), false, Some(STOPPED_ICON))
+        }
+        Some(ItemOutcome::Stopped) => (tr!("item-stopped"), false, Some(STOPPED_ICON)),
+        None if item.asking => (tr!("item-asking"), false, None),
         None if deleting => (String::new(), false, None),
         None if item.paused && item.kind == ItemKind::File && item.done > 0 => (
-            format!(
-                "Paused: {} of {}",
-                format_size(item.done),
-                format_size(item.size)
+            tr!(
+                "item-paused-part",
+                done = format_size(item.done),
+                total = format_size(item.size)
             ),
             false,
             None,
         ),
-        None if item.paused => (String::from("Paused"), false, None),
+        None if item.paused => (tr!("item-paused"), false, None),
         None if item.kind == ItemKind::File && item.meter.is_none() => {
-            (String::from("Waiting"), false, None)
+            (tr!("item-waiting"), false, None)
         }
         None => (
             item.meter.as_ref().map_or_else(
-                || format!("{}%", transfer::percent(item.done, item.size)),
+                || {
+                    tr!(
+                        "progress-percent",
+                        percent = transfer::percent(item.done, item.size)
+                    )
+                },
                 |meter| meter.describe(item.done, item.size, now),
             ),
             false,
@@ -2459,8 +2480,8 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         // A file or folder not done yet can be left out while the rest goes on.
         can_cancel: job.is_running() && item.outcome.is_none() && !item.asking,
         cancel_tooltip: match item.kind {
-            ItemKind::File => "Stop this file; the rest goes on",
-            ItemKind::Folder => "Stop this folder; the rest goes on",
+            ItemKind::File => tr!("item-stop-file"),
+            ItemKind::Folder => tr!("item-stop-folder"),
         },
         // Files (and folders) being copied can wait while the rest goes on.
         can_pause: job.is_running()
@@ -2470,8 +2491,8 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             && !item.asking
             && !item.paused,
         pause_tooltip: match item.kind {
-            ItemKind::File => "Pause this file; the rest goes on",
-            ItemKind::Folder => "Pause the files in this folder; the rest goes on",
+            ItemKind::File => tr!("item-pause-file"),
+            ItemKind::Folder => tr!("item-pause-folder"),
         },
         // Started (it has a speed) and not done, paused or waiting for an answer.
         moving: job.is_running()
@@ -2484,19 +2505,10 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         can_retry: job.is_running() && !job.paused && item.outcome.is_none() && item.paused,
         retry_icon: "media-playback-start-symbolic",
         retry_tooltip: match item.kind {
-            ItemKind::File => "Resume this file",
-            ItemKind::Folder => "Resume this folder",
+            ItemKind::File => tr!("item-resume-file"),
+            ItemKind::Folder => tr!("item-resume-folder"),
         },
         can_remove: false,
-    }
-}
-
-/// "1 item" or "n items".
-fn items_text(count: usize) -> String {
-    if count == 1 {
-        String::from("1 item")
-    } else {
-        format!("{count} items")
     }
 }
 
@@ -2587,15 +2599,9 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     show_status_on_hover(&info, &info);
     show_status_on_hover(&bar, &info);
     let status = gtk::Image::new();
-    let pause = small_button(
-        "media-playback-pause-symbolic",
-        Some("Pause: stop for now, keeping what is copied"),
-    );
-    let cancel = small_button("window-close-symbolic", Some("Cancel"));
-    let retry = small_button(
-        "view-refresh-symbolic",
-        Some("Retry: continue where it stopped"),
-    );
+    let pause = small_button("media-playback-pause-symbolic", Some(&tr!("job-pause")));
+    let cancel = small_button("window-close-symbolic", Some(&tr!("dialog-cancel")));
+    let retry = small_button("view-refresh-symbolic", Some(&tr!("job-retry")));
     let end_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     end_slot.set_size_request(END_SLOT_WIDTH, -1);
     end_slot.append(&status);
@@ -2603,7 +2609,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     end_slot.append(&cancel);
     end_slot.append(&retry);
     // Only finished jobs show it; running ones show Cancel, which looks the same.
-    let remove = small_button("window-close-symbolic", Some("Remove from the list"));
+    let remove = small_button("window-close-symbolic", Some(&tr!("job-remove")));
     end_slot.append(&remove);
     line.append(&indent);
     line.append(&expander_slot);

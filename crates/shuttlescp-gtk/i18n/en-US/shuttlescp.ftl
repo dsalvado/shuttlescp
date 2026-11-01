@@ -299,3 +299,101 @@ pane-menu-refresh = Re_fresh
 pane-drop-copy = _Copy Here
 pane-drop-move = _Move Here
 pane-drop-cancel = C_ancel
+
+## The transfer lists (transfer_panel.rs). $done, $total: sizes like "4.2 MiB" or
+## counts, as the message says; $count: a number of transfers, files or items.
+
+transfers-resume = Resume
+transfers-discard = Discard
+transfers-discard-tooltip = Forget them; their partial files stay where they are
+transfers-hide-finished = Hide finished files
+transfers-hide-finished-tooltip = Leave files copied without problems out of the list, so the ones being copied stay at the top
+transfers-queue-empty = Queue empty
+transfers-completed-empty = No completed transfers
+transfers-failed-empty = No failed transfers
+transfers-clear = Clear
+transfers-interrupted =
+    { $count ->
+        [one] 1 transfer was interrupted and can be resumed.
+       *[other] { $count } transfers were interrupted and can be resumed.
+    }
+# $other: the title of the transfer using the same files.
+transfers-blocked = Not started: "{ $other }" is using the same files. Retry once it has finished.
+
+## A running copy's line, in parts joined by " · ": "55% · 14:20 left · 2.6 MiB/s ·
+## 1204 of 2165 files · 2.6 GiB of 4.8 GiB". $time: like 14:20; $size: like 2.6 MiB.
+
+progress-percent = { $percent }%
+progress-left = { $time } left
+progress-speed = { $size }/s
+progress-files = { $done } of { $total } files
+progress-bytes = { $done } of { $total }
+
+## A transfer's line.
+
+job-waiting-slot = Waiting for a free transfer slot
+job-pausing = Pausing...
+job-paused = Paused
+job-paused-copied = Paused: { $done } of { $total } copied
+job-preparing = Preparing...
+job-deleting = { $done } of { $total } deleted
+# Site to site: $subject is what is copied (a name, or "3 items"); $from and $to the
+# two servers, the left pane's first with an arrow showing the way: → or ←.
+job-relay-right =
+    { $kind ->
+        [move] Move { $subject }: { $from } → { $to }
+       *[copy] Copy { $subject }: { $from } → { $to }
+    }
+job-relay-left =
+    { $kind ->
+        [move] Move { $subject }: { $to } ← { $from }
+       *[copy] Copy { $subject }: { $to } ← { $from }
+    }
+# $title: the transfer's title, like "Upload report.pdf to /srv".
+job-resumed = { $title } (resumed)
+job-cancel = Cancel the whole transfer
+job-cancel-paused = Cancel the paused transfer
+job-pause = Pause: stop for now, keeping what is copied
+job-resume = Resume: continue where it was paused
+job-retry = Retry: continue where it stopped
+job-remove = Remove from the list
+
+## A finished transfer's line: the main part, then each count that is not zero after
+## summary-separator: "3 done, 1 failed, 2 cancelled, 1 skipped".
+
+summary-separator = {", "}
+summary-failed = { $done } done, { $failed } failed
+summary-cancelled-job = Cancelled: { $done } done
+summary-deleted =
+    { $count ->
+        [one] 1 item deleted
+       *[other] { $count } items deleted
+    }
+# $size: the total size, like 4.8 GiB.
+summary-copied =
+    { $count ->
+        [one] 1 item · { $size }
+       *[other] { $count } items · { $size }
+    }
+summary-cancelled = { $count } cancelled
+summary-skipped = { $count } skipped
+summary-stopped = { $count } stopped
+
+## A file or folder's line inside a transfer.
+
+item-deleted = Deleted
+item-skipped = Skipped: the existing file was kept
+item-paused = Paused
+item-paused-slot = Paused: waiting for a free transfer slot
+item-paused-part = Paused: { $done } of { $total }
+item-cancelled = Cancelled
+item-stopped = Stopped
+item-stopped-delete = Stopped: not deleted
+item-asking = Already exists: waiting for your answer
+item-waiting = Waiting
+item-stop-file = Stop this file; the rest goes on
+item-stop-folder = Stop this folder; the rest goes on
+item-pause-file = Pause this file; the rest goes on
+item-pause-folder = Pause the files in this folder; the rest goes on
+item-resume-file = Resume this file
+item-resume-folder = Resume this folder
