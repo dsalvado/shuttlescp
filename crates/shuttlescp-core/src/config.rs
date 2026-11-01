@@ -108,6 +108,10 @@ impl WindowSize {
     }
 }
 
+/// The interface language until the user picks one (a BCP 47 language tag, as the
+/// translation folders are named).
+pub const DEFAULT_LANGUAGE: &str = "en-US";
+
 /// The transfer limit's number until the user picks one.
 pub const DEFAULT_TRANSFER_LIMIT: u32 = 10;
 /// The highest transfer limit that can be set.
@@ -129,6 +133,8 @@ pub struct Config {
     show_login_at_startup: bool,
     /// Leave finished files out of the transfer list ("Hide finished files").
     hide_finished_files: bool,
+    /// Interface language, as a language tag such as "en-US" or "fr-FR".
+    language: String,
     /// Limit how many transfers run at once (see `transfer_limit`).
     limit_transfers: bool,
     /// Most transfers running at once while `limit_transfers` is on; kept while it is
@@ -156,6 +162,7 @@ impl Default for Config {
             log_level: LogLevel::default(),
             show_login_at_startup: true,
             hide_finished_files: true,
+            language: String::from(DEFAULT_LANGUAGE),
             limit_transfers: false,
             transfer_limit: DEFAULT_TRANSFER_LIMIT,
             window_size: None,
@@ -424,6 +431,22 @@ impl Config {
         self.hide_finished_files = hide;
     }
 
+    /// The interface language, as a language tag ("en-US" unless the user chose
+    /// another).
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
+    /// Change the interface language (call [`Config::save`] to persist; it applies from
+    /// the next start).
+    ///
+    /// # Arguments
+    ///
+    /// * `language` - A language tag, such as "fr-FR"
+    pub fn set_language(&mut self, language: &str) {
+        language.clone_into(&mut self.language);
+    }
+
     /// Most transfers to run at once: `None` for no limit.
     pub fn transfer_limit(&self) -> Option<usize> {
         self.limit_transfers
@@ -583,6 +606,7 @@ mod tests {
         config.set_window_maximized(true);
         config.set_hide_finished_files(false);
         config.set_transfer_limit(true, 4);
+        config.set_language("fr-FR");
 
         // Act
         config.save(&path).expect("save config");
@@ -607,6 +631,8 @@ mod tests {
         // Transfers are not limited until the user says so; the number starts at 10.
         assert_eq!(loaded.transfer_limit(), None);
         assert_eq!(loaded.transfer_limit_number(), DEFAULT_TRANSFER_LIMIT);
+        // English until the user picks another language.
+        assert_eq!(loaded.language(), DEFAULT_LANGUAGE);
 
         fs::write(&path, "not json").expect("write file");
         assert!(matches!(Config::load(&path), Err(ConfigError::Json { .. })));

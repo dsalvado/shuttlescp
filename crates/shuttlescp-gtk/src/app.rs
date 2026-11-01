@@ -29,6 +29,7 @@ use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput, Resume};
+use crate::preferences_dialog;
 use crate::quit_dialog::{self, QuitChoice};
 use crate::resize_grips;
 use crate::session::{self, Session, SessionId, SessionInit};
@@ -89,6 +90,7 @@ relm4::new_stateless_action!(LoginAction, WindowActions, "login");
 relm4::new_stateless_action!(DisconnectAction, WindowActions, "disconnect");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
 relm4::new_stateless_action!(AboutAction, WindowActions, "about");
+relm4::new_stateless_action!(PreferencesAction, WindowActions, "preferences");
 relm4::new_stateless_action!(CheckUpdatesAction, WindowActions, "check-updates");
 // A check item: its state says whether updates are looked for at startup.
 relm4::new_stateful_action!(AutoUpdateAction, WindowActions, "auto-update", (), bool);
@@ -307,6 +309,10 @@ pub enum AppMsg {
     /// Transfers started, ended or began waiting, or the limit changed: refresh the
     /// status bar.
     TransferLimitChanged,
+    /// Open the Preferences window.
+    ShowPreferences,
+    /// The user picked an interface language (a language tag), for the next start.
+    LanguageChosen(String),
     /// The user set the limit on transfers running at once.
     SetTransferLimit {
         /// Whether transfers are limited at all.
@@ -369,6 +375,8 @@ pub struct App {
     pending: Rc<PendingStore>,
     /// The limit on transfers running at once, shared by every session's transfer lists.
     transfer_limit: Rc<TransferLimit>,
+    /// The interface language the app started in (a change applies at the next start).
+    ui_language: String,
     /// Name of this computer, for the titles of sessions that are not connected.
     host: String,
     config: Config,
@@ -634,12 +642,14 @@ impl SimpleComponent for App {
         // and the Login dialog, which lists them.
         let pending = PendingStore::load(PendingTransfers::default_path());
         let transfer_limit = TransferLimit::new(config.transfer_limit());
+        let ui_language = config.language().to_owned();
         let mut model = Self {
             sessions: Vec::new(),
             next_session: 0,
             session_notebook: session_notebook.clone(),
             pending: Rc::clone(&pending),
             transfer_limit,
+            ui_language,
             host: computer_name(),
             config,
             config_path,
@@ -981,6 +991,22 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::CloseSessionNow(id) => self.close_session(id),
+            AppMsg::ShowPreferences => {
+                let sender = sender.clone();
+                preferences_dialog::show(
+                    self.window.upcast_ref(),
+                    self.config.language(),
+                    &self.ui_language,
+                    move |language| sender.input(AppMsg::LanguageChosen(language)),
+                );
+            }
+            AppMsg::LanguageChosen(language) => {
+                if language != self.config.language() {
+                    tracing::info!("interface language: {language} (from the next start)");
+                    self.config.set_language(&language);
+                    self.save_config();
+                }
+            }
             // Nothing to store: the update itself refreshes the status bar.
             AppMsg::TransferLimitChanged => {}
             AppMsg::SetTransferLimit { limited, number } => {
@@ -1794,6 +1820,11 @@ fn register_actions(
         }
     });
 
+    let preferences_sender = sender.clone();
+    let preferences = RelmAction::<PreferencesAction>::new_stateless(move |_| {
+        preferences_sender.input(AppMsg::ShowPreferences);
+    });
+
     let check_sender = sender.clone();
     let check_updates = RelmAction::<CheckUpdatesAction>::new_stateless(move |_| {
         check_sender.input(AppMsg::CheckForUpdates { asked: true });
@@ -1832,6 +1863,7 @@ fn register_actions(
     group.add_action(quit);
     group.add_action(open_log);
     group.add_action(about);
+    group.add_action(preferences);
     group.add_action(check_updates);
     group.add_action(auto_update);
     group.add_action(theme_action);
@@ -1852,6 +1884,10 @@ fn register_actions(
     }
     let group = bar.group();
     app.set_accels_for_action(&format!("{group}.{}", LoginAction::NAME), &["<primary>l"]);
+    app.set_accels_for_action(
+        &format!("{group}.{}", PreferencesAction::NAME),
+        &["<primary>comma"],
+    );
     // On macOS GTK already gives "app.quit" Cmd+Q.
     if bar == MenuBar::InWindow {
         app.set_accels_for_action(&format!("{group}.{}", QuitAction::NAME), &["<primary>q"]);
@@ -2224,6 +2260,14 @@ fn build_menu(bar: MenuBar) -> gio::Menu {
     session_section.append_item(&bar.item::<LoginAction>("_Login…"));
     session_section.append_item(&bar.item::<DisconnectAction>("_Disconnect"));
     file_menu.append_section(None, &session_section);
+    // Its own section: the menu draws a separator above and below it.
+    let preferences_section = gio::Menu::new();
+    preferences_section.append_item(&bar.item::<PreferencesAction>(if in_window {
+        "_Preferences…"
+    } else {
+        "_Settings…"
+    }));
+    file_menu.append_section(None, &preferences_section);
     if in_window {
         let quit_section = gio::Menu::new();
         quit_section.append_item(&bar.item::<QuitAction>("_Quit"));
