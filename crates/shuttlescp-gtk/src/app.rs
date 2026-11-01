@@ -664,9 +664,17 @@ impl SimpleComponent for App {
         let session_notebook = &session_notebook;
         let widgets = view_output!();
         if bar == MenuBar::InWindow {
-            widgets
-                .menu_bar
-                .add_child(model.theme_list.widget(), THEME_LIST_ID);
+            let theme_list = model.theme_list.widget();
+            if on_wayland() {
+                // GTK's menu bar can lock up the window on Wayland (see `click_menu_bar`).
+                let click_bar = click_menu_bar(&menu_model, theme_list.upcast_ref());
+                widgets.menu_bar.set_visible(false);
+                if let Some(parent) = widgets.menu_bar.parent().and_downcast::<gtk::Box>() {
+                    parent.insert_child_after(&click_bar, Some(&widgets.menu_bar));
+                }
+            } else {
+                widgets.menu_bar.add_child(theme_list, THEME_LIST_ID);
+            }
         }
         resize_grips::add_corner_grips(&root, &widgets.overlay);
         #[cfg(target_os = "macos")]
@@ -1966,6 +1974,57 @@ fn quit_on_signals(sender: &ComponentSender<App>) {
             glib::ControlFlow::Continue
         });
     }
+}
+
+/// Whether the app runs on Wayland (rather than X11, Windows or macOS).
+fn on_wayland() -> bool {
+    gtk::gdk::Display::default()
+        .is_some_and(|display| display.type_().name() == "GdkWaylandDisplay")
+}
+
+/// Wayland: a menu bar whose menus open only when clicked, in place of GTK's.
+///
+/// With GTK 4.14 on Wayland, a menu that opens without a click (GTK's menu bar opens
+/// the next menu as the pointer moves along it, and a submenu as the pointer rests
+/// on it) asks for the pointer with the number of an old click. The desktop refuses
+/// and closes it at once, and GTK is left holding every click for a menu that is gone:
+/// the whole window stops responding. Seen in `WAYLAND_DEBUG` records (2026-11-01);
+/// X11 does not have it. A menu button opens only on a click, which carries a fresh
+/// number, and its submenus slide in within the same menu instead of opening another.
+///
+/// # Arguments
+///
+/// * `model` - The menu bar's menu: one submenu per menu
+/// * `custom` - The widget placed in a menu (the theme list)
+fn click_menu_bar(model: &gio::Menu, custom: &gtk::Widget) -> gtk::Box {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    bar.add_css_class("click-menubar");
+    for index in 0..model.n_items() {
+        let (Some(label), Some(submenu)) = (
+            model
+                .item_attribute_value(index, "label", Some(glib::VariantTy::STRING))
+                .and_then(|label| label.get::<String>()),
+            model.item_link(index, "submenu"),
+        ) else {
+            continue;
+        };
+        let menu = gtk::PopoverMenu::from_model(Some(&submenu));
+        menu.set_has_arrow(false);
+        menu.set_halign(gtk::Align::Start);
+        // Only the menu with a place for it (View) takes it.
+        if custom.parent().is_none() {
+            menu.add_child(custom, THEME_LIST_ID);
+        }
+        bar.append(
+            &gtk::MenuButton::builder()
+                .label(&label)
+                .use_underline(true)
+                .has_frame(false)
+                .popover(&menu)
+                .build(),
+        );
+    }
+    bar
 }
 
 /// Build the menu bar model: File, View (themes), Tools (logging) and Help (About).

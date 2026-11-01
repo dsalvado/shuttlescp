@@ -7,6 +7,15 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Linux with Wayland, opening a menu and then moving to another (or into a
+  submenu) could leave the whole window ignoring clicks until it was force-quit. GTK
+  opened those menus without a fresh click, the desktop refused them, and GTK kept
+  waiting for a menu that was gone. On Wayland the menus now open only when clicked:
+  moving along the menu bar with a menu open no longer switches to the next one.
+  X11, Windows and macOS are unchanged.
+
 ## [0.19.0] - 2026-10-28
 
 ### Added
