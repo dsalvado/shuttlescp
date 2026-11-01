@@ -109,9 +109,31 @@ menubar > item:selected {
     color: inherit;
 }
 
+/* On Wayland the menus are menu buttons that open on a click (`click_menu_bar` in
+   app.rs), drawn like the menu bar. */
+.click-menubar > menubutton > button {
+    min-height: 0;
+    padding: 2px 8px;
+    border-radius: 3px;
+}
+
+/* No drop-down arrows, as in a menu bar. */
+.click-menubar > menubutton arrow {
+    -gtk-icon-source: none;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+}
+
+.click-menubar > menubutton > button:checked {
+    background-color: alpha(@theme_selected_bg_color, 0.2);
+}
+
 /* Smaller text in the menu bar and its menus than in the rest of the window. */
 menubar,
-menubar popover.menu {
+menubar popover.menu,
+.click-menubar,
+.click-menubar popover.menu {
     font-size: 8pt;
 }
 
