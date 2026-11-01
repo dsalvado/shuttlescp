@@ -17,6 +17,12 @@ becomes its release notes on GitHub.
   from servers, the system and parts of the program's core (such as some errors and
   transfer titles) are still in English.
 
+### Changed
+
+- The macOS version now needs macOS 26 (Tahoe) or newer, instead of macOS 14: GitHub
+  retired the macOS 14 machines it was built on, and a Mac build runs on the macOS it
+  was built on or newer. Macs on macOS 14 or 15 keep the version they have.
+
 ## [0.20.0] - 2026-11-01
 
 ### Added
