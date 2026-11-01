@@ -67,6 +67,7 @@ rm -rf "$APPDIR"
 install -Dm755 "$BINARY" "$APPDIR/usr/bin/shuttlescp"
 install -Dm644 "$PACKAGING/$APP_ID.desktop" "$APPDIR/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$PACKAGING/$APP_ID.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
+install -Dm644 "$PACKAGING/$APP_ID.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APP_ID.png"
 install -Dm644 "$PACKAGING/$APP_ID.metainfo.xml" "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml"
 
 # The libraries for older systems (see the top of this file), and the launcher that
@@ -122,6 +123,12 @@ export PATH="$TOOLS:$PATH"
     --plugin gtk
 install -Dm644 "$PACKAGING/apprun-hook.sh" "$APPDIR/apprun-hooks/zz-shuttlescp.sh"
 add_compat_libraries
+#    The AppImage's own icon (.DirIcon, shown by file managers) must be a PNG: appimagetool
+#    refuses an SVG since its 2026-10-31 build. The PNG is the SVG drawn at 256x256 once
+#    (gdk-pixbuf-thumbnailer -s 256 <svg> <png>); redraw it if the SVG changes.
+cp "$PACKAGING/$APP_ID.png" "$APPDIR/$APP_ID.png"
+rm -f "$APPDIR/.DirIcon"
+ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
 "$TOOLS/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --output appimage
 
 [[ -f "$OUTPUT" ]] || { echo "error: no AppImage was made" >&2; exit 1; }
