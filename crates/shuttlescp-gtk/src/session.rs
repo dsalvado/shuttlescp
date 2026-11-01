@@ -35,6 +35,7 @@ use crate::transfer_panel::{
     LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelInit,
     TransferPanelMsg, TransferPanelOutput,
 };
+use crate::transfer_slots::TransferLimit;
 
 /// Identifies a session for its whole life (positions change as tabs close).
 pub type SessionId = u64;
@@ -136,6 +137,8 @@ pub struct SessionInit<'a> {
     pub last_dir_on_disk: BTreeMap<PathBuf, PathBuf>,
     /// Unfinished transfers, shared by all sessions.
     pub pending: Rc<PendingStore>,
+    /// The limit on transfers running at once, shared by every session.
+    pub transfer_limit: Rc<TransferLimit>,
     /// Initial position of the left/right divider, in pixels.
     pub split_position: i32,
     /// Whether the transfer list starts hiding finished files.
@@ -156,6 +159,7 @@ impl Session {
             start_dir,
             last_dir_on_disk,
             pending,
+            transfer_limit,
             split_position,
             hide_finished,
             left,
@@ -223,6 +227,8 @@ impl Session {
 
         let transfers = TransferPanel::builder()
             .launch(TransferPanelInit {
+                session: id,
+                limit: transfer_limit,
                 pending,
                 hide_finished,
             })
