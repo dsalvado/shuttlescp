@@ -13,6 +13,7 @@ mod desktop_entry;
 mod dialog;
 mod disk_picker;
 mod file_pane;
+mod i18n;
 mod key_passphrase_dialog;
 mod log_tail;
 mod login_dialog;
@@ -62,6 +63,8 @@ fn main() {
         tracing::warn!("{error}; using default settings");
         Config::default()
     });
+    // Before any window is built: their texts are fetched as they are made.
+    i18n::init(config.language());
 
     // Background work (listings, transfers, the SSH connection) runs on relm4's async
     // runtime, which uses a single worker thread unless told otherwise. One thread per

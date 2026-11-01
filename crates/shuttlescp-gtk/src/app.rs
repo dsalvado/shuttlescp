@@ -27,6 +27,7 @@ use shuttlescp_core::update::{self, Manifest};
 use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
+use crate::i18n::tr;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput, Resume};
 use crate::preferences_dialog;
@@ -1462,11 +1463,12 @@ impl App {
     fn transfer_limit_text(&self) -> String {
         let (limit, running, waiting) = self.transfer_limit.counts();
         let mut text = match limit {
-            None => String::from("Transfers: unlimited"),
-            Some(limit) => format!("Transfers: {running} of {limit}"),
+            None => tr!("status-transfers-unlimited"),
+            Some(limit) => tr!("status-transfers-limited", running = running, limit = limit),
         };
         if waiting > 0 {
-            text.push_str(&format!(" \u{b7} {waiting} waiting"));
+            text.push_str(" \u{b7} ");
+            text.push_str(&tr!("status-transfers-waiting", count = waiting));
         }
         text
     }

@@ -5,10 +5,7 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 
 use crate::dialog::{self, Dialog};
-
-/// The interface languages offered: language tag (as the translation folders are named)
-/// and name, the first being the default.
-pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English")];
+use crate::i18n::{self, tr};
 
 /// Open the Preferences window over `parent`.
 ///
@@ -24,17 +21,19 @@ pub fn show(
     running: &str,
     on_language: impl Fn(String) + 'static,
 ) {
-    let dialog = Dialog::new(parent, "Preferences");
+    let dialog = Dialog::new(parent, &tr!("preferences-title"));
 
-    let names: Vec<&str> = LANGUAGES.iter().map(|(_, name)| *name).collect();
+    // Each translation's own name for its language, English first.
+    let offered = i18n::languages();
+    let names: Vec<&str> = offered.iter().map(|(_, name)| name.as_str()).collect();
     let languages = gtk::DropDown::from_strings(&names);
-    let position = LANGUAGES
+    let position = offered
         .iter()
-        .position(|(tag, _)| *tag == chosen)
+        .position(|(tag, _)| tag == chosen)
         .unwrap_or(0);
     languages.set_selected(u32::try_from(position).unwrap_or(0));
 
-    let label = gtk::Label::with_mnemonic("Interface _language:");
+    let label = gtk::Label::with_mnemonic(&tr!("preferences-language"));
     label.set_xalign(0.0);
     label.set_mnemonic_widget(Some(&languages));
     let grid = gtk::Grid::builder()
@@ -46,10 +45,7 @@ pub fn show(
     dialog.content.append(&grid);
 
     // Shown while the language picked is not the one the app runs in.
-    let restart = dialog::text(
-        "Restart ShuttleSCP to use the new language.",
-        &["dim-label"],
-    );
+    let restart = dialog::text(&tr!("preferences-restart"), &["dim-label"]);
     restart.set_visible(chosen != running);
     dialog.content.append(&restart);
 
@@ -57,15 +53,15 @@ pub fn show(
     languages.connect_selected_notify(move |languages| {
         let Some((tag, _)) = usize::try_from(languages.selected())
             .ok()
-            .and_then(|index| LANGUAGES.get(index))
+            .and_then(|index| offered.get(index))
         else {
             return;
         };
         restart.set_visible(*tag != running);
-        on_language((*tag).to_owned());
+        on_language(tag.clone());
     });
 
-    let close = dialog.add_close_button("Close");
+    let close = dialog.add_close_button(&tr!("dialog-close"));
     dialog.window.set_default_widget(Some(&close));
     dialog.window.present();
 }
