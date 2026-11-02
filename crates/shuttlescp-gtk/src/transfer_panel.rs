@@ -31,10 +31,10 @@ use shuttlescp_core::transfer::{
 };
 
 use crate::conflict_dialog;
-use crate::i18n::tr;
 use crate::session::SessionId;
 use crate::tooltip::TooltipExt;
 use crate::transfer_slots::{JobRef, TransferLimit};
+use shuttlescp_core::tr;
 
 /// Jobs with more items than this start with their folders collapsed.
 const EXPAND_LIMIT: usize = 200;

@@ -12,8 +12,8 @@ use relm4::gtk::prelude::*;
 
 use shuttlescp_core::config::ThemeChoice;
 
-use crate::i18n::tr;
 use crate::theme::{self, Swatch};
+use shuttlescp_core::tr;
 
 /// Action every row triggers; its target is the row's `ThemeChoice::key()`.
 const THEME_ACTION: &str = "win.theme";

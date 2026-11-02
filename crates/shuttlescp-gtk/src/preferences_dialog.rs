@@ -5,7 +5,8 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 
 use crate::dialog::{self, Dialog};
-use crate::i18n::{self, tr};
+use shuttlescp_core::i18n;
+use shuttlescp_core::tr;
 
 /// Open the Preferences window over `parent`.
 ///

@@ -14,7 +14,7 @@ use relm4::gtk::{gdk, glib};
 use shuttlescp_core::log_reader::{LogReader, line_level};
 use shuttlescp_core::logging::LogLevel;
 
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// How often the file is checked for new lines.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);

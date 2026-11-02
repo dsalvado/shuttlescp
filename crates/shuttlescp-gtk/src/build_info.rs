@@ -7,7 +7,7 @@ use relm4::gtk::prelude::*;
 use shuttlescp_core::about::{self, BuildInfo};
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// Size of the app icon in the About dialog, in pixels.
 const LOGO_SIZE: i32 = 64;

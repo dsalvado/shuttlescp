@@ -7,7 +7,7 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// Wording of a confirmation prompt.
 #[derive(Debug, Clone, Copy)]

@@ -10,7 +10,7 @@ use shuttlescp_core::format::{format_modified, format_size};
 use shuttlescp_core::transfer::{ConflictAnswer, ConflictChoice, FileInfo};
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// Ask over `parent` what to do about `name`, which already exists in `dest_dir`.
 /// `on_answer` is called exactly once; closing the prompt cancels the transfer, so

@@ -6,7 +6,7 @@ use relm4::gtk::prelude::*;
 use shuttlescp_core::transfer::{Side, check_name};
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// Wording and starting text of a name prompt.
 #[derive(Debug, Clone, Copy)]

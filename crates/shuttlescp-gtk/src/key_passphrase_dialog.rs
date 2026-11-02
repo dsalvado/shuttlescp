@@ -10,7 +10,7 @@ use relm4::gtk::prelude::*;
 use secrecy::SecretString;
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// What the user answered.
 #[derive(Debug)]

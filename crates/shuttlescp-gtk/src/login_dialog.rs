@@ -34,11 +34,11 @@ use shuttlescp_core::transfer::{self, JobKind, Side};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
-use crate::i18n::tr;
 use crate::key_passphrase_dialog::{self, KeyPassphrase};
 use crate::name_dialog::{self, NamePrompt};
 use crate::passphrase_dialog::{self, PassphraseAnswer, PassphrasePurpose};
 use crate::transfer_panel::PendingStore;
+use shuttlescp_core::tr;
 
 /// Label of the first entry in the site list, which starts a new site.
 fn new_site_label() -> String {

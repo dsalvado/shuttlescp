@@ -113,6 +113,7 @@ fn fallback() -> LanguageIdentifier {
 
 /// A text in the interface language: `tr!("dialog-close")`, or with values for the
 /// message's variables, `tr!("files-copied", count = 3, folder = name)`.
+#[macro_export]
 macro_rules! tr {
     ($id:literal) => {
         $crate::i18n::text($id)
@@ -124,7 +125,6 @@ macro_rules! tr {
         )
     };
 }
-pub(crate) use tr;
 
 #[cfg(test)]
 mod tests {
@@ -225,11 +225,12 @@ mod tests {
                 }
             }
         }
+        // This crate and the interface crate beside it both use `tr!`.
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut used = std::collections::BTreeSet::new();
-        scan(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut used,
-        );
+        for source in [crates.join("src"), crates.join("../shuttlescp-gtk/src")] {
+            scan(&source, &mut used);
+        }
         used
     }
 

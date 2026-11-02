@@ -11,7 +11,7 @@ pub use shuttlescp_core::site_export::PassphrasePurpose;
 use shuttlescp_core::site_export::passphrase_problem;
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// What the user decided.
 #[derive(Debug)]

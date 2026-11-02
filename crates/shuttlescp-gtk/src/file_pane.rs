@@ -32,9 +32,9 @@ use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
 use crate::dialog::{self, Dialog};
 use crate::disk_picker::DiskPicker;
-use crate::i18n::tr;
 use crate::name_dialog::{self, NamePrompt};
 use crate::tooltip::TooltipExt;
+use shuttlescp_core::tr;
 
 /// Up-arrow picture drawn over the folder icon of the ".." row, embedded at compile time.
 const UP_ARROW_SVG: &[u8] = include_bytes!("icons/up-arrow.svg");
