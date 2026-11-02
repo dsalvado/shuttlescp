@@ -199,13 +199,13 @@ impl FtpEncryption {
         Self::None,
     ];
 
-    /// Name shown to the user.
-    pub fn label(self) -> &'static str {
+    /// Its name in the interface language.
+    pub fn label(self) -> String {
         match self {
-            Self::ExplicitIfAvailable => "Use explicit FTP over TLS if available",
-            Self::ExplicitTls => "Require explicit FTP over TLS",
-            Self::ImplicitTls => "Require implicit FTP over TLS",
-            Self::None => "Only use plain FTP (insecure)",
+            Self::ExplicitIfAvailable => crate::tr!("ftp-encryption-explicit-if-available"),
+            Self::ExplicitTls => crate::tr!("ftp-encryption-explicit"),
+            Self::ImplicitTls => crate::tr!("ftp-encryption-implicit"),
+            Self::None => crate::tr!("ftp-encryption-none"),
         }
     }
 
@@ -348,11 +348,20 @@ pub fn is_within(path: &str, folder: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FolderError {
     /// The new place is inside the folder itself.
-    #[error("a folder cannot go inside itself")]
     IntoItself,
     /// A folder of that name is already there.
-    #[error("there is already a folder \"{0}\"")]
     Exists(String),
+}
+
+// Written by hand: the messages are in the interface language.
+impl std::fmt::Display for FolderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::IntoItself => crate::tr!("folder-error-into-itself"),
+            Self::Exists(folder) => crate::tr!("folder-error-exists", folder = folder.clone()),
+        };
+        f.write_str(&text)
+    }
 }
 
 /// All saved sites, as stored in `sites.json`.

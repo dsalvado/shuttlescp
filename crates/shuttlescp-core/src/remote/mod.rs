@@ -42,13 +42,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Debug, Error)]
 pub enum ConnectError {
     /// The site's protocol cannot be used yet.
-    #[error("{0} connections are not supported yet")]
     Unsupported(&'static str),
     /// The server did not answer in time.
-    #[error("{0} did not respond (timed out)")]
     Timeout(String),
     /// The server could not be reached, or the connection broke.
-    #[error("cannot connect to {host}: {reason}")]
     Network {
         /// Server address.
         host: String,
@@ -57,7 +54,6 @@ pub enum ConnectError {
     },
     /// The server's SSH key is not in `known_hosts`; the user must decide whether to
     /// trust it.
-    #[error("the server's host key is not known yet ({fingerprint})")]
     UnknownHostKey {
         /// SHA256 fingerprint to show the user.
         fingerprint: String,
@@ -65,10 +61,6 @@ pub enum ConnectError {
         key: Box<HostKey>,
     },
     /// The server's SSH key differs from the one recorded: possibly an attack.
-    #[error(
-        "WARNING: the host key of {host} has changed (known_hosts line {line}). \
-         Someone could be intercepting the connection; refusing to connect."
-    )]
     HostKeyChanged {
         /// Server address.
         host: String,
@@ -78,7 +70,6 @@ pub enum ConnectError {
     /// The server's TLS certificate is not signed by an authority this system trusts
     /// (often a self-signed certificate) and was not trusted before; the user must decide
     /// whether to trust it (see [`trust_certificate`]).
-    #[error("the server's certificate is not trusted ({reason})")]
     UntrustedCertificate {
         /// Server address.
         host: String,
@@ -90,14 +81,11 @@ pub enum ConnectError {
         reason: String,
     },
     /// No password was typed or saved (and no key was tried).
-    #[error("enter the password")]
     PasswordRequired,
     /// The server accepted none of the keys tried, and there is no password to try.
-    #[error("the server did not accept the SSH key; enter the password, or check the key")]
     KeysRejected,
     /// The site's private key file is protected by a passphrase, and none was given
     /// (`wrong` false) or the one given does not open it (`wrong` true).
-    #[error("the key file {} needs its passphrase", path.display())]
     KeyPassphraseRequired {
         /// The key file.
         path: PathBuf,
@@ -105,7 +93,6 @@ pub enum ConnectError {
         wrong: bool,
     },
     /// The site's private key file cannot be read, or is not a supported key.
-    #[error("cannot use the key file {}: {reason}", path.display())]
     KeyUnreadable {
         /// The key file.
         path: PathBuf,
@@ -113,14 +100,58 @@ pub enum ConnectError {
         reason: String,
     },
     /// The server rejected the user name, key or password.
-    #[error("login failed: wrong user name, key or password")]
     AuthenticationFailed,
     /// The server does not offer SFTP, or it failed to start.
-    #[error("the server's file transfer (SFTP) service failed: {0}")]
     Sftp(String),
     /// The FTP server refused something during login.
-    #[error("FTP: {0}")]
     Ftp(String),
+}
+
+// Written by hand, not with `#[error(...)]`: the messages are in the interface
+// language, fetched when shown.
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::Unsupported(protocol) => crate::tr!("connect-unsupported", protocol = *protocol),
+            Self::Timeout(host) => crate::tr!("connect-timeout", host = host.clone()),
+            Self::Network { host, reason } => crate::tr!(
+                "connect-network",
+                host = host.clone(),
+                reason = reason.clone()
+            ),
+            Self::UnknownHostKey { fingerprint, .. } => {
+                crate::tr!(
+                    "connect-unknown-host-key",
+                    fingerprint = fingerprint.clone()
+                )
+            }
+            Self::HostKeyChanged { host, line } => {
+                crate::tr!(
+                    "connect-host-key-changed",
+                    host = host.clone(),
+                    line = *line
+                )
+            }
+            Self::UntrustedCertificate { reason, .. } => {
+                crate::tr!("connect-untrusted-certificate", reason = reason.clone())
+            }
+            Self::PasswordRequired => crate::tr!("connect-password-required"),
+            Self::KeysRejected => crate::tr!("connect-keys-rejected"),
+            Self::KeyPassphraseRequired { path, .. } => crate::tr!(
+                "connect-key-passphrase-required",
+                path = path.display().to_string()
+            ),
+            Self::KeyUnreadable { path, reason } => crate::tr!(
+                "connect-key-unreadable",
+                path = path.display().to_string(),
+                reason = reason.clone()
+            ),
+            Self::AuthenticationFailed => crate::tr!("connect-authentication-failed"),
+            Self::Sftp(reason) => crate::tr!("connect-sftp", reason = reason.clone()),
+            Self::Ftp(reason) => crate::tr!("connect-ftp", reason = reason.clone()),
+        };
+        f.write_str(&text)
+    }
 }
 
 /// What to log in with, besides the site's key file and the SSH agent.

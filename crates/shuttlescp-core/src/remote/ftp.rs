@@ -149,10 +149,10 @@ pub(super) async fn connect(
         no_mlst: AtomicBool::new(false),
     });
     tracing::info!(
-        "connecting to {}:{} (FTP, {}, {} mode)",
+        "connecting to {}:{} (FTP, {:?}, {} mode)",
         site.host,
         site.port,
-        encryption.label(),
+        encryption,
         if site.ftp.passive {
             "passive"
         } else {
@@ -177,10 +177,9 @@ pub(super) async fn connect(
             site.host
         );
     }
-    let home = first
-        .pwd()
-        .await
-        .map_err(|error| ConnectError::Ftp(format!("cannot read the home folder: {error}")))?;
+    let home = first.pwd().await.map_err(|error| {
+        ConnectError::Ftp(crate::tr!("connect-ftp-home", reason = error.to_string()))
+    })?;
     let limit = site.files_at_once() + BROWSING_CONNECTIONS;
     let pool = Arc::new(Pool {
         idle: Mutex::new(vec![first]),
@@ -221,10 +220,10 @@ async fn open(settings: &Settings) -> Result<Connection, ConnectError> {
                 Err(FtpError::UnexpectedResponse(response)) => {
                     let reply = String::from_utf8_lossy(&response.body).trim().to_owned();
                     if encryption == FtpEncryption::ExplicitTls {
-                        return Err(ConnectError::Ftp(format!(
-                            "the server does not offer TLS encryption ({reply}); choose \
-                             \"{}\" to connect without requiring it",
-                            FtpEncryption::ExplicitIfAvailable.label()
+                        return Err(ConnectError::Ftp(crate::tr!(
+                            "connect-ftp-no-tls",
+                            reply = reply,
+                            choice = FtpEncryption::ExplicitIfAvailable.label()
                         )));
                     }
                     tracing::warn!(
@@ -411,12 +410,15 @@ impl Ftp {
         } else {
             let mlst_path = text.clone();
             let found = self
-                .run(&format!("cannot read {text}"), &move |connection| {
-                    let path = mlst_path.clone();
-                    Box::pin(async move {
-                        unless_unsupported(connection.mlst(Some(path.as_str())).await)
-                    })
-                })
+                .run(
+                    &crate::i18n::cannot_bare("read", &text),
+                    &move |connection| {
+                        let path = mlst_path.clone();
+                        Box::pin(async move {
+                            unless_unsupported(connection.mlst(Some(path.as_str())).await)
+                        })
+                    },
+                )
                 .await;
             if matches!(found, Ok(None)) {
                 tracing::debug!("the server has no MLST; looking items up in listings from now on");
@@ -427,7 +429,7 @@ impl Ftp {
         match found {
             Some(line) => ListParser::parse_mlst(&line)
                 .map(|file| meta(&file))
-                .map_err(|error| format!("cannot read {text}: {error}")),
+                .map_err(|error| crate::i18n::cannot("read", &text, &error)),
             // Servers without MLST: look the item up in its folder's listing.
             None => {
                 let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
@@ -444,7 +446,9 @@ impl Ftp {
                     .into_iter()
                     .find(|(entry, _)| entry == name)
                     .map(|(_, meta)| meta)
-                    .ok_or_else(|| format!("cannot read {text}: no such file or folder"))
+                    .ok_or_else(|| {
+                        crate::i18n::cannot("read", &text, crate::tr!("error-no-such-item"))
+                    })
             }
         }
     }
@@ -454,7 +458,7 @@ impl Ftp {
         dir: &RemotePath,
     ) -> Result<Vec<(String, RemoteMeta)>, String> {
         let text = path_text(dir);
-        let what = format!("cannot open {text}");
+        let what = crate::i18n::cannot_bare("open", &text);
         let lines = if self.settings.no_mlsd.load(Ordering::Relaxed) {
             None
         } else {
@@ -507,10 +511,13 @@ impl Ftp {
     /// pooled connection in that folder is harmless.
     pub(super) async fn leads_to_folder(&self, path: &RemotePath) -> bool {
         let text = path_text(path);
-        self.run(&format!("cannot open {text}"), &move |connection| {
-            let path = text.clone();
-            Box::pin(async move { connection.cwd(path.as_str()).await })
-        })
+        self.run(
+            &crate::i18n::cannot_bare("open", &text),
+            &move |connection| {
+                let path = text.clone();
+                Box::pin(async move { connection.cwd(path.as_str()).await })
+            },
+        )
         .await
         .is_ok()
     }
@@ -529,9 +536,9 @@ impl Ftp {
                 lease = self.lease().await?;
                 start_download(lease.connection(), text.clone(), offset)
                     .await
-                    .map_err(|error| format!("cannot open {text}: {}", describe(&error)))?
+                    .map_err(|error| crate::i18n::cannot("open", &text, describe(&error)))?
             }
-            Err(error) => return Err(format!("cannot open {text}: {}", describe(&error))),
+            Err(error) => return Err(crate::i18n::cannot("open", &text, describe(&error))),
         };
         Ok(Box::pin(FtpReader {
             stream: Some(stream),
@@ -554,9 +561,9 @@ impl Ftp {
                 lease = self.lease().await?;
                 start_upload(lease.connection(), text.clone(), offset)
                     .await
-                    .map_err(|error| format!("cannot write {text}: {}", describe(&error)))?
+                    .map_err(|error| crate::i18n::cannot("write", &text, describe(&error)))?
             }
-            Err(error) => return Err(format!("cannot write {text}: {}", describe(&error))),
+            Err(error) => return Err(crate::i18n::cannot("write", &text, describe(&error))),
         };
         Ok(Box::pin(FtpWriter {
             stream: Some(stream),
@@ -567,7 +574,11 @@ impl Ftp {
 
     pub(super) async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), String> {
         let (from, to) = (path_text(from), path_text(to));
-        let what = format!("cannot rename {from} to {to}");
+        let what = crate::tr!(
+            "error-cannot-rename-bare",
+            from = from.to_string(),
+            to = to.to_string()
+        );
         self.run(&what, &move |connection| {
             let (from, to) = (from.clone(), to.clone());
             Box::pin(async move { connection.rename(from, to).await })
@@ -577,7 +588,7 @@ impl Ftp {
 
     pub(super) async fn create_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
-        let what = format!("cannot create folder {text}");
+        let what = crate::i18n::cannot_bare("create-folder", &text);
         self.run(&what, &move |connection| {
             let path = text.clone();
             Box::pin(async move { connection.mkdir(path).await })
@@ -587,7 +598,7 @@ impl Ftp {
 
     pub(super) async fn remove_file(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
-        let what = format!("cannot delete {text}");
+        let what = crate::i18n::cannot_bare("delete", &text);
         self.run(&what, &move |connection| {
             let path = text.clone();
             Box::pin(async move { connection.rm(path).await })
@@ -597,7 +608,7 @@ impl Ftp {
 
     pub(super) async fn remove_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
-        let what = format!("cannot delete folder {text}");
+        let what = crate::i18n::cannot_bare("delete-folder", &text);
         self.run(&what, &move |connection| {
             let path = text.clone();
             Box::pin(async move { connection.rmdir(path).await })
@@ -616,7 +627,7 @@ impl Ftp {
         let stamp = DateTime::<Utc>::from(time)
             .format("%Y%m%d%H%M%S")
             .to_string();
-        let what = format!("cannot set the time of {text}");
+        let what = crate::i18n::cannot_bare("set-time", &text);
         self.run(&what, &move |connection| {
             let command = format!("MFMT {stamp} {text}");
             Box::pin(async move {

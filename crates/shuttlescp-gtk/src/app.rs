@@ -27,7 +27,6 @@ use shuttlescp_core::update::{self, Manifest};
 use crate::build_info::{build_info, show_about};
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
-use crate::i18n::tr;
 use crate::log_tail::log_tail;
 use crate::login_dialog::{LoginDialog, LoginInit, LoginMsg, LoginOutput, Resume};
 use crate::preferences_dialog;
@@ -40,6 +39,7 @@ use crate::tooltip::TooltipExt;
 use crate::transfer_panel::{PendingStore, TransferPanelMsg};
 use crate::transfer_slots::TransferLimit;
 use crate::update_dialog::{self, RestartChoice};
+use shuttlescp_core::tr;
 
 /// Window size the first time the app opens; after that, the size it was closed at.
 const FIRST_WINDOW_SIZE: WindowSize = WindowSize {
@@ -2272,7 +2272,7 @@ fn build_menu(bar: MenuBar) -> gio::Menu {
 
     let level_menu = gio::Menu::new();
     for level in LogLevel::ALL {
-        level_menu.append_item(&bar.radio_item::<LogLevelAction>(level.label(), level.as_str()));
+        level_menu.append_item(&bar.radio_item::<LogLevelAction>(&level.label(), level.as_str()));
     }
     let tools_menu = gio::Menu::new();
     tools_menu.append_submenu(Some(&tr!("menu-log-level")), &level_menu);

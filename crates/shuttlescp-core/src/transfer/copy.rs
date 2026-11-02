@@ -160,9 +160,7 @@ pub(super) async fn copy_items(
         .filter(|item| item.kind == ItemKind::Folder && !renamed[item.id])
     {
         if failed_parent(&outcomes, item) {
-            outcomes[item.id] = Some(ItemOutcome::Failed(String::from(
-                "the folder it is in could not be created",
-            )));
+            outcomes[item.id] = Some(ItemOutcome::Failed(crate::tr!("error-parent-not-created")));
         } else if let Err(error) = dst.create_dir(&item.dest).await {
             tracing::warn!("{error}");
             outcomes[item.id] = Some(ItemOutcome::Failed(error));
@@ -191,8 +189,7 @@ pub(super) async fn copy_items(
             continue;
         };
         if failed_parent(&outcomes, item) {
-            let outcome =
-                ItemOutcome::Failed(String::from("the folder it goes in could not be created"));
+            let outcome = ItemOutcome::Failed(crate::tr!("error-parent-not-created"));
             finish(&mut outcomes, item.id, outcome);
             continue;
         }
@@ -397,7 +394,7 @@ async fn settle_conflicts(
         if item.existing_is_dir {
             settled(
                 item.id,
-                ItemOutcome::Failed(format!("a folder named {} is already there", item.name)),
+                ItemOutcome::Failed(crate::tr!("error-folder-there", name = item.name.clone())),
             );
             continue;
         }
@@ -487,7 +484,7 @@ async fn folder_outcome(
             .map_or_else(ItemOutcome::Failed, |()| ItemOutcome::Done);
     }
     if inside().any(|outcome| matches!(outcome, Some(ItemOutcome::Failed(_)))) {
-        ItemOutcome::Failed(String::from("some items inside it failed"))
+        ItemOutcome::Failed(crate::tr!("error-items-inside-failed"))
     } else if inside().any(|outcome| matches!(outcome, Some(ItemOutcome::Cancelled) | None)) {
         ItemOutcome::Cancelled
     } else if inside().any(|outcome| outcome == Some(&ItemOutcome::Stopped)) {
@@ -516,7 +513,7 @@ pub(super) fn children_of(items: &[PlanItem]) -> Vec<Vec<usize>> {
 async fn finish_source(item: &PlanItem, src: &Endpoint, delete_source: bool) -> ItemOutcome {
     if delete_source && let Err(error) = src.remove_file(&item.source).await {
         tracing::warn!("{error}");
-        return ItemOutcome::Failed(format!("copied, but {error}"));
+        return ItemOutcome::Failed(crate::tr!("error-copied-but", reason = error));
     }
     ItemOutcome::Done
 }
@@ -702,13 +699,13 @@ async fn copy_contents(
         }
         if cancel.is_item_paused(item.id) {
             writer.shutdown().await.map_err(|error| {
-                ItemOutcome::Failed(format!("cannot finish {}: {error}", partial))
+                ItemOutcome::Failed(crate::i18n::cannot("finish", partial, &error))
             })?;
             sink(TransferEvent::Progress { id: item.id, done });
             return Err(FileEnd::Paused(done));
         }
         let read = reader.read(&mut buffer).await.map_err(|error| {
-            ItemOutcome::Failed(format!("cannot read {}: {error}", item.source))
+            ItemOutcome::Failed(crate::i18n::cannot("read", &item.source, &error))
         })?;
         if read == 0 {
             break;
@@ -716,7 +713,7 @@ async fn copy_contents(
         writer
             .write_all(&buffer[..read])
             .await
-            .map_err(|error| ItemOutcome::Failed(format!("cannot write {}: {error}", partial)))?;
+            .map_err(|error| ItemOutcome::Failed(crate::i18n::cannot("write", partial, &error)))?;
         done += read as u64;
         if reported.elapsed() >= PROGRESS_INTERVAL {
             sink(TransferEvent::Progress { id: item.id, done });
@@ -727,7 +724,7 @@ async fn copy_contents(
     writer
         .shutdown()
         .await
-        .map_err(|error| ItemOutcome::Failed(format!("cannot finish {}: {error}", partial)))?;
+        .map_err(|error| ItemOutcome::Failed(crate::i18n::cannot("finish", partial, &error)))?;
     sink(TransferEvent::Progress { id: item.id, done });
     Ok(FileTimes {
         open,
@@ -769,7 +766,7 @@ pub(super) async fn delete_items(
                 ItemKind::Folder if inside().all(|outcome| *outcome == ItemOutcome::Done) => {
                     src.remove_dir(&item.source).await
                 }
-                ItemKind::Folder => Err(String::from("some items inside it were not deleted")),
+                ItemKind::Folder => Err(crate::tr!("error-items-inside-not-deleted")),
             }
             .map_or_else(ItemOutcome::Failed, |()| ItemOutcome::Done)
         };

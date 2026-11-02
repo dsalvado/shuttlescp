@@ -10,7 +10,7 @@ use relm4::gtk::{gio, glib};
 use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::path::SidePath;
 
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// Display name of the root filesystem entry: its path, as Linux users know it.
 const ROOT_DISK_NAME: &str = "/";

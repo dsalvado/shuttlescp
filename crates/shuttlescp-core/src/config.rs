@@ -15,7 +15,6 @@ use crate::logging::LogLevel;
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// The file or its directory could not be read or written.
-    #[error("cannot access {}: {source}", path.display())]
     Io {
         /// File or directory involved.
         path: PathBuf,
@@ -24,7 +23,6 @@ pub enum ConfigError {
         source: io::Error,
     },
     /// The file exists but does not contain valid settings.
-    #[error("invalid settings in {}: {source}", path.display())]
     Json {
         /// File involved.
         path: PathBuf,
@@ -32,6 +30,21 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
+}
+
+// Written by hand: the messages are in the interface language.
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::Io { path, source } => crate::i18n::cannot("access", path.display(), source),
+            Self::Json { path, source } => crate::tr!(
+                "settings-error-invalid",
+                path = path.display().to_string(),
+                reason = source.to_string()
+            ),
+        };
+        f.write_str(&text)
+    }
 }
 
 /// Appearance the user picked. Which themes exist, and how one is applied, is up to the

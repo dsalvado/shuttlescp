@@ -11,7 +11,7 @@ pub use shuttlescp_core::site_export::PassphrasePurpose;
 use shuttlescp_core::site_export::passphrase_problem;
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// What the user decided.
 #[derive(Debug)]
@@ -107,7 +107,7 @@ pub fn ask(
             );
             passphrase.set_sensitive(!exporting || include.is_active());
             confirm.set_sensitive(include.is_active());
-            hint.set_label(problem.unwrap_or(""));
+            hint.set_label(problem.as_deref().unwrap_or(""));
             ok.set_sensitive(problem.is_none());
         }
     };

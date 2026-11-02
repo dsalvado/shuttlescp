@@ -73,14 +73,14 @@ impl LogLevel {
         }
     }
 
-    /// Human readable name for menus.
-    pub fn label(self) -> &'static str {
+    /// Its name in the interface language, for menus.
+    pub fn label(self) -> String {
         match self {
-            Self::Error => "Error",
-            Self::Warn => "Warning",
-            Self::Info => "Info",
-            Self::Debug => "Debug",
-            Self::Trace => "Trace",
+            Self::Error => crate::tr!("log-level-error"),
+            Self::Warn => crate::tr!("log-level-warn"),
+            Self::Info => crate::tr!("log-level-info"),
+            Self::Debug => crate::tr!("log-level-debug"),
+            Self::Trace => crate::tr!("log-level-trace"),
         }
     }
 
@@ -171,8 +171,8 @@ impl Logger {
         tracing::info!(
             target: LEVEL_CHANGE_TARGET,
             "log level changed from {} to {}",
-            previous.label(),
-            level.label()
+            previous.as_str(),
+            level.as_str()
         );
     }
 }
@@ -244,7 +244,7 @@ pub fn init(level: LogLevel, log_path: &Path) -> Logger {
     let file_path = file_path
         .inspect_err(|error| tracing::error!("{error}; logging to stderr only"))
         .ok();
-    tracing::info!(target: LEVEL_CHANGE_TARGET, "log level is {}", level.label());
+    tracing::info!(target: LEVEL_CHANGE_TARGET, "log level is {}", level.as_str());
     Logger {
         handle,
         level,

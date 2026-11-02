@@ -30,13 +30,13 @@ use shuttlescp_core::transfer::{Job, JobKind, Side};
 
 use crate::app::{App, AppMsg, not_connected};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
-use crate::i18n::tr;
 use crate::login_dialog::Resume;
 use crate::transfer_panel::{
     LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelInit,
     TransferPanelMsg, TransferPanelOutput,
 };
 use crate::transfer_slots::TransferLimit;
+use shuttlescp_core::tr;
 
 /// Identifies a session for its whole life (positions change as tabs close).
 pub type SessionId = u64;

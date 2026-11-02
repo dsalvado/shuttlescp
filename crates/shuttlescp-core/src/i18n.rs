@@ -84,6 +84,42 @@ pub fn text_with(id: &str, args: &[(&'static str, FluentValue<'static>)]) -> Str
         })
 }
 
+/// A failed operation on a file or folder, in the interface language: "cannot read
+/// report.pdf: permission denied".
+///
+/// # Arguments
+///
+/// * `action` - What failed: `read`, `open`, `write`, `create`, `create-folder`,
+///   `delete`, `delete-folder`, `set-time`, `finish`, `download`, `replace` or
+///   `make-runnable` (`error-cannot` in the translations)
+/// * `path` - The file or folder
+/// * `reason` - Why, as the system or server said it
+pub fn cannot(
+    action: &str,
+    path: impl std::fmt::Display,
+    reason: impl std::fmt::Display,
+) -> String {
+    text_with(
+        "error-cannot",
+        &[
+            ("action", FluentValue::from(action.to_owned())),
+            ("path", FluentValue::from(path.to_string())),
+            ("reason", FluentValue::from(reason.to_string())),
+        ],
+    )
+}
+
+/// [`cannot`] without a reason (one follows later, or none is known).
+pub fn cannot_bare(action: &str, path: impl std::fmt::Display) -> String {
+    text_with(
+        "error-cannot-bare",
+        &[
+            ("action", FluentValue::from(action.to_owned())),
+            ("path", FluentValue::from(path.to_string())),
+        ],
+    )
+}
+
 /// The languages the interface can be shown in: each one's tag and its own name
 /// (`language-name` in its file), English first, then by name.
 pub fn languages() -> Vec<(String, String)> {
@@ -113,6 +149,7 @@ fn fallback() -> LanguageIdentifier {
 
 /// A text in the interface language: `tr!("dialog-close")`, or with values for the
 /// message's variables, `tr!("files-copied", count = 3, folder = name)`.
+#[macro_export]
 macro_rules! tr {
     ($id:literal) => {
         $crate::i18n::text($id)
@@ -124,7 +161,6 @@ macro_rules! tr {
         )
     };
 }
-pub(crate) use tr;
 
 #[cfg(test)]
 mod tests {
@@ -225,11 +261,12 @@ mod tests {
                 }
             }
         }
+        // This crate and the interface crate beside it both use `tr!`.
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut used = std::collections::BTreeSet::new();
-        scan(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut used,
-        );
+        for source in [crates.join("src"), crates.join("../shuttlescp-gtk/src")] {
+            scan(&source, &mut used);
+        }
         used
     }
 
@@ -243,10 +280,11 @@ mod tests {
             missing.is_empty(),
             "used in code, missing in en-US: {missing:?}"
         );
-        // `language-name` is read by `languages`, not through `tr!`.
+        // Read here, not through `tr!`: by `languages` and by `cannot` / `cannot_bare`.
+        let read_here = ["language-name", "error-cannot", "error-cannot-bare"];
         let unused: Vec<_> = english
             .difference(&used)
-            .filter(|name| *name != "language-name")
+            .filter(|name| !read_here.contains(&name.as_str()))
             .collect();
         assert!(unused.is_empty(), "in en-US, used nowhere: {unused:?}");
     }

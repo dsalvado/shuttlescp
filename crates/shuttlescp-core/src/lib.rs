@@ -23,6 +23,7 @@ pub mod config;
 pub mod disks;
 pub mod entry;
 pub mod format;
+pub mod i18n;
 pub mod listing_cache;
 pub mod local_fs;
 pub mod log_reader;

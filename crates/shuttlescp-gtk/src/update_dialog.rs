@@ -18,7 +18,7 @@ use shuttlescp_core::format::format_size;
 use shuttlescp_core::update::{self, Manifest};
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// How often the dialog shows the download's progress.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);

@@ -14,7 +14,6 @@ shuttlescp-core = { path = "../shuttlescp-core" }
 relm4 = "0.11"
 secrecy.workspace = true
 tracing.workspace = true
-fluent-templates = "0.15.1"
 
 # Linux and macOS: quit cleanly on SIGHUP/SIGINT/SIGTERM (see app.rs quit_on_signals).
 [target.'cfg(unix)'.dependencies]

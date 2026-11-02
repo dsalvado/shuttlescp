@@ -8,7 +8,7 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 
 use crate::dialog::{self, ButtonKind, Dialog};
-use crate::i18n::tr;
+use shuttlescp_core::tr;
 
 /// What to do with the unfinished transfers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

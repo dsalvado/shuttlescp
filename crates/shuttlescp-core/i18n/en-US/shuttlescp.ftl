@@ -602,3 +602,214 @@ login-trust-certificate-detail =
     { $fingerprint }
 
     If it matches the server's real certificate, trust it: it will be remembered for this server.
+
+## Sizes (format.rs), like "4.2 MiB": $size is the number, already written with
+## size-decimal-mark; $unit picks the unit (binary multiples of 1024). The unit
+## names are the usual ones in the language (French writes Kio, Mio, Gio...).
+
+size-decimal-mark = .
+size =
+    { $unit ->
+        [b] { $size } B
+        [kib] { $size } KiB
+        [mib] { $size } MiB
+        [gib] { $size } GiB
+        [tib] { $size } TiB
+        [pib] { $size } PiB
+       *[eib] { $size } EiB
+    }
+
+## Log levels (Tools › Log Level, and the status bar).
+
+log-level-error = Error
+log-level-warn = Warning
+log-level-info = Info
+log-level-debug = Debug
+log-level-trace = Trace
+
+## How an FTP site is encrypted (the Login dialog's list).
+
+ftp-encryption-explicit-if-available = Use explicit FTP over TLS if available
+ftp-encryption-explicit = Require explicit FTP over TLS
+ftp-encryption-implicit = Require implicit FTP over TLS
+ftp-encryption-none = Only use plain FTP (insecure)
+
+## A transfer's title (transfer/mod.rs). $what is what it copies (a file or folder
+## name, or job-items); $dest the folder it goes to. $action says which kind:
+## upload and download between this computer and the server; move-to-server and
+## move-to-computer move them across; copy/move-here and copy/move-on-server stay on
+## one side; copy/move-other-server go between two servers (site to site).
+
+job-title =
+    { $action ->
+        [upload] Upload { $what } to { $dest }
+        [download] Download { $what } to { $dest }
+        [move-to-server] Move { $what } to the server, { $dest }
+        [move-to-computer] Move { $what } to this computer, { $dest }
+        [copy-here] Copy { $what } to { $dest }
+        [copy-on-server] Copy { $what } to { $dest } on the server
+        [move-here] Move { $what } to { $dest }
+        [move-on-server] Move { $what } to { $dest } on the server
+        [copy-other-server] Copy { $what } to { $dest } on the other server
+        [move-other-server] Move { $what } to { $dest } on the other server
+        [delete-here] Delete { $what } from this computer
+       *[delete-on-server] Delete { $what } from the server
+    }
+job-items =
+    { $count ->
+        [one] { $count } item
+       *[other] { $count } items
+    }
+
+## Errors from file operations (the core library). $path is a file or folder; $reason
+## why it failed, as the system or server said it (often in English); $from and $to a
+## renamed item's old and new path. The message starts lowercase: it often follows
+## other text, as in "Failed: cannot read ...".
+
+error-cannot =
+    { $action ->
+        [read] cannot read { $path }: { $reason }
+        [open] cannot open { $path }: { $reason }
+        [write] cannot write { $path }: { $reason }
+        [create] cannot create { $path }: { $reason }
+        [create-folder] cannot create folder { $path }: { $reason }
+        [delete] cannot delete { $path }: { $reason }
+        [delete-folder] cannot delete folder { $path }: { $reason }
+        [set-time] cannot set the time of { $path }: { $reason }
+        [finish] cannot finish { $path }: { $reason }
+        [download] cannot download { $path }: { $reason }
+        [replace] cannot replace { $path }: { $reason }
+        [access] cannot access { $path }: { $reason }
+       *[make-runnable] cannot make { $path } runnable: { $reason }
+    }
+error-cannot-bare =
+    { $action ->
+        [read] cannot read { $path }
+        [open] cannot open { $path }
+        [write] cannot write { $path }
+        [create] cannot create { $path }
+        [create-folder] cannot create folder { $path }
+        [delete] cannot delete { $path }
+        [delete-folder] cannot delete folder { $path }
+        [set-time] cannot set the time of { $path }
+        [finish] cannot finish { $path }
+        [download] cannot download { $path }
+        [replace] cannot replace { $path }
+        [access] cannot access { $path }
+       *[make-runnable] cannot make { $path } runnable
+    }
+error-cannot-rename = cannot rename { $from } to { $to }: { $reason }
+error-cannot-rename-bare = cannot rename { $from } to { $to }
+error-no-such-item = no such file or folder
+# $path: a file whose date is before 1970 or after 2106.
+error-sftp-date = { $path } has a date SFTP cannot store
+
+## Why connecting failed (remote/mod.rs). Shown after the site's name or on their
+## own, so they start lowercase. $host: a server's address; $reason: what went wrong
+## (often from the server, in English); $path: a key file.
+
+connect-unsupported = { $protocol } connections are not supported yet
+connect-timeout = { $host } did not respond (timed out)
+connect-network = cannot connect to { $host }: { $reason }
+connect-unknown-host-key = the server's host key is not known yet ({ $fingerprint })
+# $line: the line of ~/.ssh/known_hosts holding the old key.
+connect-host-key-changed = WARNING: the host key of { $host } has changed (known_hosts line { $line }). Someone could be intercepting the connection; refusing to connect.
+connect-untrusted-certificate = the server's certificate is not trusted ({ $reason })
+connect-password-required = enter the password
+connect-keys-rejected = the server did not accept the SSH key; enter the password, or check the key
+connect-key-passphrase-required = the key file { $path } needs its passphrase
+connect-key-unreadable = cannot use the key file { $path }: { $reason }
+connect-authentication-failed = login failed: wrong user name, key or password
+connect-sftp = the server's file transfer (SFTP) service failed: { $reason }
+connect-ftp = FTP: { $reason }
+connect-host-certificates = host certificates are not supported
+connect-ftp-home = cannot read the home folder: { $reason }
+# $reply: the server's answer; $choice: the name of the encryption choice to pick
+# instead (ftp-encryption-explicit-if-available).
+connect-ftp-no-tls = the server does not offer TLS encryption ({ $reply }); choose "{ $choice }" to connect without requiring it
+connect-tls-setup = TLS setup failed: { $reason }
+connect-no-authorities = this system has no trusted certificate authorities
+# Why a server's TLS certificate is not trusted; shown in the dialog asking whether to
+# trust it, after "cannot be verified:".
+certificate-problem =
+    { $reason ->
+        [unknown-issuer] it is not signed by an authority this computer trusts
+        [expired] it has expired
+        [not-valid-yet] it is not valid yet
+        [other-name] it was issued for a different server name
+        [revoked] it has been revoked
+       *[self-signed] it is self-signed
+    }
+
+## Name rules, shown under the name field (New Folder, Rename). $character: a
+## character a name cannot contain; $name: the name typed.
+
+name-empty = enter a name
+name-reserved = "{ $name }" cannot be used as a name
+name-forbidden-character = a name cannot contain "{ $character }"
+name-null = a name cannot contain a null character
+name-control-characters = a name cannot contain control characters
+name-trailing-space-or-dot = a name cannot end with a space or a dot
+name-windows-device = "{ $name }" is a name Windows keeps for a device
+
+## Transfer and file errors (transfer/). $name: a file or folder name; $folder and
+## $path: paths; $reason: what went wrong (often from the system or server).
+
+error-already-exists = { $name } already exists
+error-into-itself = { $name } cannot go inside itself
+error-already-there = { $name } is already in { $folder }
+error-parent-not-created = the folder it goes in could not be created
+error-folder-there = a folder named { $name } is already there
+error-items-inside-failed = some items inside it failed
+error-items-inside-not-deleted = some items inside it were not deleted
+# The file was copied, but deleting the original (a move) failed.
+error-copied-but = copied, but { $reason }
+error-not-connected = not connected to a server
+error-not-connected-destination = not connected to the server copies go to
+error-cannot-copy-root = { $path } cannot be copied or deleted
+error-nested-too-deeply = { $path } is nested too deeply (a symbolic link loop?)
+
+## Update errors (update.rs), shown in the update dialog. $reason: what went wrong
+## (often from the network, in English).
+
+update-error-unsigned = the update is not signed by the { -app-name } release key
+update-error-unreadable = the update description cannot be read: { $reason }
+update-error-unexpected-place = the update would be downloaded from an unexpected place: { $url }
+update-error-cancelled = the download was cancelled
+update-error-failed = the download failed: { $reason }
+update-error-too-large = the download is larger than the release says
+update-error-save = cannot save the download: { $reason }
+# $done, $total: numbers of bytes.
+update-error-incomplete = the download is incomplete ({ $done } of { $total } bytes)
+update-error-mismatch = the download does not match the signed release (SHA-256 differs)
+update-error-no-key = this build cannot check for updates
+update-error-bad-key = the built-in release key is damaged: { $reason }
+update-error-unreachable = cannot reach the releases page: { $reason }
+update-error-description = cannot read the release description: { $reason }
+update-error-version = "{ $version }" is not a version number
+
+## The passphrase rules in the export and import dialog (shown under the fields).
+
+passphrase-problem-empty = Enter the passphrase
+# $count: the fewest characters allowed (8).
+passphrase-problem-short = Use at least { $count } characters
+passphrase-problem-mismatch = Passphrases do not match
+
+## Site export and import errors (site_export.rs).
+
+export-error-json = { $path } is not a valid site export: { $reason }
+export-error-not-export = the file is not a { -app-name } site export
+export-error-version = unsupported export version { $version }
+export-error-passphrase-required = a passphrase is needed to import the saved passwords
+export-error-wrong-passphrase = wrong passphrase, or the file has been altered
+export-error-settings = invalid encryption settings in the file: { $reason }
+export-error-random = cannot generate random data: { $reason }
+
+## The desktop keyring (secrets.rs), settings and site folders.
+
+keyring-error-service = keyring error: { $reason }
+keyring-error-not-text = stored password is not valid text
+keyring-error-unsupported = saving passwords is not supported on this platform yet
+settings-error-invalid = invalid settings in { $path }: { $reason }
+folder-error-into-itself = a folder cannot go inside itself
+folder-error-exists = there is already a folder "{ $folder }"
