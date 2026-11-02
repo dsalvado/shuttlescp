@@ -84,9 +84,9 @@ Simplified Chinese. Pick one in File › Preferences (Ctrl+,), then restart Shut
 The translations other than English were made with AI and have not yet been reviewed
 by native speakers, so they may contain mistakes; each is marked "machine translation"
 in the language list until someone has checked it. Corrections, and new languages, are
-very welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Messages that come from servers
-or the system, and a few from deep inside the program (such as some error messages),
-are still in English.
+very welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Reasons given by servers and the
+operating system (such as "permission denied") stay as they give them, and the log
+stays in English.
 
 On Linux, Chinese needs a Chinese font, which most desktops install (for example Noto
 Sans CJK, `fonts-noto-cjk` on Debian and Ubuntu); without one, the text shows as empty

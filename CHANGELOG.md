@@ -7,6 +7,15 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- More of the interface follows the chosen language: error messages (connecting,
+  copying, names, updates, site export and import, the keyring), transfer titles
+  ("Upload report.pdf to /srv"), the progress line, log level and FTP encryption
+  names, and sizes, written with the language's decimal mark and units (1,1 Mio in
+  French). Reasons given by servers and the system stay as they give them, log lines
+  stay English, and dates keep the international format (2026-11-02 10:30).
+
 ## [0.21.0] - 2026-11-01
 
 ### Added
