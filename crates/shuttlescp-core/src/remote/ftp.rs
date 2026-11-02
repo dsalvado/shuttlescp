@@ -149,10 +149,10 @@ pub(super) async fn connect(
         no_mlst: AtomicBool::new(false),
     });
     tracing::info!(
-        "connecting to {}:{} (FTP, {}, {} mode)",
+        "connecting to {}:{} (FTP, {:?}, {} mode)",
         site.host,
         site.port,
-        encryption.label(),
+        encryption,
         if site.ftp.passive {
             "passive"
         } else {

@@ -199,13 +199,13 @@ impl FtpEncryption {
         Self::None,
     ];
 
-    /// Name shown to the user.
-    pub fn label(self) -> &'static str {
+    /// Its name in the interface language.
+    pub fn label(self) -> String {
         match self {
-            Self::ExplicitIfAvailable => "Use explicit FTP over TLS if available",
-            Self::ExplicitTls => "Require explicit FTP over TLS",
-            Self::ImplicitTls => "Require implicit FTP over TLS",
-            Self::None => "Only use plain FTP (insecure)",
+            Self::ExplicitIfAvailable => crate::tr!("ftp-encryption-explicit-if-available"),
+            Self::ExplicitTls => crate::tr!("ftp-encryption-explicit"),
+            Self::ImplicitTls => crate::tr!("ftp-encryption-implicit"),
+            Self::None => crate::tr!("ftp-encryption-none"),
         }
     }
 

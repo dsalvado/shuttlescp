@@ -602,3 +602,34 @@ login-trust-certificate-detail =
     { $fingerprint }
 
     If it matches the server's real certificate, trust it: it will be remembered for this server.
+
+## Sizes (format.rs), like "4.2 MiB": $size is the number, already written with
+## size-decimal-mark; $unit picks the unit (binary multiples of 1024). The unit
+## names are the usual ones in the language (French writes Kio, Mio, Gio...).
+
+size-decimal-mark = .
+size =
+    { $unit ->
+        [b] { $size } B
+        [kib] { $size } KiB
+        [mib] { $size } MiB
+        [gib] { $size } GiB
+        [tib] { $size } TiB
+        [pib] { $size } PiB
+       *[eib] { $size } EiB
+    }
+
+## Log levels (Tools › Log Level, and the status bar).
+
+log-level-error = Error
+log-level-warn = Warning
+log-level-info = Info
+log-level-debug = Debug
+log-level-trace = Trace
+
+## How an FTP site is encrypted (the Login dialog's list).
+
+ftp-encryption-explicit-if-available = Use explicit FTP over TLS if available
+ftp-encryption-explicit = Require explicit FTP over TLS
+ftp-encryption-implicit = Require implicit FTP over TLS
+ftp-encryption-none = Only use plain FTP (insecure)

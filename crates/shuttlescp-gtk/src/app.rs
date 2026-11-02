@@ -2272,7 +2272,7 @@ fn build_menu(bar: MenuBar) -> gio::Menu {
 
     let level_menu = gio::Menu::new();
     for level in LogLevel::ALL {
-        level_menu.append_item(&bar.radio_item::<LogLevelAction>(level.label(), level.as_str()));
+        level_menu.append_item(&bar.radio_item::<LogLevelAction>(&level.label(), level.as_str()));
     }
     let tools_menu = gio::Menu::new();
     tools_menu.append_submenu(Some(&tr!("menu-log-level")), &level_menu);

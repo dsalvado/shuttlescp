@@ -2249,7 +2249,8 @@ impl Component for LoginDialog {
         model.refresh_unfinished(&sender);
 
         let protocol_labels: Vec<&str> = Protocol::ALL.iter().map(|p| p.label()).collect();
-        let encryption_labels: Vec<&str> = FtpEncryption::ALL.iter().map(|e| e.label()).collect();
+        let encryption_names: Vec<String> = FtpEncryption::ALL.iter().map(|e| e.label()).collect();
+        let encryption_labels: Vec<&str> = encryption_names.iter().map(String::as_str).collect();
         let site_list_box = model.site_list.widget();
         let left_list_box = model.pair_lists[0].widget();
         let right_list_box = model.pair_lists[1].widget();

@@ -431,3 +431,26 @@ login-trust-certificate-detail =
     { $fingerprint }
 
     如果它与服务器的真实证书一致，请信任它：它会为此服务器记住。
+
+size-decimal-mark = .
+size =
+    { $unit ->
+        [b] { $size } B
+        [kib] { $size } KiB
+        [mib] { $size } MiB
+        [gib] { $size } GiB
+        [tib] { $size } TiB
+        [pib] { $size } PiB
+       *[eib] { $size } EiB
+    }
+
+log-level-error = 错误
+log-level-warn = 警告
+log-level-info = 信息
+log-level-debug = 调试
+log-level-trace = 跟踪
+
+ftp-encryption-explicit-if-available = 如可用则使用显式 FTP over TLS
+ftp-encryption-explicit = 要求显式 FTP over TLS
+ftp-encryption-implicit = 要求隐式 FTP over TLS
+ftp-encryption-none = 仅使用普通 FTP（不安全）

@@ -18,9 +18,10 @@ const ELLIPSIS: &str = "...";
 ///
 /// Whole bytes below 1 KiB, otherwise one decimal place in the largest fitting unit
 pub fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    // Each unit's name is the interface language's (`size` in the translations).
+    const UNITS: [&str; 6] = ["kib", "mib", "gib", "tib", "pib", "eib"];
     if bytes < 1024 {
-        return format!("{bytes} B");
+        return crate::tr!("size", unit = "b", size = bytes.to_string());
     }
     // `as f64` is an explicit numeric cast; Rust never converts number types implicitly.
     let mut value = bytes as f64 / 1024.0;
@@ -29,7 +30,10 @@ pub fn format_size(bytes: u64) -> String {
         value /= 1024.0;
         unit += 1;
     }
-    format!("{value:.1} {}", UNITS[unit])
+    // Written here, with the language's decimal mark: given to Fluent as a number,
+    // it would be formatted again.
+    let size = format!("{value:.1}").replace('.', &crate::tr!("size-decimal-mark"));
+    crate::tr!("size", unit = UNITS[unit], size = size)
 }
 
 /// Format a timestamp as `YYYY-MM-DD HH:MM` in the local time zone.

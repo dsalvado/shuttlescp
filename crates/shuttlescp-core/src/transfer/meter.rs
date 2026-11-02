@@ -95,20 +95,25 @@ impl RateMeter {
     /// * `total` - Bytes in all
     /// * `now` - Current time
     pub fn describe(&self, done: u64, total: u64, now: Instant) -> String {
-        let mut text = format!(
-            "{}% · {} of {}",
-            percent(done, total),
-            format_size(done),
-            format_size(total)
-        );
+        let mut parts = vec![
+            crate::tr!("progress-percent", percent = percent(done, total)),
+            crate::tr!(
+                "progress-bytes",
+                done = format_size(done),
+                total = format_size(total)
+            ),
+        ];
         if let Some(rate) = self.rate {
             // Rounded to whole bytes for display.
-            text.push_str(&format!(" · {}/s", format_size(rate as u64)));
+            parts.push(crate::tr!(
+                "progress-speed",
+                size = format_size(rate as u64)
+            ));
         }
         if let Some(left) = self.time_left(done, total, now) {
-            text.push_str(&format!(" · {} left", format_duration(left)));
+            parts.push(crate::tr!("progress-left", time = format_duration(left)));
         }
-        text
+        parts.join(" · ")
     }
 }
 

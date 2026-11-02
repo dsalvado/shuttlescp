@@ -486,3 +486,26 @@ login-trust-certificate-detail =
     { $fingerprint }
 
     S'il correspond au vrai certificat du serveur, faites-lui confiance : il sera mémorisé pour ce serveur.
+
+size-decimal-mark = ,
+size =
+    { $unit ->
+        [b] { $size } o
+        [kib] { $size } Kio
+        [mib] { $size } Mio
+        [gib] { $size } Gio
+        [tib] { $size } Tio
+        [pib] { $size } Pio
+       *[eib] { $size } Eio
+    }
+
+log-level-error = Erreur
+log-level-warn = Avertissement
+log-level-info = Info
+log-level-debug = Débogage
+log-level-trace = Trace
+
+ftp-encryption-explicit-if-available = Utiliser FTP sur TLS explicite si disponible
+ftp-encryption-explicit = Exiger FTP sur TLS explicite
+ftp-encryption-implicit = Exiger FTP sur TLS implicite
+ftp-encryption-none = N'utiliser que FTP simple (non sécurisé)
