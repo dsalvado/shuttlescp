@@ -25,14 +25,23 @@ const LEGACY_APPLICATION: &str = "guiscp";
 #[derive(Debug, Error)]
 pub enum KeyringError {
     /// The password store rejected the request or is not running.
-    #[error("keyring error: {0}")]
     Service(String),
     /// A stored secret was not valid UTF-8 text.
-    #[error("stored password is not valid text")]
     NotText,
     /// This platform has no password store backend yet.
-    #[error("saving passwords is not supported on this platform yet")]
     Unsupported,
+}
+
+// Written by hand: the messages are in the interface language.
+impl std::fmt::Display for KeyringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::Service(reason) => crate::tr!("keyring-error-service", reason = reason.clone()),
+            Self::NotText => crate::tr!("keyring-error-not-text"),
+            Self::Unsupported => crate::tr!("keyring-error-unsupported"),
+        };
+        f.write_str(&text)
+    }
 }
 
 /// Keyring lookup attributes for a site's password.

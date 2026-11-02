@@ -50,7 +50,7 @@ pub(super) async fn plan(
     for source in &job.sources {
         let name = source
             .file_name()
-            .ok_or_else(|| format!("{} cannot be copied or deleted", source))?;
+            .ok_or_else(|| crate::tr!("error-cannot-copy-root", path = source.to_string()))?;
         let known = source
             .parent()
             .and_then(|parent| listed.get(&parent)?.get(name).cloned());
@@ -82,9 +82,9 @@ pub(super) async fn plan(
 
     while let Some((folder, depth)) = folders.pop() {
         if depth >= MAX_DEPTH {
-            return Err(format!(
-                "{} is nested too deeply (a symbolic link loop?)",
-                items[folder].source
+            return Err(crate::tr!(
+                "error-nested-too-deeply",
+                path = items[folder].source.to_string()
             ));
         }
         let (source, dest) = (items[folder].source.clone(), items[folder].dest.clone());

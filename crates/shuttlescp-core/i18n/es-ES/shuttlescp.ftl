@@ -530,3 +530,116 @@ job-items =
         [one] { $count } elemento
        *[other] { $count } elementos
     }
+
+error-cannot =
+    { $action ->
+        [read] no se puede leer { $path }: { $reason }
+        [open] no se puede abrir { $path }: { $reason }
+        [write] no se puede escribir { $path }: { $reason }
+        [create] no se puede crear { $path }: { $reason }
+        [create-folder] no se puede crear la carpeta { $path }: { $reason }
+        [delete] no se puede eliminar { $path }: { $reason }
+        [delete-folder] no se puede eliminar la carpeta { $path }: { $reason }
+        [set-time] no se puede ajustar la hora de { $path }: { $reason }
+        [finish] no se puede terminar { $path }: { $reason }
+        [download] no se puede descargar { $path }: { $reason }
+        [replace] no se puede reemplazar { $path }: { $reason }
+        [access] no se puede acceder a { $path }: { $reason }
+       *[make-runnable] no se puede hacer ejecutable { $path }: { $reason }
+    }
+error-cannot-bare =
+    { $action ->
+        [read] no se puede leer { $path }
+        [open] no se puede abrir { $path }
+        [write] no se puede escribir { $path }
+        [create] no se puede crear { $path }
+        [create-folder] no se puede crear la carpeta { $path }
+        [delete] no se puede eliminar { $path }
+        [delete-folder] no se puede eliminar la carpeta { $path }
+        [set-time] no se puede ajustar la hora de { $path }
+        [finish] no se puede terminar { $path }
+        [download] no se puede descargar { $path }
+        [replace] no se puede reemplazar { $path }
+        [access] no se puede acceder a { $path }
+       *[make-runnable] no se puede hacer ejecutable { $path }
+    }
+error-cannot-rename = no se puede renombrar { $from } como { $to }: { $reason }
+error-cannot-rename-bare = no se puede renombrar { $from } como { $to }
+error-no-such-item = no existe ese archivo o carpeta
+error-sftp-date = { $path } tiene una fecha que SFTP no puede guardar
+connect-unsupported = las conexiones { $protocol } aún no son compatibles
+connect-timeout = { $host } no respondió (tiempo agotado)
+connect-network = no se puede conectar a { $host }: { $reason }
+connect-unknown-host-key = la clave de host del servidor aún no es conocida ({ $fingerprint })
+connect-host-key-changed = ADVERTENCIA: la clave de host de { $host } ha cambiado (línea { $line } de known_hosts). Alguien podría estar interceptando la conexión; se rechaza la conexión.
+connect-untrusted-certificate = el certificado del servidor no es de confianza ({ $reason })
+connect-password-required = introduzca la contraseña
+connect-keys-rejected = el servidor no aceptó la clave SSH; introduzca la contraseña o revise la clave
+connect-key-passphrase-required = el archivo de clave { $path } necesita su frase de contraseña
+connect-key-unreadable = no se puede usar el archivo de clave { $path }: { $reason }
+connect-authentication-failed = inicio de sesión fallido: nombre de usuario, clave o contraseña incorrectos
+connect-sftp = el servicio de transferencia de archivos (SFTP) del servidor falló: { $reason }
+connect-ftp = FTP: { $reason }
+connect-host-certificates = los certificados de host no son compatibles
+connect-ftp-home = no se puede leer la carpeta personal: { $reason }
+connect-ftp-no-tls = el servidor no ofrece cifrado TLS ({ $reply }); elija «{ $choice }» para conectarse sin exigirlo
+connect-tls-setup = falló la configuración de TLS: { $reason }
+connect-no-authorities = este sistema no tiene autoridades de certificación de confianza
+certificate-problem =
+    { $reason ->
+        [unknown-issuer] no está firmado por una autoridad en la que confíe este equipo
+        [expired] ha caducado
+        [not-valid-yet] aún no es válido
+        [other-name] se emitió para otro nombre de servidor
+        [revoked] ha sido revocado
+       *[self-signed] está autofirmado
+    }
+name-empty = introduzca un nombre
+name-reserved = «{ $name }» no se puede usar como nombre
+name-forbidden-character = un nombre no puede contener «{ $character }»
+name-null = un nombre no puede contener un carácter nulo
+name-control-characters = un nombre no puede contener caracteres de control
+name-trailing-space-or-dot = un nombre no puede terminar en espacio ni en punto
+name-windows-device = «{ $name }» es un nombre que Windows reserva para un dispositivo
+error-already-exists = { $name } ya existe
+error-into-itself = { $name } no puede ir dentro de sí mismo
+error-already-there = { $name } ya está en { $folder }
+error-parent-not-created = no se pudo crear la carpeta que debe contenerlo
+error-folder-there = ya hay una carpeta llamada { $name }
+error-items-inside-failed = algunos elementos de su interior fallaron
+error-items-inside-not-deleted = algunos elementos de su interior no se eliminaron
+error-copied-but = copiado, pero { $reason }
+error-not-connected = sin conexión a un servidor
+error-not-connected-destination = sin conexión al servidor de destino de las copias
+error-cannot-copy-root = { $path } no se puede copiar ni eliminar
+error-nested-too-deeply = { $path } está anidado demasiado profundo (¿un bucle de enlaces simbólicos?)
+update-error-unsigned = la actualización no está firmada con la clave de publicación de { -app-name }
+update-error-unreadable = no se puede leer la descripción de la actualización: { $reason }
+update-error-unexpected-place = la actualización se descargaría desde un lugar inesperado: { $url }
+update-error-cancelled = se canceló la descarga
+update-error-failed = falló la descarga: { $reason }
+update-error-too-large = la descarga es más grande de lo que indica la versión
+update-error-save = no se puede guardar la descarga: { $reason }
+update-error-incomplete = la descarga está incompleta ({ $done } de { $total } bytes)
+update-error-mismatch = la descarga no coincide con la versión firmada (el SHA-256 es distinto)
+update-error-no-key = esta compilación no puede buscar actualizaciones
+update-error-bad-key = la clave de publicación integrada está dañada: { $reason }
+update-error-unreachable = no se puede acceder a la página de versiones: { $reason }
+update-error-description = no se puede leer la descripción de la versión: { $reason }
+update-error-version = «{ $version }» no es un número de versión
+passphrase-problem-empty = Introduzca la frase de contraseña
+passphrase-problem-short = Use al menos { $count } caracteres
+passphrase-problem-mismatch = Las frases de contraseña no coinciden
+export-error-json = { $path } no es una exportación de sitios válida: { $reason }
+export-error-not-export = el archivo no es una exportación de sitios de { -app-name }
+export-error-version = versión de exportación no compatible: { $version }
+export-error-passphrase-required = se necesita una frase de contraseña para importar las contraseñas guardadas
+export-error-wrong-passphrase = frase de contraseña incorrecta, o el archivo ha sido modificado
+export-error-settings = ajustes de cifrado no válidos en el archivo: { $reason }
+export-error-random = no se pueden generar datos aleatorios: { $reason }
+keyring-error-service = error del llavero: { $reason }
+keyring-error-not-text = la contraseña guardada no es un texto válido
+keyring-error-unsupported = guardar contraseñas aún no es compatible con este sistema
+settings-error-invalid = ajustes no válidos en { $path }: { $reason }
+folder-error-into-itself = una carpeta no puede ir dentro de sí misma
+folder-error-exists = ya existe una carpeta «{ $folder }»

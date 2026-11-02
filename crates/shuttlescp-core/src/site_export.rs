@@ -70,15 +70,19 @@ pub fn passphrase_problem(
     include_passwords: bool,
     passphrase: &str,
     confirm: &str,
-) -> Option<&'static str> {
+) -> Option<String> {
     match purpose {
-        PassphrasePurpose::Import if passphrase.is_empty() => Some("Enter the passphrase"),
+        PassphrasePurpose::Import if passphrase.is_empty() => {
+            Some(crate::tr!("passphrase-problem-empty"))
+        }
         PassphrasePurpose::Import => None,
         PassphrasePurpose::Export if !include_passwords => None,
-        PassphrasePurpose::Export if passphrase.chars().count() < MIN_PASSPHRASE_CHARS => {
-            Some("Use at least 8 characters")
+        PassphrasePurpose::Export if passphrase.chars().count() < MIN_PASSPHRASE_CHARS => Some(
+            crate::tr!("passphrase-problem-short", count = MIN_PASSPHRASE_CHARS),
+        ),
+        PassphrasePurpose::Export if passphrase != confirm => {
+            Some(crate::tr!("passphrase-problem-mismatch"))
         }
-        PassphrasePurpose::Export if passphrase != confirm => Some("Passphrases do not match"),
         PassphrasePurpose::Export => None,
     }
 }
@@ -105,7 +109,6 @@ pub const DEFAULT_COST: KdfCost = KdfCost {
 #[derive(Debug, Error)]
 pub enum ExportError {
     /// The file could not be read or written.
-    #[error("cannot access {}: {source}", path.display())]
     Io {
         /// File involved.
         path: PathBuf,
@@ -114,10 +117,8 @@ pub enum ExportError {
         source: std::io::Error,
     },
     /// Writing the file failed.
-    #[error(transparent)]
     Write(#[from] config::ConfigError),
     /// The file is not valid JSON.
-    #[error("{} is not a valid site export: {source}", path.display())]
     Json {
         /// File involved.
         path: PathBuf,
@@ -126,23 +127,43 @@ pub enum ExportError {
         source: serde_json::Error,
     },
     /// The file is JSON but not a ShuttleSCP site export.
-    #[error("the file is not a ShuttleSCP site export")]
     NotAnExport,
     /// The file was written by a newer version of the app.
-    #[error("unsupported export version {0}")]
     UnsupportedVersion(u32),
     /// The file holds encrypted passwords but no passphrase was given.
-    #[error("a passphrase is needed to import the saved passwords")]
     PassphraseRequired,
     /// Decryption failed: wrong passphrase, or the file was altered.
-    #[error("wrong passphrase, or the file has been altered")]
     WrongPassphrase,
     /// The encryption settings in the file are invalid.
-    #[error("invalid encryption settings in the file: {0}")]
     BadSettings(String),
     /// The system random number source failed.
-    #[error("cannot generate random data: {0}")]
     Random(#[from] getrandom::Error),
+}
+
+// Written by hand: the messages are in the interface language.
+impl std::fmt::Display for ExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::Io { path, source } => crate::i18n::cannot("access", path.display(), source),
+            Self::Write(error) => error.to_string(),
+            Self::Json { path, source } => crate::tr!(
+                "export-error-json",
+                path = path.display().to_string(),
+                reason = source.to_string()
+            ),
+            Self::NotAnExport => crate::tr!("export-error-not-export"),
+            Self::UnsupportedVersion(version) => {
+                crate::tr!("export-error-version", version = *version)
+            }
+            Self::PassphraseRequired => crate::tr!("export-error-passphrase-required"),
+            Self::WrongPassphrase => crate::tr!("export-error-wrong-passphrase"),
+            Self::BadSettings(reason) => {
+                crate::tr!("export-error-settings", reason = reason.clone())
+            }
+            Self::Random(error) => crate::tr!("export-error-random", reason = error.to_string()),
+        };
+        f.write_str(&text)
+    }
 }
 
 /// Encryption settings recorded in an export.
@@ -535,11 +556,11 @@ mod tests {
         let export = PassphrasePurpose::Export;
         assert_eq!(passphrase_problem(export, false, "", ""), None);
         assert_eq!(
-            passphrase_problem(export, true, "short", "short"),
+            passphrase_problem(export, true, "short", "short").as_deref(),
             Some("Use at least 8 characters")
         );
         assert_eq!(
-            passphrase_problem(export, true, "long enough", "long enoug"),
+            passphrase_problem(export, true, "long enough", "long enoug").as_deref(),
             Some("Passphrases do not match")
         );
         assert_eq!(
@@ -552,7 +573,7 @@ mod tests {
     fn import_only_needs_a_passphrase() {
         let import = PassphrasePurpose::Import;
         assert_eq!(
-            passphrase_problem(import, true, "", ""),
+            passphrase_problem(import, true, "", "").as_deref(),
             Some("Enter the passphrase")
         );
         assert_eq!(passphrase_problem(import, true, "x", ""), None);

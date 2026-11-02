@@ -530,3 +530,116 @@ job-items =
         [one] { $count } Element
        *[other] { $count } Elemente
     }
+
+error-cannot =
+    { $action ->
+        [read] { $path } kann nicht gelesen werden: { $reason }
+        [open] { $path } kann nicht geöffnet werden: { $reason }
+        [write] { $path } kann nicht geschrieben werden: { $reason }
+        [create] { $path } kann nicht erstellt werden: { $reason }
+        [create-folder] Ordner { $path } kann nicht erstellt werden: { $reason }
+        [delete] { $path } kann nicht gelöscht werden: { $reason }
+        [delete-folder] Ordner { $path } kann nicht gelöscht werden: { $reason }
+        [set-time] Die Zeit von { $path } kann nicht gesetzt werden: { $reason }
+        [finish] { $path } kann nicht abgeschlossen werden: { $reason }
+        [download] { $path } kann nicht heruntergeladen werden: { $reason }
+        [replace] { $path } kann nicht ersetzt werden: { $reason }
+        [access] Kein Zugriff auf { $path }: { $reason }
+       *[make-runnable] { $path } kann nicht ausführbar gemacht werden: { $reason }
+    }
+error-cannot-bare =
+    { $action ->
+        [read] { $path } kann nicht gelesen werden
+        [open] { $path } kann nicht geöffnet werden
+        [write] { $path } kann nicht geschrieben werden
+        [create] { $path } kann nicht erstellt werden
+        [create-folder] Ordner { $path } kann nicht erstellt werden
+        [delete] { $path } kann nicht gelöscht werden
+        [delete-folder] Ordner { $path } kann nicht gelöscht werden
+        [set-time] Die Zeit von { $path } kann nicht gesetzt werden
+        [finish] { $path } kann nicht abgeschlossen werden
+        [download] { $path } kann nicht heruntergeladen werden
+        [replace] { $path } kann nicht ersetzt werden
+        [access] Kein Zugriff auf { $path }
+       *[make-runnable] { $path } kann nicht ausführbar gemacht werden
+    }
+error-cannot-rename = { $from } kann nicht in { $to } umbenannt werden: { $reason }
+error-cannot-rename-bare = { $from } kann nicht in { $to } umbenannt werden
+error-no-such-item = keine solche Datei und kein solcher Ordner
+error-sftp-date = { $path } hat ein Datum, das SFTP nicht speichern kann
+connect-unsupported = { $protocol }-Verbindungen werden noch nicht unterstützt
+connect-timeout = { $host } hat nicht geantwortet (Zeitüberschreitung)
+connect-network = Verbindung zu { $host } nicht möglich: { $reason }
+connect-unknown-host-key = der Host-Schlüssel des Servers ist noch nicht bekannt ({ $fingerprint })
+connect-host-key-changed = WARNUNG: Der Host-Schlüssel von { $host } hat sich geändert (known_hosts, Zeile { $line }). Jemand könnte die Verbindung abhören; die Verbindung wird verweigert.
+connect-untrusted-certificate = dem Zertifikat des Servers wird nicht vertraut ({ $reason })
+connect-password-required = Passwort eingeben
+connect-keys-rejected = der Server hat den SSH-Schlüssel nicht akzeptiert; geben Sie das Passwort ein oder prüfen Sie den Schlüssel
+connect-key-passphrase-required = die Schlüsseldatei { $path } benötigt ihre Passphrase
+connect-key-unreadable = die Schlüsseldatei { $path } kann nicht verwendet werden: { $reason }
+connect-authentication-failed = Anmeldung fehlgeschlagen: falscher Benutzername, Schlüssel oder falsches Passwort
+connect-sftp = der Dateiübertragungsdienst (SFTP) des Servers ist fehlgeschlagen: { $reason }
+connect-ftp = FTP: { $reason }
+connect-host-certificates = Host-Zertifikate werden nicht unterstützt
+connect-ftp-home = der Basisordner kann nicht gelesen werden: { $reason }
+connect-ftp-no-tls = der Server bietet keine TLS-Verschlüsselung an ({ $reply }); wählen Sie „{ $choice }“, um ohne diese Anforderung zu verbinden
+connect-tls-setup = TLS-Einrichtung fehlgeschlagen: { $reason }
+connect-no-authorities = dieses System hat keine vertrauenswürdigen Zertifizierungsstellen
+certificate-problem =
+    { $reason ->
+        [unknown-issuer] es ist nicht von einer Stelle signiert, der dieser Computer vertraut
+        [expired] es ist abgelaufen
+        [not-valid-yet] es ist noch nicht gültig
+        [other-name] es wurde für einen anderen Servernamen ausgestellt
+        [revoked] es wurde widerrufen
+       *[self-signed] es ist selbstsigniert
+    }
+name-empty = geben Sie einen Namen ein
+name-reserved = „{ $name }“ kann nicht als Name verwendet werden
+name-forbidden-character = ein Name darf „{ $character }“ nicht enthalten
+name-null = ein Name darf kein Nullzeichen enthalten
+name-control-characters = ein Name darf keine Steuerzeichen enthalten
+name-trailing-space-or-dot = ein Name darf nicht mit einem Leerzeichen oder Punkt enden
+name-windows-device = „{ $name }“ ist ein Name, den Windows für ein Gerät reserviert
+error-already-exists = { $name } existiert bereits
+error-into-itself = { $name } kann nicht in sich selbst verschoben werden
+error-already-there = { $name } ist bereits in { $folder }
+error-parent-not-created = der Ordner, in den es gehört, konnte nicht erstellt werden
+error-folder-there = dort ist bereits ein Ordner namens { $name }
+error-items-inside-failed = einige Elemente darin sind fehlgeschlagen
+error-items-inside-not-deleted = einige Elemente darin wurden nicht gelöscht
+error-copied-but = kopiert, aber { $reason }
+error-not-connected = nicht mit einem Server verbunden
+error-not-connected-destination = nicht mit dem Zielserver der Kopien verbunden
+error-cannot-copy-root = { $path } kann weder kopiert noch gelöscht werden
+error-nested-too-deeply = { $path } ist zu tief verschachtelt (eine Schleife symbolischer Links?)
+update-error-unsigned = die Aktualisierung ist nicht mit dem Veröffentlichungsschlüssel von { -app-name } signiert
+update-error-unreadable = die Beschreibung der Aktualisierung ist nicht lesbar: { $reason }
+update-error-unexpected-place = die Aktualisierung würde von einem unerwarteten Ort heruntergeladen: { $url }
+update-error-cancelled = der Download wurde abgebrochen
+update-error-failed = der Download ist fehlgeschlagen: { $reason }
+update-error-too-large = der Download ist größer als in der Version angegeben
+update-error-save = der Download kann nicht gespeichert werden: { $reason }
+update-error-incomplete = der Download ist unvollständig ({ $done } von { $total } Bytes)
+update-error-mismatch = der Download stimmt nicht mit der signierten Version überein (SHA-256 weicht ab)
+update-error-no-key = dieser Build kann nicht nach Aktualisierungen suchen
+update-error-bad-key = der eingebaute Veröffentlichungsschlüssel ist beschädigt: { $reason }
+update-error-unreachable = die Versionsseite ist nicht erreichbar: { $reason }
+update-error-description = die Versionsbeschreibung kann nicht gelesen werden: { $reason }
+update-error-version = „{ $version }“ ist keine Versionsnummer
+passphrase-problem-empty = Geben Sie die Passphrase ein
+passphrase-problem-short = Verwenden Sie mindestens { $count } Zeichen
+passphrase-problem-mismatch = Die Passphrasen stimmen nicht überein
+export-error-json = { $path } ist kein gültiger Site-Export: { $reason }
+export-error-not-export = die Datei ist kein Site-Export von { -app-name }
+export-error-version = nicht unterstützte Exportversion { $version }
+export-error-passphrase-required = zum Importieren der gespeicherten Passwörter wird eine Passphrase benötigt
+export-error-wrong-passphrase = falsche Passphrase, oder die Datei wurde verändert
+export-error-settings = ungültige Verschlüsselungseinstellungen in der Datei: { $reason }
+export-error-random = Zufallsdaten können nicht erzeugt werden: { $reason }
+keyring-error-service = Schlüsselbund-Fehler: { $reason }
+keyring-error-not-text = das gespeicherte Passwort ist kein gültiger Text
+keyring-error-unsupported = das Speichern von Passwörtern wird auf diesem System noch nicht unterstützt
+settings-error-invalid = ungültige Einstellungen in { $path }: { $reason }
+folder-error-into-itself = ein Ordner kann nicht in sich selbst verschoben werden
+folder-error-exists = es gibt bereits einen Ordner „{ $folder }“

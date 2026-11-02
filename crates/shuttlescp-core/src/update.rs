@@ -127,17 +127,17 @@ pub fn verify_manifest(
 ) -> Result<Manifest, String> {
     UnparsedPublicKey::new(&ED25519, public_key)
         .verify(manifest, signature)
-        .map_err(|_| String::from("the update is not signed by the ShuttleSCP release key"))?;
+        .map_err(|_| crate::tr!("update-error-unsigned"))?;
     let manifest: Manifest = serde_json::from_slice(manifest)
-        .map_err(|error| format!("the update description cannot be read: {error}"))?;
+        .map_err(|error| crate::tr!("update-error-unreadable", reason = error.to_string()))?;
     for asset in std::iter::once(&manifest.appimage)
         .chain(&manifest.macos)
         .chain(&manifest.windows)
     {
         if !asset.url.starts_with(DOWNLOAD_PREFIX) {
-            return Err(format!(
-                "the update would be downloaded from an unexpected place: {}",
-                asset.url
+            return Err(crate::tr!(
+                "update-error-unexpected-place",
+                url = asset.url.clone()
             ));
         }
     }
@@ -186,9 +186,9 @@ pub fn download(
         let mut response = agent()
             .get(&asset.url)
             .call()
-            .map_err(|error| format!("cannot download {}: {error}", asset.name))?;
+            .map_err(|error| crate::i18n::cannot("download", &asset.name, &error))?;
         let mut file = File::create(&target)
-            .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
+            .map_err(|error| crate::i18n::cannot("create", target.display(), &error))?;
         copy_verified(
             &mut response.body_mut().as_reader(),
             &mut file,
@@ -197,7 +197,7 @@ pub fn download(
             cancel,
         )?;
         file.sync_all()
-            .map_err(|error| format!("cannot write {}: {error}", target.display()))?;
+            .map_err(|error| crate::i18n::cannot("write", target.display(), &error))?;
         make_executable(&target)
     })();
     if result.is_err() {
@@ -214,7 +214,7 @@ pub fn download(
 pub fn install(downloaded: &Path, target: &Path) -> Result<(), String> {
     std::fs::rename(downloaded, target).map_err(|error| {
         let _ = std::fs::remove_file(downloaded);
-        format!("cannot replace {}: {error}", target.display())
+        crate::i18n::cannot("replace", target.display(), &error)
     })?;
     tracing::info!("installed the update as {}", target.display());
     Ok(())
@@ -245,34 +245,33 @@ fn copy_verified(
     let mut done: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err(String::from("the download was cancelled"));
+            return Err(crate::tr!("update-error-cancelled"));
         }
         let read = input
             .read(&mut buffer)
-            .map_err(|error| format!("the download failed: {error}"))?;
+            .map_err(|error| crate::tr!("update-error-failed", reason = error.to_string()))?;
         if read == 0 {
             break;
         }
         done += read as u64;
         if done > asset.size {
-            return Err(String::from("the download is larger than the release says"));
+            return Err(crate::tr!("update-error-too-large"));
         }
         hasher.update(&buffer[..read]);
         out.write_all(&buffer[..read])
-            .map_err(|error| format!("cannot save the download: {error}"))?;
+            .map_err(|error| crate::tr!("update-error-save", reason = error.to_string()))?;
         progress(done, asset.size);
     }
     if done != asset.size {
-        return Err(format!(
-            "the download is incomplete ({done} of {} bytes)",
-            asset.size
+        return Err(crate::tr!(
+            "update-error-incomplete",
+            done = done.to_string(),
+            total = asset.size.to_string()
         ));
     }
     let digest = hex(&hasher.finalize());
     if !digest.eq_ignore_ascii_case(&asset.sha256) {
-        return Err(String::from(
-            "the download does not match the signed release (SHA-256 differs)",
-        ));
+        return Err(crate::tr!("update-error-mismatch"));
     }
     Ok(())
 }
@@ -281,11 +280,11 @@ fn copy_verified(
 fn release_key() -> Result<Vec<u8>, String> {
     use base64::Engine;
     if RELEASE_PUBLIC_KEY.is_empty() {
-        return Err(String::from("this build cannot check for updates"));
+        return Err(crate::tr!("update-error-no-key"));
     }
     base64::engine::general_purpose::STANDARD
         .decode(RELEASE_PUBLIC_KEY)
-        .map_err(|error| format!("the built-in release key is damaged: {error}"))
+        .map_err(|error| crate::tr!("update-error-bad-key", reason = error.to_string()))
 }
 
 /// An HTTPS client with time limits.
@@ -304,17 +303,17 @@ fn fetch_small(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, String> {
     agent
         .get(url)
         .call()
-        .map_err(|error| format!("cannot reach the releases page: {error}"))?
+        .map_err(|error| crate::tr!("update-error-unreachable", reason = error.to_string()))?
         .body_mut()
         .with_config()
         .limit(SMALL_FILE_LIMIT)
         .read_to_vec()
-        .map_err(|error| format!("cannot read the release description: {error}"))
+        .map_err(|error| crate::tr!("update-error-description", reason = error.to_string()))
 }
 
 /// "1.2.3" or "v1.2.3" as numbers.
 fn parse_version(version: &str) -> Result<(u64, u64, u64), String> {
-    let invalid = || format!("\"{version}\" is not a version number");
+    let invalid = || crate::tr!("update-error-version", version = version.to_owned());
     let mut parts = version.trim().trim_start_matches('v').split('.');
     let mut next = || -> Result<u64, String> {
         parts

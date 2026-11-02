@@ -40,11 +40,21 @@ fn entry_from_dir_entry(entry: &DirEntry) -> FileEntry {
 
 /// Error returned when a directory cannot be listed.
 #[derive(Debug, Error)]
-#[error("cannot open {}: {source}", path.display())]
 pub struct ListError {
     path: PathBuf,
     #[source]
     source: io::Error,
+}
+
+// Written by hand: the message is in the interface language.
+impl std::fmt::Display for ListError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::cannot(
+            "open",
+            self.path.display(),
+            &self.source,
+        ))
+    }
 }
 
 /// List the contents of a directory, sorted with [`FileEntry::listing_order`].

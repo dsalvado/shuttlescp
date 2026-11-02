@@ -70,8 +70,8 @@ impl client::Handler for HostKeyCheck {
         server_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         let PublicKeyOrCertificate::PublicKey { key, .. } = server_key else {
-            return self.reject(HostKeyVerdict::Failed(String::from(
-                "host certificates are not supported",
+            return self.reject(HostKeyVerdict::Failed(crate::tr!(
+                "connect-host-certificates"
             )));
         };
         if self.approved.as_ref() == Some(key) {
@@ -137,7 +137,7 @@ impl Sftp {
             .metadata(text.clone())
             .await
             .map(|metadata| meta(&metadata))
-            .map_err(|error| format!("cannot read {text}: {error}"))
+            .map_err(|error| crate::i18n::cannot("read", &text, &error))
     }
 
     pub(super) async fn lstat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
@@ -146,7 +146,7 @@ impl Sftp {
             .symlink_metadata(text.clone())
             .await
             .map(|metadata| meta(&metadata))
-            .map_err(|error| format!("cannot read {text}: {error}"))
+            .map_err(|error| crate::i18n::cannot("read", &text, &error))
     }
 
     pub(super) async fn read_dir(
@@ -158,7 +158,7 @@ impl Sftp {
             .session
             .read_dir(text.clone())
             .await
-            .map_err(|error| format!("cannot open {text}: {error}"))?;
+            .map_err(|error| crate::i18n::cannot("open", &text, &error))?;
         Ok(listing
             .filter(|entry| entry.file_name() != "." && entry.file_name() != "..")
             .map(|entry| (entry.file_name(), meta(&entry.metadata())))
@@ -175,11 +175,11 @@ impl Sftp {
             .session
             .open(text.clone())
             .await
-            .map_err(|error| format!("cannot open {text}: {error}"))?;
+            .map_err(|error| crate::i18n::cannot("open", &text, &error))?;
         if offset > 0 {
             file.seek(SeekFrom::Start(offset))
                 .await
-                .map_err(|error| format!("cannot read {text}: {error}"))?;
+                .map_err(|error| crate::i18n::cannot("read", &text, &error))?;
         }
         Ok(Box::pin(file))
     }
@@ -198,11 +198,11 @@ impl Sftp {
             .session
             .open_with_flags(text.clone(), flags)
             .await
-            .map_err(|error| format!("cannot write {text}: {error}"))?;
+            .map_err(|error| crate::i18n::cannot("write", &text, &error))?;
         if offset > 0 {
             file.seek(SeekFrom::Start(offset))
                 .await
-                .map_err(|error| format!("cannot write {text}: {error}"))?;
+                .map_err(|error| crate::i18n::cannot("write", &text, &error))?;
         }
         Ok(Box::pin(file))
     }
@@ -212,7 +212,14 @@ impl Sftp {
         self.session
             .rename(from_text.clone(), to_text.clone())
             .await
-            .map_err(|error| format!("cannot rename {from_text} to {to_text}: {error}"))
+            .map_err(|error| {
+                crate::tr!(
+                    "error-cannot-rename",
+                    from = from_text.to_string(),
+                    to = to_text.to_string(),
+                    reason = error.to_string()
+                )
+            })
     }
 
     pub(super) async fn create_dir(&self, path: &RemotePath) -> Result<(), String> {
@@ -220,7 +227,7 @@ impl Sftp {
         self.session
             .create_dir(text.clone())
             .await
-            .map_err(|error| format!("cannot create folder {text}: {error}"))
+            .map_err(|error| crate::i18n::cannot("create-folder", &text, &error))
     }
 
     pub(super) async fn remove_file(&self, path: &RemotePath) -> Result<(), String> {
@@ -228,7 +235,7 @@ impl Sftp {
         self.session
             .remove_file(text.clone())
             .await
-            .map_err(|error| format!("cannot delete {text}: {error}"))
+            .map_err(|error| crate::i18n::cannot("delete", &text, &error))
     }
 
     pub(super) async fn remove_dir(&self, path: &RemotePath) -> Result<(), String> {
@@ -236,7 +243,7 @@ impl Sftp {
         self.session
             .remove_dir(text.clone())
             .await
-            .map_err(|error| format!("cannot delete folder {text}: {error}"))
+            .map_err(|error| crate::i18n::cannot("delete-folder", &text, &error))
     }
 
     pub(super) async fn set_modified(
@@ -249,7 +256,7 @@ impl Sftp {
             .duration_since(UNIX_EPOCH)
             .ok()
             .and_then(|since| u32::try_from(since.as_secs()).ok())
-            .ok_or_else(|| format!("{text} has a date SFTP cannot store"))?;
+            .ok_or_else(|| crate::tr!("error-sftp-date", path = text.clone()))?;
         let attributes = FileAttributes {
             atime: Some(seconds),
             mtime: Some(seconds),
@@ -258,7 +265,7 @@ impl Sftp {
         self.session
             .set_metadata(text.clone(), attributes)
             .await
-            .map_err(|error| format!("cannot set the time of {text}: {error}"))
+            .map_err(|error| crate::i18n::cannot("set-time", &text, &error))
     }
 }
 

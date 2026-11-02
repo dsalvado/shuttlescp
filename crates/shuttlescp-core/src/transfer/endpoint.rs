@@ -76,7 +76,7 @@ impl Endpoint {
                 } else {
                     tokio::fs::symlink_metadata(path).await
                 }
-                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+                .map_err(|error| crate::i18n::cannot("read", path.display(), &error))?;
                 Ok(Node {
                     is_dir: metadata.is_dir(),
                     size: metadata.len(),
@@ -109,7 +109,7 @@ impl Endpoint {
         let mut children = Vec::new();
         match self.target(dir)? {
             Target::Local(local_dir) => {
-                let unreadable = |error| format!("cannot open {}: {error}", local_dir.display());
+                let unreadable = |error| crate::i18n::cannot("open", local_dir.display(), &error);
                 let mut entries = tokio::fs::read_dir(local_dir).await.map_err(unreadable)?;
                 while let Some(entry) = entries.next_entry().await.map_err(unreadable)? {
                     let path = SidePath::Local(entry.path());
@@ -135,12 +135,12 @@ impl Endpoint {
 
     /// Open a file for reading, starting `offset` bytes in.
     pub(super) async fn open_at(&self, path: &SidePath, offset: u64) -> Result<Reader, String> {
-        let seek_failed = |error| format!("cannot read {path}: {error}");
+        let seek_failed = |error| crate::i18n::cannot("read", path, &error);
         Ok(match self.target(path)? {
             Target::Local(path) => {
                 let mut file = tokio::fs::File::open(path)
                     .await
-                    .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+                    .map_err(|error| crate::i18n::cannot("open", path.display(), &error))?;
                 if offset > 0 {
                     file.seek(SeekFrom::Start(offset))
                         .await
@@ -159,7 +159,7 @@ impl Endpoint {
         path: &SidePath,
         offset: u64,
     ) -> Result<Writer, String> {
-        let failed = |error| format!("cannot write {path}: {error}");
+        let failed = |error| crate::i18n::cannot("write", path, &error);
         Ok(match self.target(path)? {
             Target::Local(path) => {
                 let mut file = tokio::fs::OpenOptions::new()
@@ -168,7 +168,7 @@ impl Endpoint {
                     .truncate(offset == 0)
                     .open(path)
                     .await
-                    .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+                    .map_err(|error| crate::i18n::cannot("create", path.display(), &error))?;
                 if offset > 0 {
                     // Drops anything past `offset`, in case the file is longer.
                     file.set_len(offset).await.map_err(failed)?;
@@ -192,7 +192,7 @@ impl Endpoint {
         reader
             .read_exact(&mut bytes)
             .await
-            .map_err(|error| format!("cannot read {path}: {error}"))?;
+            .map_err(|error| crate::i18n::cannot("read", path, &error))?;
         Ok(bytes)
     }
 
@@ -205,7 +205,7 @@ impl Endpoint {
                         .await
                         .is_ok_and(|meta| meta.is_dir()) =>
                 {
-                    Err(format!("cannot create folder {}: {error}", path.display()))
+                    Err(crate::i18n::cannot("create-folder", path.display(), &error))
                 }
                 _ => Ok(()),
             },
@@ -218,7 +218,7 @@ impl Endpoint {
         match self.target(path)? {
             Target::Local(path) => tokio::fs::remove_file(path)
                 .await
-                .map_err(|error| format!("cannot delete {}: {error}", path.display())),
+                .map_err(|error| crate::i18n::cannot("delete", path.display(), &error)),
             Target::Remote(remote, path) => remote.remove_file(path).await,
         }
     }
@@ -228,7 +228,7 @@ impl Endpoint {
         match self.target(path)? {
             Target::Local(path) => tokio::fs::remove_dir(path)
                 .await
-                .map_err(|error| format!("cannot delete folder {}: {error}", path.display())),
+                .map_err(|error| crate::i18n::cannot("delete-folder", path.display(), &error)),
             Target::Remote(remote, path) => remote.remove_dir(path).await,
         }
     }
@@ -239,10 +239,11 @@ impl Endpoint {
         match (self.target(from)?, self.target(to)?) {
             (Target::Local(from), Target::Local(to)) => {
                 tokio::fs::rename(from, to).await.map_err(|error| {
-                    format!(
-                        "cannot rename {} to {}: {error}",
-                        from.display(),
-                        to.display()
+                    crate::tr!(
+                        "error-cannot-rename",
+                        from = from.display().to_string(),
+                        to = to.display().to_string(),
+                        reason = error.to_string()
                     )
                 })
             }
@@ -268,9 +269,7 @@ impl Endpoint {
                         .write(true)
                         .open(&path)
                         .and_then(|file| file.set_modified(time))
-                        .map_err(|error| {
-                            format!("cannot set the time of {}: {error}", path.display())
-                        })
+                        .map_err(|error| crate::i18n::cannot("set-time", path.display(), &error))
                 })
                 .await
                 .map_err(|error| error.to_string())?

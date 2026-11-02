@@ -25,13 +25,13 @@ const WINDOWS_RESERVED_NUMBERED: [&str; 2] = ["COM", "LPT"];
 /// Returns a message saying what is wrong with it
 pub fn check_name(name: &str, side: Side) -> Result<(), String> {
     if name.trim().is_empty() {
-        Err(String::from("enter a name"))
+        Err(crate::tr!("name-empty"))
     } else if name == "." || name == ".." {
-        Err(format!("\"{name}\" cannot be used as a name"))
+        Err(crate::tr!("name-reserved", name = name.to_owned()))
     } else if name.contains('/') {
-        Err(String::from("a name cannot contain \"/\""))
+        Err(crate::tr!("name-forbidden-character", character = "/"))
     } else if name.contains('\0') {
-        Err(String::from("a name cannot contain a null character"))
+        Err(crate::tr!("name-null"))
     } else if cfg!(windows)
         && side == Side::Local
         && let Some(problem) = windows_name_problem(name)
@@ -47,13 +47,16 @@ pub fn check_name(name: &str, side: Side) -> Result<(), String> {
 /// name such as CON or COM1.
 pub fn windows_name_problem(name: &str) -> Option<String> {
     if let Some(forbidden) = name.chars().find(|c| WINDOWS_FORBIDDEN.contains(c)) {
-        return Some(format!("a name cannot contain \"{forbidden}\""));
+        return Some(crate::tr!(
+            "name-forbidden-character",
+            character = forbidden.to_string()
+        ));
     }
     if name.chars().any(char::is_control) {
-        return Some(String::from("a name cannot contain control characters"));
+        return Some(crate::tr!("name-control-characters"));
     }
     if name.ends_with([' ', '.']) {
-        return Some(String::from("a name cannot end with a space or a dot"));
+        return Some(crate::tr!("name-trailing-space-or-dot"));
     }
     // Windows reads "con.txt" and "CON .txt" as the device CON too.
     let stem = name.split('.').next().unwrap_or(name).trim_end();
@@ -64,7 +67,7 @@ pub fn windows_name_problem(name: &str) -> Option<String> {
             .is_some_and(|digit| matches!(digit.as_bytes(), [b'1'..=b'9']))
     });
     (WINDOWS_RESERVED.contains(&upper.as_str()) || numbered)
-        .then(|| format!("\"{stem}\" is a name Windows keeps for a device"))
+        .then(|| crate::tr!("name-windows-device", name = stem.to_owned()))
 }
 
 /// A name Windows can use, for a file or folder called `name` elsewhere (e.g. on a
@@ -213,7 +216,7 @@ pub async fn create_folder(
     let endpoint = Endpoint::of(remote);
     let path = parent.join(name);
     if endpoint.exists(&path).await {
-        return Err(format!("{name} already exists"));
+        return Err(crate::tr!("error-already-exists", name = name.to_owned()));
     }
     endpoint.create_dir(&path).await?;
     tracing::info!("created folder {}", path);
@@ -248,7 +251,10 @@ pub async fn rename(
         return Ok(target);
     }
     if endpoint.exists(&target).await {
-        return Err(format!("{new_name} already exists"));
+        return Err(crate::tr!(
+            "error-already-exists",
+            name = new_name.to_owned()
+        ));
     }
     endpoint.rename(path, &target).await?;
     tracing::info!("renamed {} to {}", path, target);
@@ -273,10 +279,14 @@ pub fn check_same_side(sources: &[SidePath], dest_dir: &SidePath) -> Result<(), 
             |name| name.to_string_lossy().into_owned(),
         );
         if dest_dir.starts_with(source) {
-            return Err(format!("{name} cannot go inside itself"));
+            return Err(crate::tr!("error-into-itself", name = name));
         }
         if source.parent().as_ref() == Some(dest_dir) {
-            return Err(format!("{name} is already in {}", dest_dir));
+            return Err(crate::tr!(
+                "error-already-there",
+                name = name,
+                folder = dest_dir.to_string()
+            ));
         }
     }
     Ok(())

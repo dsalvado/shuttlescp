@@ -471,3 +471,116 @@ job-title =
        *[delete-on-server] 从服务器删除 { $what }
     }
 job-items = { $count } 项
+
+error-cannot =
+    { $action ->
+        [read] 无法读取 { $path }：{ $reason }
+        [open] 无法打开 { $path }：{ $reason }
+        [write] 无法写入 { $path }：{ $reason }
+        [create] 无法创建 { $path }：{ $reason }
+        [create-folder] 无法创建文件夹 { $path }：{ $reason }
+        [delete] 无法删除 { $path }：{ $reason }
+        [delete-folder] 无法删除文件夹 { $path }：{ $reason }
+        [set-time] 无法设置 { $path } 的时间：{ $reason }
+        [finish] 无法完成 { $path }：{ $reason }
+        [download] 无法下载 { $path }：{ $reason }
+        [replace] 无法替换 { $path }：{ $reason }
+        [access] 无法访问 { $path }：{ $reason }
+       *[make-runnable] 无法使 { $path } 可执行：{ $reason }
+    }
+error-cannot-bare =
+    { $action ->
+        [read] 无法读取 { $path }
+        [open] 无法打开 { $path }
+        [write] 无法写入 { $path }
+        [create] 无法创建 { $path }
+        [create-folder] 无法创建文件夹 { $path }
+        [delete] 无法删除 { $path }
+        [delete-folder] 无法删除文件夹 { $path }
+        [set-time] 无法设置 { $path } 的时间
+        [finish] 无法完成 { $path }
+        [download] 无法下载 { $path }
+        [replace] 无法替换 { $path }
+        [access] 无法访问 { $path }
+       *[make-runnable] 无法使 { $path } 可执行
+    }
+error-cannot-rename = 无法将 { $from } 重命名为 { $to }：{ $reason }
+error-cannot-rename-bare = 无法将 { $from } 重命名为 { $to }
+error-no-such-item = 没有这个文件或文件夹
+error-sftp-date = { $path } 的日期无法用 SFTP 保存
+connect-unsupported = 尚不支持 { $protocol } 连接
+connect-timeout = { $host } 没有响应（超时）
+connect-network = 无法连接到 { $host }：{ $reason }
+connect-unknown-host-key = 服务器的主机密钥尚未记录（{ $fingerprint }）
+connect-host-key-changed = 警告：{ $host } 的主机密钥已更改（known_hosts 第 { $line } 行）。可能有人正在拦截连接；拒绝连接。
+connect-untrusted-certificate = 服务器的证书不受信任（{ $reason }）
+connect-password-required = 请输入密码
+connect-keys-rejected = 服务器不接受该 SSH 密钥；请输入密码，或检查密钥
+connect-key-passphrase-required = 密钥文件 { $path } 需要其密码短语
+connect-key-unreadable = 无法使用密钥文件 { $path }：{ $reason }
+connect-authentication-failed = 登录失败：用户名、密钥或密码错误
+connect-sftp = 服务器的文件传输（SFTP）服务失败：{ $reason }
+connect-ftp = FTP：{ $reason }
+connect-host-certificates = 不支持主机证书
+connect-ftp-home = 无法读取主文件夹：{ $reason }
+connect-ftp-no-tls = 服务器不提供 TLS 加密（{ $reply }）；请选择“{ $choice }”以在不强制加密的情况下连接
+connect-tls-setup = TLS 设置失败：{ $reason }
+connect-no-authorities = 此系统没有受信任的证书颁发机构
+certificate-problem =
+    { $reason ->
+        [unknown-issuer] 它不是由本机信任的机构签发的
+        [expired] 它已过期
+        [not-valid-yet] 它尚未生效
+        [other-name] 它是为其他服务器名称签发的
+        [revoked] 它已被吊销
+       *[self-signed] 它是自签名的
+    }
+name-empty = 请输入名称
+name-reserved = “{ $name }”不能用作名称
+name-forbidden-character = 名称不能包含“{ $character }”
+name-null = 名称不能包含空字符
+name-control-characters = 名称不能包含控制字符
+name-trailing-space-or-dot = 名称不能以空格或句点结尾
+name-windows-device = “{ $name }”是 Windows 为设备保留的名称
+error-already-exists = { $name } 已存在
+error-into-itself = { $name } 不能放入其自身
+error-already-there = { $name } 已在 { $folder } 中
+error-parent-not-created = 无法创建它所在的文件夹
+error-folder-there = 那里已有名为 { $name } 的文件夹
+error-items-inside-failed = 其中的部分项目失败
+error-items-inside-not-deleted = 其中的部分项目未被删除
+error-copied-but = 已复制，但{ $reason }
+error-not-connected = 未连接到服务器
+error-not-connected-destination = 未连接到复制目标服务器
+error-cannot-copy-root = { $path } 无法复制或删除
+error-nested-too-deeply = { $path } 嵌套过深（符号链接循环？）
+update-error-unsigned = 此更新未使用 { -app-name } 发布密钥签名
+update-error-unreadable = 无法读取更新说明：{ $reason }
+update-error-unexpected-place = 更新将从意外的位置下载：{ $url }
+update-error-cancelled = 下载已取消
+update-error-failed = 下载失败：{ $reason }
+update-error-too-large = 下载内容比发布说明的大
+update-error-save = 无法保存下载内容：{ $reason }
+update-error-incomplete = 下载不完整（{ $done }/{ $total } 字节）
+update-error-mismatch = 下载内容与签名的发布版本不一致（SHA-256 不同）
+update-error-no-key = 此版本无法检查更新
+update-error-bad-key = 内置的发布密钥已损坏：{ $reason }
+update-error-unreachable = 无法访问发布页面：{ $reason }
+update-error-description = 无法读取发布说明：{ $reason }
+update-error-version = “{ $version }”不是版本号
+passphrase-problem-empty = 请输入密码短语
+passphrase-problem-short = 至少使用 { $count } 个字符
+passphrase-problem-mismatch = 两次输入的密码短语不一致
+export-error-json = { $path } 不是有效的站点导出文件：{ $reason }
+export-error-not-export = 此文件不是 { -app-name } 站点导出文件
+export-error-version = 不支持的导出版本 { $version }
+export-error-passphrase-required = 导入保存的密码需要密码短语
+export-error-wrong-passphrase = 密码短语错误，或文件已被修改
+export-error-settings = 文件中的加密设置无效：{ $reason }
+export-error-random = 无法生成随机数据：{ $reason }
+keyring-error-service = 密钥环错误：{ $reason }
+keyring-error-not-text = 保存的密码不是有效的文本
+keyring-error-unsupported = 此系统尚不支持保存密码
+settings-error-invalid = { $path } 中的设置无效：{ $reason }
+folder-error-into-itself = 文件夹不能放入其自身
+folder-error-exists = 已有名为“{ $folder }”的文件夹

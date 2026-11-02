@@ -671,9 +671,9 @@ pub async fn run(
         endpoint(job.dest_side())
     };
     let summary = match endpoint(job.side) {
-        None => failed_to_start("not connected to a server"),
+        None => failed_to_start(&crate::tr!("error-not-connected")),
         Some(_) if job.between_servers && dest.is_none() => {
-            failed_to_start("not connected to the server copies go to")
+            failed_to_start(&crate::tr!("error-not-connected-destination"))
         }
         Some(source) => execute(&job, source, dest, &cancel, &sink).await,
     };
@@ -739,7 +739,7 @@ pub async fn discard_partials(
         endpoint(job.dest_side())
     };
     let (Some(src), Some(dst)) = (endpoint(job.side), dest) else {
-        return Err(String::from("not connected to a server"));
+        return Err(crate::tr!("error-not-connected"));
     };
     // As when resuming: sources already moved are not an error.
     job.resume = true;
@@ -798,7 +798,7 @@ async fn execute(
     let outcomes = match (job.kind, dst) {
         (JobKind::Delete, _) => copy::delete_items(&items, &src, cancel, sink).await,
         (_, Some(dst)) => copy::copy_items(job, &items, &src, &dst, cancel, sink).await,
-        (_, None) => return failed_to_start("not connected to a server"),
+        (_, None) => return failed_to_start(&crate::tr!("error-not-connected")),
     };
     let mut summary = JobSummary::default();
     if job.kind != JobKind::Delete {

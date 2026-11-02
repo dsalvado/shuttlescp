@@ -107,7 +107,7 @@ pub fn ask(
             );
             passphrase.set_sensitive(!exporting || include.is_active());
             confirm.set_sensitive(include.is_active());
-            hint.set_label(problem.unwrap_or(""));
+            hint.set_label(problem.as_deref().unwrap_or(""));
             ok.set_sensitive(problem.is_none());
         }
     };

@@ -102,21 +102,19 @@ fn plain_reason(error: &rustls::Error) -> String {
     let rustls::Error::InvalidCertificate(problem) = error else {
         return error.to_string();
     };
-    match problem {
-        Problem::UnknownIssuer => "it is not signed by an authority this computer trusts",
-        Problem::Expired | Problem::ExpiredContext { .. } => "it has expired",
-        Problem::NotValidYet | Problem::NotValidYetContext { .. } => "it is not valid yet",
-        Problem::NotValidForName | Problem::NotValidForNameContext { .. } => {
-            "it was issued for a different server name"
-        }
-        Problem::Revoked => "it has been revoked",
+    let reason = match problem {
+        Problem::UnknownIssuer => "unknown-issuer",
+        Problem::Expired | Problem::ExpiredContext { .. } => "expired",
+        Problem::NotValidYet | Problem::NotValidYetContext { .. } => "not-valid-yet",
+        Problem::NotValidForName | Problem::NotValidForNameContext { .. } => "other-name",
+        Problem::Revoked => "revoked",
         // webpki's way of saying the certificate signed itself.
         Problem::Other(other) if format!("{other:?}").contains("CaUsedAsEndEntity") => {
-            "it is self-signed"
+            "self-signed"
         }
         other => return format!("{other:?}"),
-    }
-    .to_owned()
+    };
+    crate::tr!("certificate-problem", reason = reason)
 }
 
 /// TLS settings for connecting to `host:port`, and where a refused certificate is
@@ -155,7 +153,7 @@ pub(super) fn client_config(
     };
     let config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .map_err(|error| format!("TLS setup failed: {error}"))?
+        .map_err(|error| crate::tr!("connect-tls-setup", reason = error.to_string()))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
@@ -194,9 +192,7 @@ impl ServerCertVerifier for Verifier {
                 ocsp_response,
                 now,
             ),
-            None => Err(rustls::Error::General(String::from(
-                "this system has no trusted certificate authorities",
-            ))),
+            None => Err(rustls::Error::General(crate::tr!("connect-no-authorities"))),
         };
         if let Err(error) = &result
             && let Ok(mut slot) = self.rejected.lock()
