@@ -633,3 +633,30 @@ ftp-encryption-explicit-if-available = Use explicit FTP over TLS if available
 ftp-encryption-explicit = Require explicit FTP over TLS
 ftp-encryption-implicit = Require implicit FTP over TLS
 ftp-encryption-none = Only use plain FTP (insecure)
+
+## A transfer's title (transfer/mod.rs). $what is what it copies (a file or folder
+## name, or job-items); $dest the folder it goes to. $action says which kind:
+## upload and download between this computer and the server; move-to-server and
+## move-to-computer move them across; copy/move-here and copy/move-on-server stay on
+## one side; copy/move-other-server go between two servers (site to site).
+
+job-title =
+    { $action ->
+        [upload] Upload { $what } to { $dest }
+        [download] Download { $what } to { $dest }
+        [move-to-server] Move { $what } to the server, { $dest }
+        [move-to-computer] Move { $what } to this computer, { $dest }
+        [copy-here] Copy { $what } to { $dest }
+        [copy-on-server] Copy { $what } to { $dest } on the server
+        [move-here] Move { $what } to { $dest }
+        [move-on-server] Move { $what } to { $dest } on the server
+        [copy-other-server] Copy { $what } to { $dest } on the other server
+        [move-other-server] Move { $what } to { $dest } on the other server
+        [delete-here] Delete { $what } from this computer
+       *[delete-on-server] Delete { $what } from the server
+    }
+job-items =
+    { $count ->
+        [one] { $count } item
+       *[other] { $count } items
+    }

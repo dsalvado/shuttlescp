@@ -509,3 +509,24 @@ ftp-encryption-explicit-if-available = Usar FTP sobre TLS explícito si está di
 ftp-encryption-explicit = Exigir FTP sobre TLS explícito
 ftp-encryption-implicit = Exigir FTP sobre TLS implícito
 ftp-encryption-none = Usar solo FTP sin cifrar (inseguro)
+
+job-title =
+    { $action ->
+        [upload] Subir { $what } a { $dest }
+        [download] { $dest }escargar { $what } a { $dest }
+        [move-to-server] Mover { $what } al servidor, { $dest }
+        [move-to-computer] Mover { $what } a este equipo, { $dest }
+        [copy-here] Copiar { $what } a { $dest }
+        [copy-on-server] Copiar { $what } a { $dest } en el servidor
+        [move-here] Mover { $what } a { $dest }
+        [move-on-server] Mover { $what } a { $dest } en el servidor
+        [copy-other-server] Copiar { $what } a { $dest } en el otro servidor
+        [move-other-server] Mover { $what } a { $dest } en el otro servidor
+        [delete-here] Eliminar { $what } de este equipo
+       *[delete-on-server] Eliminar { $what } del servidor
+    }
+job-items =
+    { $count ->
+        [one] { $count } elemento
+       *[other] { $count } elementos
+    }

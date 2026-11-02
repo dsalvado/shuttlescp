@@ -125,28 +125,27 @@ impl Job {
     /// Short description, e.g. "Upload report.pdf to /home/me" or "Delete 3 items from
     /// the server".
     pub fn title(&self) -> String {
-        let what = self.subject();
-        let dest = &self.dest_dir;
-        let on_server = match self.side {
-            Side::Local => "",
-            Side::Remote => " on the server",
+        // Which wording, as each language words it (`job-title` in the translations).
+        let action = match (self.kind, self.side) {
+            (JobKind::Copy, _) if self.between_servers => "copy-other-server",
+            (JobKind::Move, _) if self.between_servers => "move-other-server",
+            (JobKind::Copy, Side::Local) if self.same_side => "copy-here",
+            (JobKind::Copy, Side::Remote) if self.same_side => "copy-on-server",
+            (JobKind::Move, Side::Local) if self.same_side => "move-here",
+            (JobKind::Move, Side::Remote) if self.same_side => "move-on-server",
+            (JobKind::Copy, Side::Local) => "upload",
+            (JobKind::Copy, Side::Remote) => "download",
+            (JobKind::Move, Side::Local) => "move-to-server",
+            (JobKind::Move, Side::Remote) => "move-to-computer",
+            (JobKind::Delete, Side::Local) => "delete-here",
+            (JobKind::Delete, Side::Remote) => "delete-on-server",
         };
-        match (self.kind, self.side) {
-            (JobKind::Copy, _) if self.between_servers => {
-                format!("Copy {what} to {dest} on the other server")
-            }
-            (JobKind::Move, _) if self.between_servers => {
-                format!("Move {what} to {dest} on the other server")
-            }
-            (JobKind::Copy, _) if self.same_side => format!("Copy {what} to {dest}{on_server}"),
-            (JobKind::Move, _) if self.same_side => format!("Move {what} to {dest}{on_server}"),
-            (JobKind::Copy, Side::Local) => format!("Upload {what} to {dest}"),
-            (JobKind::Copy, Side::Remote) => format!("Download {what} to {dest}"),
-            (JobKind::Move, Side::Local) => format!("Move {what} to the server, {dest}"),
-            (JobKind::Move, Side::Remote) => format!("Move {what} to this computer, {dest}"),
-            (JobKind::Delete, Side::Local) => format!("Delete {what} from this computer"),
-            (JobKind::Delete, Side::Remote) => format!("Delete {what} from the server"),
-        }
+        crate::tr!(
+            "job-title",
+            action = action,
+            what = self.subject(),
+            dest = self.dest_dir.to_string()
+        )
     }
 
     /// The pane the sources are in (left is [`Side::Local`], right [`Side::Remote`]). In
@@ -237,7 +236,7 @@ impl Job {
                 || single.to_string(),
                 |name| name.to_string_lossy().into_owned(),
             ),
-            many => format!("{} items", many.len()),
+            many => crate::tr!("job-items", count = many.len()),
         }
     }
 

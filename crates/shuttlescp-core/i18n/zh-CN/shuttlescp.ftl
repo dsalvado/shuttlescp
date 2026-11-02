@@ -454,3 +454,20 @@ ftp-encryption-explicit-if-available = 如可用则使用显式 FTP over TLS
 ftp-encryption-explicit = 要求显式 FTP over TLS
 ftp-encryption-implicit = 要求隐式 FTP over TLS
 ftp-encryption-none = 仅使用普通 FTP（不安全）
+
+job-title =
+    { $action ->
+        [upload] 上传 { $what } 到 { $dest }
+        [download] 下载 { $what } 到 { $dest }
+        [move-to-server] 将 { $what } 移动到服务器 { $dest }
+        [move-to-computer] 将 { $what } 移动到本机 { $dest }
+        [copy-here] 复制 { $what } 到 { $dest }
+        [copy-on-server] 在服务器上复制 { $what } 到 { $dest }
+        [move-here] 移动 { $what } 到 { $dest }
+        [move-on-server] 在服务器上移动 { $what } 到 { $dest }
+        [copy-other-server] 复制 { $what } 到另一台服务器的 { $dest }
+        [move-other-server] 移动 { $what } 到另一台服务器的 { $dest }
+        [delete-here] 从本机删除 { $what }
+       *[delete-on-server] 从服务器删除 { $what }
+    }
+job-items = { $count } 项
