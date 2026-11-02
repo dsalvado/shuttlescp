@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-11-02
+
 ### Changed
 
 - More of the interface follows the chosen language: error messages (connecting,
@@ -446,7 +448,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/dsalvado/shuttlescp/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/dsalvado/shuttlescp/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/dsalvado/shuttlescp/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/dsalvado/shuttlescp/compare/v0.19.1...v0.19.2
