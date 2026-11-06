@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-11-06
+
+### Security
+
+- Updated the SSH library (russh 0.65). It fixes two problems a malicious SFTP or SCP
+  server could cause: making ShuttleSCP use more and more memory, and stalling an upload
+  forever. It also stops a CPU core from spinning during some logins.
+- Updated the PuTTY agent library on Windows (pageant 0.2.5), which fixes unbounded
+  memory use with a misbehaving agent.
+
 ## [0.21.1] - 2026-11-02
 
 ### Changed
@@ -448,7 +458,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.2...HEAD
+[0.21.2]: https://github.com/dsalvado/shuttlescp/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/dsalvado/shuttlescp/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/dsalvado/shuttlescp/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/dsalvado/shuttlescp/compare/v0.19.2...v0.20.0
