@@ -131,6 +131,10 @@ pub struct Job {
 pub struct Verify {
     /// Check copies at all.
     pub enabled: bool,
+    /// When a server cannot compute a checksum: read the file back through the
+    /// connection and hash it here, if it is not larger than this many bytes. `None`:
+    /// never (it would cost a second transfer).
+    pub read_back_up_to: Option<u64>,
 }
 
 /// What checking a copy found.
@@ -147,6 +151,9 @@ pub enum Verification {
     },
     /// Not checked, and why (e.g. the server cannot compute checksums).
     Unchecked(String),
+    /// Not checked: a server cannot compute checksums, and the file is larger than
+    /// [`Verify::read_back_up_to`]. Reading it back is still possible, on request.
+    LargeFile,
 }
 
 impl Job {

@@ -1180,7 +1180,10 @@ fn connections_follow_the_pane_the_sources_are_in() {
 /// `job`, checking each copy against its source.
 fn verified(job: Job) -> Job {
     Job {
-        verify: Verify { enabled: true },
+        verify: Verify {
+            enabled: true,
+            read_back_up_to: None,
+        },
         ..job
     }
 }
@@ -1247,7 +1250,8 @@ async fn a_copy_that_differs_from_its_source_is_reported_with_both_checksums() {
     };
 
     // Act
-    let found = copy::verify_copy(&item, &Endpoint::Local, &Endpoint::Local).await;
+    let found =
+        copy::verify_copy(&item, &Endpoint::Local, &Endpoint::Local, Verify::default()).await;
 
     // Assert
     let source = crate::checksum::local_sha256(src.join("top.txt")).await;

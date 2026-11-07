@@ -843,7 +843,10 @@ async fn downloads_are_verified_where_the_server_can() {
         std::fs::create_dir(&back).expect("create");
         let on_server = SidePath::Remote(server.dir.join(name));
         let download = Job {
-            verify: Verify { enabled: true },
+            verify: Verify {
+                enabled: true,
+                read_back_up_to: None,
+            },
             ..job(
                 JobKind::Copy,
                 Side::Remote,
@@ -888,4 +891,105 @@ async fn downloads_are_verified_where_the_server_can() {
             other => panic!("{var}: {other:?}"),
         }
     }
+}
+
+/// Run `job` checking its copies as `verify` says; how the job ended, and what each
+/// check found.
+async fn run_verifying(
+    job: Job,
+    verify: Verify,
+    remote: &Remote,
+) -> (JobSummary, Vec<Verification>) {
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&found);
+    let job = Job { verify, ..job };
+    let summary = run(
+        job,
+        Some(remote.clone()),
+        None,
+        CancelFlag::default(),
+        move |event| {
+            if let TransferEvent::Verified { verification, .. } = event {
+                seen.lock().expect("lock").push(verification);
+            }
+        },
+    )
+    .await;
+    let found = found.lock().expect("lock").clone();
+    (summary, found)
+}
+
+/// A server that cannot compute checksums (the SFTP-only account): copies up to the
+/// read-back limit are checked by reading them back; larger ones, or with reading back
+/// off, are left unchecked.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn copies_are_read_back_up_to_the_limit() {
+    // Arrange: a 700 kB file here.
+    const SIZE: usize = 700_000;
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let name = "read-back.bin";
+    std::fs::write(temp.path().join(name), pattern(SIZE)).expect("write");
+    let expected = shuttlescp_core::checksum::local_sha256(temp.path().join(name))
+        .await
+        .expect("checksum");
+    let verify = |read_back_up_to| Verify {
+        enabled: true,
+        read_back_up_to,
+    };
+    let on_server = SidePath::Remote(server.dir.join(name));
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(temp.path().join(name))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let download = |into: &str| {
+        let back = temp.path().join(into);
+        std::fs::create_dir(&back).expect("create");
+        job(
+            JobKind::Copy,
+            Side::Remote,
+            vec![on_server.clone()],
+            SidePath::Local(back),
+        )
+    };
+
+    // Act
+    let up = run_verifying(upload, verify(Some(1_000_000)), &remote).await;
+    let read_back = run_verifying(download("a"), verify(Some(1_000_000)), &remote).await;
+    let too_large = run_verifying(download("b"), verify(Some(100_000)), &remote).await;
+    let never = run_verifying(download("c"), verify(None), &remote).await;
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert: all done; checked as the limit says.
+    for (what, (summary, _)) in [
+        ("up", &up),
+        ("read back", &read_back),
+        ("too large", &too_large),
+        ("never", &never),
+    ] {
+        assert!(summary.is_complete(), "{what}: {summary:?}");
+    }
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+    assert_eq!(up.1, vec![Verification::Matched(expected)], "upload");
+    assert_eq!(
+        read_back.1,
+        vec![Verification::Matched(expected)],
+        "download"
+    );
+    assert_eq!(too_large.1, vec![Verification::LargeFile], "over the limit");
+    assert!(
+        matches!(never.1.as_slice(), [Verification::Unchecked(_)]),
+        "never: {:?}",
+        never.1
+    );
 }

@@ -5,6 +5,7 @@ use std::io;
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// A file's SHA-256 checksum. Shown as `sha256sum` prints it: 64 lowercase hex digits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +69,23 @@ pub async fn local_sha256(path: PathBuf) -> io::Result<Checksum> {
     .map_err(io::Error::other)?
 }
 
+/// The checksum of everything `reader` gives, such as a file read from a server.
+///
+/// # Errors
+///
+/// Returns the error of reading
+pub(crate) async fn sha256_of(mut reader: impl AsyncRead + Unpin) -> io::Result<Checksum> {
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 256 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(Checksum(hasher.finalize().into()));
+        }
+        hasher.update(&buffer[..read]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +109,19 @@ mod tests {
         // Assert
         assert_eq!(empty.expect("hash").to_string(), EMPTY);
         assert_eq!(abc.expect("hash").to_string(), ABC);
+    }
+
+    #[tokio::test]
+    async fn a_stream_hashes_like_the_same_bytes_in_a_file() {
+        // More than one buffer's worth, so the pieces must join up.
+        let bytes: Vec<u8> = (0..700_000_u32).map(|i| (i % 251) as u8).collect();
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("f"), &bytes).expect("write");
+        assert_eq!(
+            sha256_of(bytes.as_slice()).await.expect("hash"),
+            local_sha256(dir.path().join("f")).await.expect("hash")
+        );
+        assert_eq!(sha256_of(&b"abc"[..]).await.expect("hash").to_string(), ABC);
     }
 
     #[tokio::test]

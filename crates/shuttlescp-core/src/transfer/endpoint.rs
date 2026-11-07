@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite};
 
-use crate::checksum::{Checksum, local_sha256};
+use crate::checksum::{Checksum, local_sha256, sha256_of};
 use crate::path::{RemotePath, SidePath};
 use crate::remote::{Remote, RemoteMeta};
 
@@ -108,6 +108,19 @@ impl Endpoint {
                 .map_err(|error| crate::i18n::cannot("read", path.display(), &error)),
             Target::Remote(remote, path) => remote.sha256(path).await,
         }
+    }
+
+    /// The SHA-256 of a file, by reading all of it here (from a server: a second
+    /// transfer of it).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of opening or reading it
+    pub(super) async fn read_back_sha256(&self, path: &SidePath) -> Result<Checksum, String> {
+        let reader = self.open_at(path, 0).await?;
+        sha256_of(reader)
+            .await
+            .map_err(|error| crate::i18n::cannot("read", path, &error))
     }
 
     /// Where this side's files are, for the log: "this computer" or the server.

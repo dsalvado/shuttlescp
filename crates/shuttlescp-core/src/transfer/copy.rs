@@ -15,6 +15,7 @@ use super::{
     CancelFlag, ConflictAnswer, ConflictChoice, ConflictReply, FILES_AT_ONCE, ItemKind,
     ItemOutcome, Job, JobKind, PlanItem, Sink, TransferEvent, Verification, Verify,
 };
+use crate::checksum::Checksum;
 use crate::format::format_size;
 
 /// Bytes read and written per step of a file copy.
@@ -626,7 +627,7 @@ async fn copy_file(
         tracing::debug!("{error}");
     }
     if verify.enabled {
-        let verification = verify_copy(item, src, dst).await;
+        let verification = verify_copy(item, src, dst, verify).await;
         let mismatched = matches!(verification, Verification::Mismatched { .. });
         sink(TransferEvent::Verified {
             id: item.id,
@@ -649,42 +650,108 @@ async fn copy_file(
 }
 
 /// Check the copy at `item.dest` against `item.source` by their SHA-256 checksums
-/// (both asked for at once), and write what was found in the log, with the values.
-pub(super) async fn verify_copy(item: &PlanItem, src: &Endpoint, dst: &Endpoint) -> Verification {
+/// (both sides at once), and write what was found in the log, with the values.
+pub(super) async fn verify_copy(
+    item: &PlanItem,
+    src: &Endpoint,
+    dst: &Endpoint,
+    verify: Verify,
+) -> Verification {
     let started = Instant::now();
-    let (source, copy) = tokio::join!(src.sha256(&item.source), dst.sha256(&item.dest));
-    let (from, to) = (src.place(), dst.place());
+    let limit = verify.read_back_up_to;
+    let (source, copy) = tokio::join!(
+        checksum_for_check(src, &item.source, item.size, limit),
+        checksum_for_check(dst, &item.dest, item.size, limit),
+    );
     let took = started.elapsed().as_secs_f64();
     let what = format!("{} -> {}", item.source, item.dest);
+    let sides = format!(
+        "{}; {}; {took:.1} s",
+        describe_checksum("source", src, &source),
+        describe_checksum("copy", dst, &copy)
+    );
     match (source, copy) {
-        (Ok(source), Ok(copy)) if source == copy => {
-            tracing::info!(
-                "verified {what}: SHA-256 {source} (source on {from}, copy on {to}; {took:.1} s)"
-            );
+        (Ok((source, _)), Ok((copy, _))) if source == copy => {
+            tracing::info!("verified {what}: {sides}");
             Verification::Matched(source)
         }
-        (Ok(source), Ok(copy)) => {
-            tracing::warn!(
-                "copy differs from its source, {what}: SHA-256 {source} (source on {from}), \
-                 {copy} (copy on {to}; {took:.1} s)"
-            );
+        (Ok((source, _)), Ok((copy, _))) => {
+            tracing::warn!("copy differs from its source, {what}: {sides}");
             Verification::Mismatched { source, copy }
         }
-        (Err(reason), Ok(copy)) => {
-            tracing::info!(
-                "not verified {what}: source on {from}: {reason} (copy on {to}: SHA-256 {copy})"
-            );
+        (Err(NoChecksum::Failed(reason)), _) | (_, Err(NoChecksum::Failed(reason))) => {
+            tracing::info!("not verified {what}: {sides}");
             Verification::Unchecked(reason)
         }
-        (Ok(source), Err(reason)) => {
-            tracing::info!(
-                "not verified {what}: copy on {to}: {reason} (source on {from}: SHA-256 {source})"
-            );
-            Verification::Unchecked(reason)
+        _ => {
+            tracing::info!("not verified {what}: {sides}");
+            Verification::LargeFile
         }
-        (Err(reason), Err(_)) => {
-            tracing::info!("not verified {what}: {reason}");
-            Verification::Unchecked(reason)
+    }
+}
+
+/// How a checksum for checking a copy was had.
+enum How {
+    /// Computed where the file is (by the server, or here for this computer's files).
+    Computed,
+    /// The server could not: the file was read back here and hashed.
+    ReadBack,
+}
+
+/// Why a side of a copy has no checksum.
+enum NoChecksum {
+    /// It could not be had, for this reason.
+    Failed(String),
+    /// The server cannot compute it, and the file is larger than what is read back.
+    Large,
+}
+
+/// The checksum of a file for checking a copy: computed where it is, or, for a server
+/// that cannot, by reading it back if `read_back_up_to` allows its `size`.
+async fn checksum_for_check(
+    endpoint: &Endpoint,
+    path: &SidePath,
+    size: u64,
+    read_back_up_to: Option<u64>,
+) -> Result<(Checksum, How), NoChecksum> {
+    let reason = match endpoint.sha256(path).await {
+        Ok(checksum) => return Ok((checksum, How::Computed)),
+        Err(reason) => reason,
+    };
+    // Reading back is for servers; here, the file was just read.
+    if matches!(endpoint, Endpoint::Local) {
+        return Err(NoChecksum::Failed(reason));
+    }
+    match read_back_up_to {
+        None => Err(NoChecksum::Failed(reason)),
+        Some(limit) if size > limit => Err(NoChecksum::Large),
+        Some(_) => {
+            tracing::debug!("{path}: {reason}; reading it back to check it");
+            endpoint
+                .read_back_sha256(path)
+                .await
+                .map(|checksum| (checksum, How::ReadBack))
+                .map_err(NoChecksum::Failed)
+        }
+    }
+}
+
+/// One side of a check, for the log, e.g. "copy SHA-256 9f86…, read back from
+/// example.com".
+fn describe_checksum(
+    side: &str,
+    endpoint: &Endpoint,
+    found: &Result<(Checksum, How), NoChecksum>,
+) -> String {
+    let place = endpoint.place();
+    match found {
+        Ok((checksum, How::Computed)) => format!("{side} SHA-256 {checksum}, computed on {place}"),
+        Ok((checksum, How::ReadBack)) => {
+            format!("{side} SHA-256 {checksum}, read back from {place}")
+        }
+        Err(NoChecksum::Failed(reason)) => format!("{side} on {place}: {reason}"),
+        Err(NoChecksum::Large) => {
+            format!("{side} on {place}: no checksum there, and larger than what is read back")
         }
     }
 }
