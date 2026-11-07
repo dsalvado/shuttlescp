@@ -191,6 +191,8 @@ struct RemoteInner {
     backend: Backend,
     /// The site's [`Site::files_at_once`].
     files_at_once: usize,
+    /// The connection for transfers, once opened (see [`Remote::for_transfers`]).
+    transfers: tokio::sync::OnceCell<Remote>,
 }
 
 /// The protocol-specific half of a [`Remote`].
@@ -228,6 +230,45 @@ impl Remote {
     /// The user's home folder on the server, where browsing starts.
     pub fn home(&self) -> &RemotePath {
         &self.0.home
+    }
+
+    /// The connection to run transfers on. For SFTP (and SCP) a second one, opened the
+    /// first time and kept: on one connection, browsing waits behind a transfer's queued
+    /// reads (seconds per request on a slow line). For FTP, which already opens
+    /// connections as needed, or if the second one cannot be opened, this one.
+    pub async fn for_transfers(&self) -> Remote {
+        let Backend::Sftp(sftp) = &self.0.backend else {
+            return self.clone();
+        };
+        let opened = self
+            .0
+            .transfers
+            .get_or_try_init(|| async {
+                let twin = sftp.twin().await?;
+                tracing::info!(
+                    "opened a second connection to {} for transfers",
+                    self.0.host
+                );
+                Ok::<_, ConnectError>(Remote(Arc::new(RemoteInner {
+                    host: self.0.host.clone(),
+                    home: self.0.home.clone(),
+                    backend: Backend::Sftp(Box::new(twin)),
+                    files_at_once: self.0.files_at_once,
+                    transfers: tokio::sync::OnceCell::new(),
+                })))
+            })
+            .await;
+        match opened {
+            Ok(transfers) => transfers.clone(),
+            Err(error) => {
+                tracing::warn!(
+                    "cannot open a second connection to {} for transfers ({error}); they \
+                     share the one for browsing",
+                    self.0.host
+                );
+                self.clone()
+            }
+        }
     }
 
     /// How many files to copy at the same time to or from this server (the site's
@@ -460,5 +501,6 @@ pub async fn connect(
         home,
         backend,
         files_at_once: site.files_at_once(),
+        transfers: tokio::sync::OnceCell::new(),
     })))
 }

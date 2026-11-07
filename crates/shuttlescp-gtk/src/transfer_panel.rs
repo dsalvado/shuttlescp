@@ -1048,6 +1048,15 @@ impl TransferPanel {
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {
+                    // Transfers get their own connection, so browsing does not wait.
+                    let remote = match remote {
+                        Some(remote) => Some(remote.for_transfers().await),
+                        None => None,
+                    };
+                    let dest_remote = match dest_remote {
+                        Some(remote) => Some(remote.for_transfers().await),
+                        None => None,
+                    };
                     transfer::run(job, remote, dest_remote, cancel, move |event| {
                         // Fails only once the panel is gone, when nobody needs the event.
                         let _ = out.send((id, event));

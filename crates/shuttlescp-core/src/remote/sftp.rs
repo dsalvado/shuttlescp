@@ -95,9 +95,10 @@ impl client::Handler for HostKeyCheck {
 
 /// An open SFTP session. When its connection turns out to be lost, it logs in again.
 pub(super) struct Sftp {
-    /// Where and how to log in again (the password stays in memory, as for FTP).
+    /// Where and how to log in again (the password stays in memory, as for FTP; shared
+    /// with the session's [`Sftp::twin`]).
     site: Site,
-    credentials: Credentials,
+    credentials: Arc<Credentials>,
     /// The connection in use, replaced by a new one once it is lost.
     link: tokio::sync::Mutex<Arc<Link>>,
 }
@@ -426,10 +427,27 @@ pub(super) async fn connect(
     let (link, home) = open_link(site, &credentials, approved_key).await?;
     let sftp = Sftp {
         site: site.clone(),
-        credentials,
+        credentials: Arc::new(credentials),
         link: tokio::sync::Mutex::new(Arc::new(link)),
     };
     Ok((sftp, home))
+}
+
+impl Sftp {
+    /// A second session to the same server with the same login, on a connection of its
+    /// own (its host key is known by now).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`ConnectError`] of the login
+    pub(super) async fn twin(&self) -> Result<Sftp, ConnectError> {
+        let (link, _) = open_link(&self.site, &self.credentials, None).await?;
+        Ok(Sftp {
+            site: self.site.clone(),
+            credentials: Arc::clone(&self.credentials),
+            link: tokio::sync::Mutex::new(Arc::new(link)),
+        })
+    }
 }
 
 /// One connection for [`connect`], or to replace a lost one: the same steps and

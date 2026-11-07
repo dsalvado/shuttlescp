@@ -529,6 +529,69 @@ impl TestLink {
     }
 }
 
+/// Browsing an SFTP server stays quick while a slow download runs: transfers have a
+/// connection of their own. On one connection, a listing waits behind the download's
+/// queued reads, about 20 s at 200 kB/s.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn sftp_browsing_does_not_wait_for_a_download() {
+    // Arrange: a 4 MiB file on the server, downloading through a 200 kB/s link.
+    const SIZE: usize = 4 * 1024 * 1024;
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let name = format!("browse-{stamp}.bin");
+    std::fs::write(temp.path().join(&name), pattern(SIZE)).expect("write");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(temp.path().join(&name))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    let link = TestLink::start(&server, Some(200_000)).await;
+    let browsing = link.to(&server).connect().await;
+    let back = temp.path().join("back");
+    std::fs::create_dir(&back).expect("create");
+    let on_server = SidePath::Remote(server.dir.join(&name));
+    let download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![on_server.clone()],
+        SidePath::Local(back.clone()),
+    );
+    let cancel = CancelFlag::default();
+    let transfers = browsing.for_transfers().await;
+    let downloading = tokio::spawn(run(download, Some(transfers), None, cancel.clone(), |_| {}));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Act: list a folder while the download runs.
+    let started = std::time::Instant::now();
+    let listing = browsing.list_dir(&server.dir).await;
+    let took = started.elapsed();
+
+    // Clean up: stop the download, delete the file.
+    cancel.cancel();
+    let _ = downloading.await;
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert
+    listing.expect("list while downloading");
+    assert!(took < Duration::from_secs(5), "the listing took {took:?}");
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+}
+
 /// A download whose connection is lost partway continues from its partial copy on a
 /// new login, and arrives whole.
 #[tokio::test(flavor = "multi_thread")]

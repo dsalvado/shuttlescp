@@ -7,6 +7,14 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- Transfers to and from an SFTP or SCP server run on a second connection of their own,
+  opened with the session's login when the first one starts. Browsing no longer waits
+  behind a running transfer: on a slow server, changing folders during a download took
+  up to minutes. If the server refuses a second connection, transfers share the
+  browsing one as before.
+
 ## [0.21.4] - 2026-11-06
 
 ### Changed
