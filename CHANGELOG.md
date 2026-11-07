@@ -7,6 +7,14 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- An SFTP session whose connection was lost logs in again by itself, instead of failing
+  every action with "session closed" until you log in again. The password stays in
+  memory for the session to do so, as it already did for FTP.
+- A file copy to or from a server that fails partway (usually a lost connection) is
+  continued from its partial copy, up to three times, before it counts as failed.
+
 ## [0.21.3] - 2026-11-06
 
 ### Fixed

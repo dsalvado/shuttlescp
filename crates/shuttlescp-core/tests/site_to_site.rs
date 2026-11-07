@@ -463,6 +463,7 @@ async fn more_files_at_once_than_the_ftp_server_allows() {
 /// A stand-in for the network between ShuttleSCP and a test server: a local port that
 /// passes each connection on to the server. It can slow down what comes back, and cut
 /// every connection at once, as a dropped line would.
+#[derive(Clone)]
 struct TestLink {
     port: u16,
     /// The tasks passing the bytes along; ending them closes both ends.
@@ -526,6 +527,83 @@ impl TestLink {
             dir: server.dir.clone(),
         }
     }
+}
+
+/// A download whose connection is lost partway continues from its partial copy on a
+/// new login, and arrives whole.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn sftp_download_continues_after_losing_the_connection() {
+    // Arrange: a 4 MiB file on the server, and a link at 500 kB/s (about 8 s for it)
+    // that drops 2 s into the download.
+    const SIZE: usize = 4 * 1024 * 1024;
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let name = format!("dropped-{stamp}.bin");
+    std::fs::write(temp.path().join(&name), pattern(SIZE)).expect("write");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(temp.path().join(&name))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    let link = TestLink::start(&server, Some(500_000)).await;
+    let linked = link.to(&server).connect().await;
+    let dropping = link.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        dropping.cut();
+    });
+
+    // Act
+    let back = temp.path().join("back");
+    std::fs::create_dir(&back).expect("create");
+    let on_server = SidePath::Remote(server.dir.join(&name));
+    let download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![on_server.clone()],
+        SidePath::Local(back.clone()),
+    );
+    let resumed_at = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&resumed_at);
+    let down = run(
+        download,
+        Some(linked.clone()),
+        None,
+        CancelFlag::default(),
+        move |event| {
+            if let TransferEvent::Resumed { from, .. } = event {
+                *seen.lock().expect("lock") = Some(from);
+            }
+        },
+    )
+    .await;
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert: it continued where the connection was lost, and arrived whole.
+    assert!(down.is_complete(), "download: {down:?}");
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+    let resumed_at = resumed_at.lock().expect("lock").expect("it was continued");
+    assert!(resumed_at > 0, "it started over");
+    assert_eq!(
+        std::fs::read(back.join(&name)).expect("read the copy"),
+        pattern(SIZE),
+        "the copy differs"
+    );
 }
 
 /// After the connection to an SFTP server is lost, the next action logs in again by
