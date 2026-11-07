@@ -1,0 +1,28 @@
+# Dependabot version updates: a pull request when a dependency has a newer release.
+#
+# Security updates come on their own, as soon as an advisory is published (they are
+# turned on in the repository's settings, not here). This file adds the ordinary
+# releases, whose bug fixes would otherwise go unnoticed. Small updates (minor and
+# patch) arrive together in one pull request a week, with each release's notes; a new
+# major version, which may need code changes, gets a pull request of its own. CI builds
+# and tests each one on Linux, macOS and Windows.
+version: 2
+updates:
+  # The Rust libraries (Cargo.toml and Cargo.lock).
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # The actions the workflows use (checkout, toolchains, ...).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
