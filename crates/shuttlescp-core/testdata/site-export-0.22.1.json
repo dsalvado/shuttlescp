@@ -1,0 +1,48 @@
+{
+  "format": "shuttlescp-sites",
+  "version": 1,
+  "encryption": {
+    "kdf": "argon2id",
+    "salt": "Y4Y9TKdHQ3oVEhy/DWk7gQ==",
+    "memory_kib": 19456,
+    "iterations": 2,
+    "parallelism": 1,
+    "cipher": "xchacha20poly1305"
+  },
+  "sites": [
+    {
+      "id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "protocol": "sftp",
+      "host": "golden-a.example",
+      "port": 22,
+      "user": "me",
+      "ftp": {
+        "encryption": "explicit_if_available",
+        "passive": true
+      },
+      "ssh": {
+        "use_agent": true,
+        "passphrase_saved": false
+      },
+      "files_at_once": 7,
+      "alias": "With password",
+      "password": "XIsQ8NivjscBqm+XkABRZKWPpHpSRbFdW7SusEb1FYjOChtjNdG0+cE5zRWE8A1op+iujuYIMQ4w7YQv+Q=="
+    },
+    {
+      "id": "f9e8d7c6b5a4938271605f4e3d2c1b0a",
+      "protocol": "ftp",
+      "host": "golden-b.example",
+      "port": 21,
+      "user": "me",
+      "ftp": {
+        "encryption": "explicit_if_available",
+        "passive": true
+      },
+      "ssh": {
+        "use_agent": true,
+        "passphrase_saved": false
+      },
+      "files_at_once": 7
+    }
+  ]
+}

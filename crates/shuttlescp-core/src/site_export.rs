@@ -702,4 +702,39 @@ mod tests {
 
         assert_eq!(ExportFile::read(&path).expect("read"), file);
     }
+
+    /// An export made by 0.22.1 (`testdata/`) still opens: library updates must not
+    /// change how keys are derived or passwords decrypted, or users' exports would be
+    /// lost. Uses the real key costs.
+    #[test]
+    fn exports_made_by_0_22_1_still_open() {
+        // Arrange
+        let text = include_str!("../testdata/site-export-0.22.1.json");
+        let file: ExportFile = serde_json::from_str(text).expect("read the export");
+
+        // Act
+        let imported =
+            import_sites(&file, Some(&secret("golden passphrase for tests"))).expect("import");
+        let wrong = import_sites(&file, Some(&secret("not the passphrase")));
+
+        // Assert
+        let [(first, first_password), (second, second_password)] = imported.as_slice() else {
+            panic!("expected two sites: {imported:?}");
+        };
+        assert_eq!(first.host, "golden-a.example");
+        assert_eq!(first.alias, "With password");
+        assert_eq!(
+            first_password
+                .as_ref()
+                .map(|password| password.expose_secret()),
+            Some("s3cret ü€ password")
+        );
+        assert_eq!(second.host, "golden-b.example");
+        assert_eq!(second.protocol, Protocol::Ftp);
+        assert!(second_password.is_none());
+        assert!(
+            matches!(wrong, Err(ExportError::WrongPassphrase)),
+            "{wrong:?}"
+        );
+    }
 }
