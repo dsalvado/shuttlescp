@@ -58,6 +58,12 @@ public static class ShuttleWindows {
 '@
 $exe = Join-Path $Folder 'bin\shuttlescp.exe'
 if (-not (Test-Path $exe)) { throw "no program at $exe" }
+# GLib's helpers for starting other programs (see build-bundle.sh): without them, opening
+# the log file, a double-clicked file or a link fails.
+foreach ($helper in 'gspawn-win64-helper.exe', 'gspawn-win64-helper-console.exe') {
+    $path = Join-Path $Folder "bin\$helper"
+    if (-not (Test-Path $path)) { throw "no $helper in bin: GLib needs it to open files and links" }
+}
 
 # Only Windows on PATH, and none of the variables that point GTK elsewhere.
 $windows = $env:SystemRoot

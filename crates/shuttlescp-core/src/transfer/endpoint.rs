@@ -111,14 +111,18 @@ impl Endpoint {
     }
 
     /// The SHA-256 of a file, by reading all of it here (from a server: a second
-    /// transfer of it).
+    /// transfer of it). `progress` gets the bytes read so far as it goes.
     ///
     /// # Errors
     ///
     /// Returns the error of opening or reading it
-    pub(super) async fn read_back_sha256(&self, path: &SidePath) -> Result<Checksum, String> {
+    pub(super) async fn read_back_sha256(
+        &self,
+        path: &SidePath,
+        progress: impl FnMut(u64),
+    ) -> Result<Checksum, String> {
         let reader = self.open_at(path, 0).await?;
-        sha256_of(reader)
+        sha256_of(reader, progress)
             .await
             .map_err(|error| crate::i18n::cannot("read", path, &error))
     }
