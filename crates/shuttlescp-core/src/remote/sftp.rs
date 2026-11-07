@@ -103,6 +103,18 @@ pub(super) struct Sftp {
 /// Longest wait for the server to say its name.
 const NAME_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Longest wait for the answer to one SFTP request. Up to 16 reads of up to 256 kB wait
+/// in line, so on a slow server the last one also waits for the 15 before it: the
+/// library's own 10 seconds failed every download slower than about 0.4 MB/s. A dead
+/// connection is noticed sooner, by the keepalives.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// When the server has sent nothing for this long, ask whether it is still there.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Unanswered keepalives in a row after which the connection counts as dead.
+const KEEPALIVES_MISSED: usize = 4;
+
 impl Sftp {
     /// The server's own name (`uname -n`), asked on a second channel of the SSH
     /// connection. `None` if the account may not run commands (SFTP-only accounts), the
@@ -319,11 +331,12 @@ pub(super) async fn connect(
         verdict: Arc::clone(&verdict),
     };
     tracing::info!("connecting to {}:{}", site.host, site.port);
-    let connecting = client::connect(
-        Arc::new(client::Config::default()),
-        (site.host.as_str(), site.port),
-        handler,
-    );
+    let config = client::Config {
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: KEEPALIVES_MISSED,
+        ..client::Config::default()
+    };
+    let connecting = client::connect(Arc::new(config), (site.host.as_str(), site.port), handler);
     let mut ssh = match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
         Err(_) => return Err(ConnectError::Timeout(site.host.clone())),
         Ok(Err(error)) => {
@@ -363,6 +376,7 @@ pub(super) async fn connect(
     let sftp = SftpSession::new(channel.into_stream())
         .await
         .map_err(|error| ConnectError::Sftp(error.to_string()))?;
+    sftp.set_timeout(REQUEST_TIMEOUT.as_secs());
     let home = sftp
         .canonicalize(".")
         .await

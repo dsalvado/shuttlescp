@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-11-06
+
+### Fixed
+
+- SFTP downloads from slow servers (below about 0.4 MB/s) no longer fail with
+  "Timeout": a request may now wait up to 2 minutes for its answer, as several wait in
+  line. Keepalives every 15 seconds still notice a dead connection within about a
+  minute.
+- Closing the window with a session open could end with a crash.
+
 ## [0.21.2] - 2026-11-06
 
 ### Security
@@ -458,7 +468,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.2...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.3...HEAD
+[0.21.3]: https://github.com/dsalvado/shuttlescp/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/dsalvado/shuttlescp/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/dsalvado/shuttlescp/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/dsalvado/shuttlescp/compare/v0.20.0...v0.21.0

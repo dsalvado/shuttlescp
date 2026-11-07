@@ -704,10 +704,12 @@ impl SimpleComponent for App {
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
         model.add_session(start_dir, window_size.width / 2, None, &sender);
         {
+            // Sessions free their places as the window closes, after the app has stopped
+            // taking messages: `input` would end the program there, `send` just fails.
             let sender = sender.clone();
-            model
-                .transfer_limit
-                .set_on_change(move || sender.input(AppMsg::TransferLimitChanged));
+            model.transfer_limit.set_on_change(move || {
+                let _ = sender.input_sender().send(AppMsg::TransferLimitChanged);
+            });
         }
         let limit_popover = transfer_limit_popover(
             model.config.transfer_limit().is_some(),
