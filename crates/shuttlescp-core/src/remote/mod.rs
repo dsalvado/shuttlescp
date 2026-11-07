@@ -195,7 +195,8 @@ struct RemoteInner {
 
 /// The protocol-specific half of a [`Remote`].
 enum Backend {
-    Sftp(sftp::Sftp),
+    /// Boxed: it keeps the whole site, to log in again with.
+    Sftp(Box<sftp::Sftp>),
     Ftp(ftp::Ftp),
 }
 
@@ -441,7 +442,7 @@ pub async fn connect(
     let (backend, home) = match site.protocol {
         Protocol::Sftp | Protocol::Scp => {
             let (sftp, home) = sftp::connect(site, credentials, approved_key).await?;
-            (Backend::Sftp(sftp), home)
+            (Backend::Sftp(Box::new(sftp)), home)
         }
         Protocol::Ftp => {
             let (ftp, home) = ftp::connect(site, credentials.password).await?;

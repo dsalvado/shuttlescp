@@ -7,6 +7,19 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-11-06
+
+### Changed
+
+- An SFTP session whose connection was lost logs in again by itself, instead of failing
+  every action with "session closed" until you log in again. The password stays in
+  memory for the session to do so, as it already did for FTP.
+- A file copy to or from a server that fails partway (usually a lost connection) is
+  continued from its partial copy, up to three times, before it counts as failed.
+- A GTK message repeated right after itself goes into the log once, followed by how
+  many times it repeated. At the trace log level, GTK's "snapshot symbolic icon" line
+  made up almost all of the log.
+
 ## [0.21.3] - 2026-11-06
 
 ### Fixed
@@ -468,7 +481,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.3...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.4...HEAD
+[0.21.4]: https://github.com/dsalvado/shuttlescp/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/dsalvado/shuttlescp/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/dsalvado/shuttlescp/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/dsalvado/shuttlescp/compare/v0.21.0...v0.21.1

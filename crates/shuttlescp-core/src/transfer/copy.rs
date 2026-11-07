@@ -45,6 +45,27 @@ impl From<ItemOutcome> for FileEnd {
     }
 }
 
+/// Times a file to or from a server is continued from its partial copy after failing
+/// partway (usually a lost connection, which the next request logs in again for).
+const PARTWAY_TRIES: u32 = 3;
+/// Wait before each of those, so a lost connection is noticed as lost.
+const PARTWAY_PAUSE: Duration = Duration::from_secs(2);
+
+/// Why [`copy_contents`] stopped before the end.
+enum Unfinished {
+    /// How the file's copy ended (including failing to open it: opening already logs
+    /// in again when the connection was lost).
+    End(FileEnd),
+    /// Reading or writing failed partway, with this message.
+    Partway(String),
+}
+
+impl From<ItemOutcome> for Unfinished {
+    fn from(outcome: ItemOutcome) -> Self {
+        Self::End(outcome.into())
+    }
+}
+
 /// Where one file copy's time went.
 #[derive(Debug, Clone, Copy, Default)]
 struct FileTimes {
@@ -534,37 +555,57 @@ async fn copy_file(
 ) -> FileEnd {
     let started = Instant::now();
     let partial = partial_path(&item.dest);
-    let offset = resume_offset(item, src, dst, &partial).await;
-    if offset > 0 {
-        tracing::info!("resuming {} at {offset} of {} bytes", item.dest, item.size);
-    } else {
-        tracing::debug!("copying {} to {}", item.source, item.dest);
-    }
-    let mut took = match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
-        Ok(took) => took,
-        Err(FileEnd::Paused(at)) => {
-            tracing::info!("paused {} at {at} of {} bytes", item.dest, item.size);
-            return FileEnd::Paused(at);
+    let with_server = matches!(src, Endpoint::Remote(_)) || matches!(dst, Endpoint::Remote(_));
+    let (mut have, mut tries) = (item.partial, 0);
+    let (mut took, offset) = loop {
+        let offset = resume_offset(item, have, src, dst, &partial).await;
+        if offset > 0 {
+            tracing::info!("resuming {} at {offset} of {} bytes", item.dest, item.size);
+        } else {
+            tracing::debug!("copying {} to {}", item.source, item.dest);
         }
-        Err(FileEnd::Outcome(ItemOutcome::Cancelled)) if cancel.is_paused() => {
-            // Paused: the partial copy is what resuming continues from.
-            tracing::info!("paused {} at its partial copy", item.dest);
-            return ItemOutcome::Cancelled.into();
-        }
-        Err(FileEnd::Outcome(outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped))) => {
-            // Cancelling (or stopping this file) means the user wants the copy gone,
-            // not kept for later.
-            let _ = dst.remove_file(&partial).await;
-            if outcome == ItemOutcome::Stopped {
-                tracing::info!("stopped by the user: {}", item.source);
+        match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
+            Ok(took) => break (took, offset),
+            Err(Unfinished::Partway(error)) if with_server && tries < PARTWAY_TRIES => {
+                tries += 1;
+                tracing::warn!(
+                    "{error}; continuing from the partial copy ({tries} of {PARTWAY_TRIES})"
+                );
+                tokio::time::sleep(PARTWAY_PAUSE).await;
+                have = dst.stat(&partial, false).await.map_or(0, |node| node.size);
             }
-            return outcome.into();
-        }
-        Err(FileEnd::Outcome(outcome)) => {
-            if let ItemOutcome::Failed(error) = &outcome {
+            Err(Unfinished::Partway(error)) => {
                 tracing::warn!("{error}; the partial copy is kept for resuming");
+                return ItemOutcome::Failed(error).into();
             }
-            return outcome.into();
+            Err(Unfinished::End(FileEnd::Paused(at))) => {
+                tracing::info!("paused {} at {at} of {} bytes", item.dest, item.size);
+                return FileEnd::Paused(at);
+            }
+            Err(Unfinished::End(FileEnd::Outcome(ItemOutcome::Cancelled)))
+                if cancel.is_paused() =>
+            {
+                // Paused: the partial copy is what resuming continues from.
+                tracing::info!("paused {} at its partial copy", item.dest);
+                return ItemOutcome::Cancelled.into();
+            }
+            Err(Unfinished::End(FileEnd::Outcome(
+                outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped),
+            ))) => {
+                // Cancelling (or stopping this file) means the user wants the copy gone,
+                // not kept for later.
+                let _ = dst.remove_file(&partial).await;
+                if outcome == ItemOutcome::Stopped {
+                    tracing::info!("stopped by the user: {}", item.source);
+                }
+                return outcome.into();
+            }
+            Err(Unfinished::End(FileEnd::Outcome(outcome))) => {
+                if let ItemOutcome::Failed(error) = &outcome {
+                    tracing::warn!("{error}; the partial copy is kept for resuming");
+                }
+                return outcome.into();
+            }
         }
     };
     let finishing = Instant::now();
@@ -626,10 +667,16 @@ fn log_copied(item: &PlanItem, offset: u64, took: Duration, parts: FileTimes, mo
     );
 }
 
-/// Where to continue an earlier partial copy: its size, if it is not longer than the
-/// source and its last bytes match the source's; otherwise 0 (start over).
-async fn resume_offset(item: &PlanItem, src: &Endpoint, dst: &Endpoint, partial: &SidePath) -> u64 {
-    let offset = item.partial;
+/// Where to continue an earlier partial copy of `offset` bytes: there, if it is not
+/// longer than the source and its last bytes match the source's; otherwise 0 (start
+/// over).
+async fn resume_offset(
+    item: &PlanItem,
+    offset: u64,
+    src: &Endpoint,
+    dst: &Endpoint,
+    partial: &SidePath,
+) -> u64 {
     if offset == 0 || offset > item.size {
         return 0;
     }
@@ -658,7 +705,8 @@ async fn resume_offset(item: &PlanItem, src: &Endpoint, dst: &Endpoint, partial:
 ///
 /// # Errors
 ///
-/// Returns how the copy ended when it did not complete: an outcome, or paused
+/// Returns why the copy did not complete: how it ended (an outcome, or paused), or
+/// that it failed partway
 async fn copy_contents(
     item: &PlanItem,
     src: &Endpoint,
@@ -667,7 +715,7 @@ async fn copy_contents(
     offset: u64,
     cancel: &CancelFlag,
     sink: &Sink,
-) -> Result<FileTimes, FileEnd> {
+) -> Result<FileTimes, Unfinished> {
     let failed = ItemOutcome::Failed;
     let opening = Instant::now();
     let mut reader = src.open_at(&item.source, offset).await.map_err(failed)?;
@@ -702,18 +750,24 @@ async fn copy_contents(
                 ItemOutcome::Failed(crate::i18n::cannot("finish", partial, &error))
             })?;
             sink(TransferEvent::Progress { id: item.id, done });
-            return Err(FileEnd::Paused(done));
+            return Err(Unfinished::End(FileEnd::Paused(done)));
         }
-        let read = reader.read(&mut buffer).await.map_err(|error| {
-            ItemOutcome::Failed(crate::i18n::cannot("read", &item.source, &error))
-        })?;
+        let read = match reader.read(&mut buffer).await {
+            Ok(read) => read,
+            Err(error) => {
+                // What was written stays in the partial copy, to continue from.
+                let _ = writer.shutdown().await;
+                let error = crate::i18n::cannot("read", &item.source, &error);
+                return Err(Unfinished::Partway(error));
+            }
+        };
         if read == 0 {
             break;
         }
         writer
             .write_all(&buffer[..read])
             .await
-            .map_err(|error| ItemOutcome::Failed(crate::i18n::cannot("write", partial, &error)))?;
+            .map_err(|error| Unfinished::Partway(crate::i18n::cannot("write", partial, &error)))?;
         done += read as u64;
         if reported.elapsed() >= PROGRESS_INTERVAL {
             sink(TransferEvent::Progress { id: item.id, done });
@@ -724,7 +778,7 @@ async fn copy_contents(
     writer
         .shutdown()
         .await
-        .map_err(|error| ItemOutcome::Failed(crate::i18n::cannot("finish", partial, &error)))?;
+        .map_err(|error| Unfinished::Partway(crate::i18n::cannot("finish", partial, &error)))?;
     sink(TransferEvent::Progress { id: item.id, done });
     Ok(FileTimes {
         open,
