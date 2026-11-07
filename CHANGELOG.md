@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-11-06
+
 ### Changed
 
 - An SFTP session whose connection was lost logs in again by itself, instead of failing
@@ -479,7 +481,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.3...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.4...HEAD
+[0.21.4]: https://github.com/dsalvado/shuttlescp/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/dsalvado/shuttlescp/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/dsalvado/shuttlescp/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/dsalvado/shuttlescp/compare/v0.21.0...v0.21.1
