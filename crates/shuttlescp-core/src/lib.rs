@@ -19,6 +19,7 @@
 //! * [`about`] - the app's name, description and build details
 
 pub mod about;
+pub mod checksum;
 pub mod config;
 pub mod disks;
 pub mod entry;
