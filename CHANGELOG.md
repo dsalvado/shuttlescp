@@ -7,6 +7,13 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows: Help › Open Log File, double-clicking a local file and opening links failed
+  with "Failed to execute helper program" (since 0.18). The installer now includes the
+  helper programs GLib uses to start other programs, and the release check fails if
+  they are missing.
+
 ## [0.22.0] - 2026-11-07
 
 ### Added

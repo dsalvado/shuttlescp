@@ -68,6 +68,11 @@ done | awk -v bin="$PREFIX/bin/" 'index($3, bin) == 1 { print $3 }' | sort -u |
         cp "$dll" "$OUT/bin/"
     done
 
+# GLib starts other programs (opening the log file, a double-clicked file, a link)
+# through these helpers, which it looks for next to its DLL. They are programs it runs
+# by name, not DLLs anything links to, so ldd does not list them.
+cp "$PREFIX/bin/gspawn-win64-helper.exe" "$PREFIX/bin/gspawn-win64-helper-console.exe" "$OUT/bin/"
+
 # 5. GTK's settings schemas (the file and colour choosers keep their settings there).
 cp "$PREFIX/share/glib-2.0/schemas/"org.gtk.gtk4.Settings.*.gschema.xml "$OUT/share/glib-2.0/schemas/"
 glib-compile-schemas "$OUT/share/glib-2.0/schemas"
