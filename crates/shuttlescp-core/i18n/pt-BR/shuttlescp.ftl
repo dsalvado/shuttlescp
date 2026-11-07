@@ -410,6 +410,16 @@ login-export = Exportar...
 login-export-tooltip = Salvar todos os sites em um arquivo para outro computador
 login-login-tooltip = Conectar ao site escolhido
 login-files-at-once-usual = (normalmente { $count })
+login-verify = Verificar cópias:
+login-verify-tooltip = Se as cópias de e para este servidor são comparadas com os originais. Somente somas de verificação: só onde o servidor consegue calculá-las, nunca relendo a cópia (melhor para servidores lentos).
+login-verify-same = Igual às Preferências
+login-verify-checksums = Somente somas de verificação
+login-verify-off = Desativado
+preferences-verify = _Verificar as cópias com os originais
+preferences-read-back = _Reler arquivos de até:
+preferences-read-back-note = Se um servidor não consegue calcular somas de verificação, a cópia é verificada relendo-a: uma segunda transferência.
+read-back-never = Nunca
+read-back-any-size = Qualquer tamanho
 
 login-unfinished-none = Nenhuma transferência inacabada
 login-unfinished-notice =

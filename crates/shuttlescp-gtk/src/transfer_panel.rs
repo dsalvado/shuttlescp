@@ -24,10 +24,10 @@ use shuttlescp_core::format::{format_duration, format_size};
 use shuttlescp_core::path::SidePath;
 use shuttlescp_core::pending::{PendingJob, PendingTransfers};
 use shuttlescp_core::remote::Remote;
-use shuttlescp_core::sites::new_site_id;
+use shuttlescp_core::sites::{SiteVerify, new_site_id};
 use shuttlescp_core::transfer::{
     self, CancelFlag, ItemKind, ItemOutcome, Job, JobKind, JobSummary, PlanItem, RateMeter, Side,
-    TransferEvent,
+    TransferEvent, Verify,
 };
 
 use crate::conflict_dialog;
@@ -220,6 +220,8 @@ pub struct PanelConnection {
     pub remote: Remote,
     /// The server's name, for the titles of site-to-site jobs.
     pub name: String,
+    /// The site's choice for checking copies.
+    pub verify: SiteVerify,
     /// In a site-to-site session, the left pane's server (the fields above are the right
     /// pane's).
     pub left: Option<LeftConnection>,
@@ -234,6 +236,8 @@ pub struct LeftConnection {
     pub remote: Remote,
     /// The server's name, for the titles of site-to-site jobs.
     pub name: String,
+    /// The site's choice for checking copies.
+    pub verify: SiteVerify,
 }
 
 /// Messages handled by the transfers panel.
@@ -502,6 +506,8 @@ pub struct TransferPanel {
     session: SessionId,
     /// The limit on transfers running at once, shared by every session.
     limit: Rc<TransferLimit>,
+    /// How the Preferences say copies are checked, shared by every session.
+    verify: Rc<Cell<Verify>>,
 }
 
 /// What a transfer panel starts with.
@@ -510,6 +516,8 @@ pub struct TransferPanelInit {
     pub session: SessionId,
     /// The limit on transfers running at once, shared by every session.
     pub limit: Rc<TransferLimit>,
+    /// How the Preferences say copies are checked, shared by every session.
+    pub verify: Rc<Cell<Verify>>,
     /// Where unfinished transfers are recorded (shared by all sessions).
     pub pending: Rc<PendingStore>,
     /// Whether "Hide finished files" starts ticked (the user's last choice).
@@ -586,6 +594,7 @@ impl Component for TransferPanel {
         let TransferPanelInit {
             session,
             limit,
+            verify,
             pending,
             hide_finished,
         } = init;
@@ -654,6 +663,7 @@ impl Component for TransferPanel {
             next_shelf: 0,
             session,
             limit,
+            verify,
         };
         let (placeholder, banner, banner_text, list) = (
             &model.placeholders[0],
@@ -1047,6 +1057,20 @@ impl TransferPanel {
         cancel: CancelFlag,
         sender: &ComponentSender<Self>,
     ) {
+        // Checked as the Preferences say now (also for a resumed job), each of the
+        // session's sites making it stricter.
+        let sites: Vec<SiteVerify> = self
+            .connection
+            .iter()
+            .flat_map(|connection| {
+                std::iter::once(connection.verify)
+                    .chain(connection.left.as_ref().map(|left| left.verify))
+            })
+            .collect();
+        let job = Job {
+            verify: self.verify.get().for_sites(&sites),
+            ..job
+        };
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {

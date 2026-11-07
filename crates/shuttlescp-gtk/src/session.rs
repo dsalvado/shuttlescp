@@ -25,8 +25,8 @@ use shuttlescp_core::format::shorten_middle;
 use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
-use shuttlescp_core::sites::Site;
-use shuttlescp_core::transfer::{Job, JobKind, Side};
+use shuttlescp_core::sites::{Site, SiteVerify};
+use shuttlescp_core::transfer::{Job, JobKind, Side, Verify};
 
 use crate::app::{App, AppMsg, not_connected};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
@@ -83,6 +83,8 @@ pub struct LeftServer {
     pub dir: RemotePath,
     /// The open connection (the left pane holds it too).
     remote: Remote,
+    /// The site's choice for checking copies.
+    verify: SiteVerify,
 }
 
 /// A session tab and everything that belongs to it.
@@ -140,6 +142,8 @@ pub struct SessionInit<'a> {
     pub pending: Rc<PendingStore>,
     /// The limit on transfers running at once, shared by every session.
     pub transfer_limit: Rc<TransferLimit>,
+    /// How the Preferences say copies are checked, shared by every session.
+    pub verify: Rc<Cell<Verify>>,
     /// Initial position of the left/right divider, in pixels.
     pub split_position: i32,
     /// Whether the transfer list starts hiding finished files.
@@ -161,6 +165,7 @@ impl Session {
             last_dir_on_disk,
             pending,
             transfer_limit,
+            verify,
             split_position,
             hide_finished,
             left,
@@ -230,6 +235,7 @@ impl Session {
             .launch(TransferPanelInit {
                 session: id,
                 limit: transfer_limit,
+                verify,
                 pending,
                 hide_finished,
             })
@@ -295,6 +301,7 @@ impl Session {
                 site_id: site.id.clone(),
                 host: remote.host().to_owned(),
                 dir: remote.home().clone(),
+                verify: site.verify,
                 remote,
             }),
             right_half,
@@ -441,10 +448,12 @@ impl Session {
                 site_id: site.id.clone(),
                 remote: remote.clone(),
                 name: remote.host().to_owned(),
+                verify: site.verify,
                 left: self.left_server.as_ref().map(|left| LeftConnection {
                     site_id: left.site_id.clone(),
                     remote: left.remote.clone(),
                     name: left.host.clone(),
+                    verify: left.verify,
                 }),
             })));
         self.local_pane.emit(FilePaneMsg::Peer(Some(Peer {

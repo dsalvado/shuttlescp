@@ -156,6 +156,8 @@ pub enum LoginMsg {
     PortChanged(i32),
     /// The "Files at once" field changed.
     FilesAtOnceChanged(i32),
+    /// The "Verify copies" choice, by its position in the list.
+    VerifyChanged(u32),
     /// The Advanced section was opened or closed.
     AdvancedToggled(bool),
     /// The "Save password" box was ticked or cleared.
@@ -396,6 +398,8 @@ pub struct LoginDialog {
     port: u16,
     /// Files copied at the same time to or from the site.
     files_at_once: u8,
+    /// The site's choice for checking copies.
+    verify: SiteVerify,
     /// The Advanced section is open: by the user, or because the site changed a setting
     /// in it.
     advanced_open: bool,
@@ -870,7 +874,11 @@ impl LoginDialog {
         self.files_at_once = site
             .as_ref()
             .map_or(DEFAULT_FILES_AT_ONCE, |site| site.files_at_once);
-        self.advanced_open = self.files_at_once != DEFAULT_FILES_AT_ONCE;
+        self.verify = site
+            .as_ref()
+            .map_or_else(SiteVerify::default, |site| site.verify);
+        self.advanced_open =
+            self.files_at_once != DEFAULT_FILES_AT_ONCE || self.verify != SiteVerify::default();
         self.host
             .set_text(site.as_ref().map_or("", |site| site.host.as_str()));
         self.user
@@ -1037,9 +1045,7 @@ impl LoginDialog {
             folder: existing
                 .as_ref()
                 .map_or_else(String::new, |site| site.folder.clone()),
-            verify: existing
-                .as_ref()
-                .map_or_else(SiteVerify::default, |site| site.verify),
+            verify: self.verify,
         };
         if let Some(entry) = old_passphrase {
             sender.oneshot_command(async move {
@@ -1709,9 +1715,13 @@ impl Component for LoginDialog {
                                     },
 
                                     gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
+                                        set_margin_top: 4,
+
+                                    gtk::Box {
                                         set_orientation: gtk::Orientation::Horizontal,
                                         set_spacing: 8,
-                                        set_margin_top: 4,
                                         set_tooltip_text: Some(
                                             &tr!("login-files-at-once-tooltip"),
                                         ),
@@ -1739,6 +1749,30 @@ impl Component for LoginDialog {
                                             set_label: &tr!("login-files-at-once-usual", count = DEFAULT_FILES_AT_ONCE),
                                             add_css_class: "dim-label",
                                         },
+                                    },
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        set_tooltip_text: Some(&tr!("login-verify-tooltip")),
+
+                                        gtk::Label {
+                                            set_label: &tr!("login-verify"),
+                                        },
+                                        gtk::DropDown::from_strings(&[
+                                            &tr!("login-verify-same"),
+                                            &tr!("login-verify-checksums"),
+                                            &tr!("login-verify-off"),
+                                        ]) {
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_selected: site_verify_position(model.verify),
+                                            connect_selected_notify[sender] => move |choice| {
+                                                sender.input(LoginMsg::VerifyChanged(choice.selected()));
+                                            },
+                                        },
+                                    },
                                     },
                                 },
 
@@ -2220,6 +2254,7 @@ impl Component for LoginDialog {
             protocol: Protocol::default(),
             port: Protocol::default().default_port(),
             files_at_once: DEFAULT_FILES_AT_ONCE,
+            verify: SiteVerify::default(),
             advanced_open: false,
             ftp: FtpOptions::default(),
             save_password: true,
@@ -2484,6 +2519,7 @@ impl Component for LoginDialog {
                     self.files_at_once = count;
                 }
             }
+            LoginMsg::VerifyChanged(position) => self.verify = site_verify_at(position),
             LoginMsg::AdvancedToggled(open) => self.advanced_open = open,
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
             LoginMsg::BrowseKeyFile => self.choose_key_file(root.upcast_ref(), &sender),
@@ -3471,6 +3507,24 @@ fn key_file_path(text: &str) -> Option<PathBuf> {
     match (text.strip_prefix("~/"), std::env::home_dir()) {
         (Some(rest), Some(home)) => Some(home.join(rest)),
         _ => Some(Path::new(text).to_path_buf()),
+    }
+}
+
+/// Where a site's "Verify copies" choice is in its list.
+fn site_verify_position(verify: SiteVerify) -> u32 {
+    match verify {
+        SiteVerify::SameAsPreferences => 0,
+        SiteVerify::ChecksumsOnly => 1,
+        SiteVerify::Off => 2,
+    }
+}
+
+/// The "Verify copies" choice at `position` in its list.
+fn site_verify_at(position: u32) -> SiteVerify {
+    match position {
+        1 => SiteVerify::ChecksumsOnly,
+        2 => SiteVerify::Off,
+        _ => SiteVerify::SameAsPreferences,
     }
 }
 

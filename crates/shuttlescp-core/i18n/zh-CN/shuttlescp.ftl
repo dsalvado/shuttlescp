@@ -377,6 +377,16 @@ login-export = 导出……
 login-export-tooltip = 将所有站点保存到文件中，供另一台计算机使用
 login-login-tooltip = 连接到所选站点
 login-files-at-once-usual = （通常为 { $count }）
+login-verify = 验证副本：
+login-verify-tooltip = 是否将与此服务器之间的副本与原文件进行比对。仅校验和：仅在服务器能计算校验和时比对，从不回读副本（最适合慢速服务器）。
+login-verify-same = 与首选项相同
+login-verify-checksums = 仅校验和
+login-verify-off = 关闭
+preferences-verify = 将副本与原文件比对(_C)
+preferences-read-back = 回读文件，最大(_R)：
+preferences-read-back-note = 服务器无法计算校验和时，通过回读副本进行检查：即第二次传输。
+read-back-never = 从不
+read-back-any-size = 任意大小
 
 login-unfinished-none = 没有未完成的传输
 login-unfinished-notice = { $count } 个传输未完成：请查看“未完成”标签页

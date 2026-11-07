@@ -138,8 +138,9 @@ pub struct Verify {
     pub read_back_up_to: Option<u64>,
 }
 
-/// Largest file read back by default when a server cannot compute checksums: 1 GB.
-pub const DEFAULT_READ_BACK_UP_TO: u64 = 1_000_000_000;
+/// Largest file read back by default when a server cannot compute checksums: 1 GiB
+/// (in the units sizes are shown in).
+pub const DEFAULT_READ_BACK_UP_TO: u64 = 1 << 30;
 
 impl Verify {
     /// The checking for a job with these sites (none for copies on this computer, one,

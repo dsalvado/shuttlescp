@@ -312,6 +312,8 @@ pub enum AppMsg {
     /// Transfers started, ended or began waiting, or the limit changed: refresh the
     /// status bar.
     TransferLimitChanged,
+    /// The user changed how copies are checked, in Preferences.
+    VerifyChosen(Verify),
     /// Open the Preferences window.
     ShowPreferences,
     /// The user picked an interface language (a language tag), for the next start.
@@ -378,6 +380,9 @@ pub struct App {
     pending: Rc<PendingStore>,
     /// The limit on transfers running at once, shared by every session's transfer lists.
     transfer_limit: Rc<TransferLimit>,
+    /// How the Preferences say copies are checked, shared by every session's transfer
+    /// lists (which apply each site's choice on top).
+    verify: Rc<Cell<Verify>>,
     /// The interface language the app started in (a change applies at the next start).
     ui_language: String,
     /// Name of this computer, for the titles of sessions that are not connected.
@@ -642,6 +647,7 @@ impl SimpleComponent for App {
         // and the Login dialog, which lists them.
         let pending = PendingStore::load(PendingTransfers::default_path());
         let transfer_limit = TransferLimit::new(config.transfer_limit());
+        let verify = Rc::new(Cell::new(config.verify()));
         let ui_language = config.language().to_owned();
         let mut model = Self {
             sessions: Vec::new(),
@@ -649,6 +655,7 @@ impl SimpleComponent for App {
             session_notebook: session_notebook.clone(),
             pending: Rc::clone(&pending),
             transfer_limit,
+            verify,
             ui_language,
             host: computer_name(),
             config,
@@ -994,12 +1001,14 @@ impl SimpleComponent for App {
             }
             AppMsg::CloseSessionNow(id) => self.close_session(id),
             AppMsg::ShowPreferences => {
-                let sender = sender.clone();
+                let (language_sender, verify_sender) = (sender.clone(), sender.clone());
                 preferences_dialog::show(
                     self.window.upcast_ref(),
                     self.config.language(),
                     &self.ui_language,
-                    move |language| sender.input(AppMsg::LanguageChosen(language)),
+                    move |language| language_sender.input(AppMsg::LanguageChosen(language)),
+                    self.config.verify(),
+                    move |verify| verify_sender.input(AppMsg::VerifyChosen(verify)),
                 );
             }
             AppMsg::LanguageChosen(language) => {
@@ -1008,6 +1017,18 @@ impl SimpleComponent for App {
                     self.config.set_language(&language);
                     self.save_config();
                 }
+            }
+            AppMsg::VerifyChosen(verify) => {
+                tracing::info!(
+                    "checking copies: {}, reading back files up to {}",
+                    if verify.enabled { "on" } else { "off" },
+                    verify
+                        .read_back_up_to
+                        .map_or_else(|| "none".to_owned(), |bytes| bytes.to_string())
+                );
+                self.config.set_verify(verify);
+                self.verify.set(verify);
+                self.save_config();
             }
             // Nothing to store: the update itself refreshes the status bar.
             AppMsg::TransferLimitChanged => {}
@@ -1245,6 +1266,7 @@ impl App {
             last_dir_on_disk: self.config.last_dir_on_disk().clone(),
             pending: Rc::clone(&self.pending),
             transfer_limit: Rc::clone(&self.transfer_limit),
+            verify: Rc::clone(&self.verify),
             split_position,
             hide_finished: self.config.hide_finished_files(),
             left,
