@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-07
+
 ### Added
 
 - Copies are checked against their originals. Once a file is copied (uploaded,
@@ -507,7 +509,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.5...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/dsalvado/shuttlescp/compare/v0.21.5...v0.22.0
 [0.21.5]: https://github.com/dsalvado/shuttlescp/compare/v0.21.4...v0.21.5
 [0.21.4]: https://github.com/dsalvado/shuttlescp/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/dsalvado/shuttlescp/compare/v0.21.2...v0.21.3
