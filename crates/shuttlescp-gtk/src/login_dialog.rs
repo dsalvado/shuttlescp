@@ -156,7 +156,7 @@ pub enum LoginMsg {
     PortChanged(i32),
     /// The "Files at once" field changed.
     FilesAtOnceChanged(i32),
-    /// The "Verify copies" choice, by its position in the list.
+    /// The "Verify checksums" choice, by its position in the list.
     VerifyChanged(u32),
     /// The Advanced section was opened or closed.
     AdvancedToggled(bool),
@@ -3510,7 +3510,7 @@ fn key_file_path(text: &str) -> Option<PathBuf> {
     }
 }
 
-/// Where a site's "Verify copies" choice is in its list.
+/// Where a site's "Verify checksums" choice is in its list.
 fn site_verify_position(verify: SiteVerify) -> u32 {
     match verify {
         SiteVerify::SameAsPreferences => 0,
@@ -3519,7 +3519,7 @@ fn site_verify_position(verify: SiteVerify) -> u32 {
     }
 }
 
-/// The "Verify copies" choice at `position` in its list.
+/// The "Verify checksums" choice at `position` in its list.
 fn site_verify_at(position: u32) -> SiteVerify {
     match position {
         1 => SiteVerify::ChecksumsOnly,

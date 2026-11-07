@@ -1,5 +1,5 @@
 //! The Preferences window (File > Preferences): settings that apply to the whole app:
-//! the interface language, and checking copies against their originals.
+//! the interface language, and verifying file checksums after completion.
 
 use relm4::gtk;
 use relm4::gtk::prelude::*;
@@ -85,7 +85,7 @@ pub fn show(
     dialog.window.present();
 }
 
-/// "Check copies against their originals" and "Read back files up to", which follows
+/// "Verify file checksums after completion" and "Read back files up to", which follows
 /// it; each change goes to `on_verify` at once.
 fn verify_settings(verify: Verify, on_verify: impl Fn(Verify) + 'static) -> gtk::Box {
     let check = gtk::CheckButton::with_mnemonic(&tr!("preferences-verify"));
