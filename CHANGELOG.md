@@ -7,6 +7,14 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- SFTP downloads from slow servers (below about 0.4 MB/s) no longer fail with
+  "Timeout": a request may now wait up to 2 minutes for its answer, as several wait in
+  line. Keepalives every 15 seconds still notice a dead connection within about a
+  minute.
+- Closing the window with a session open could end with a crash.
+
 ## [0.21.2] - 2026-11-06
 
 ### Security

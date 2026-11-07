@@ -13,7 +13,7 @@
 //! run them with a throwaway `HOME` (the script does) to keep `~/.ssh/known_hosts` clean.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use secrecy::SecretString;
 use shuttlescp_core::entry::EntryKind;
@@ -21,6 +21,7 @@ use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::{ConnectError, Credentials, Remote, connect};
 use shuttlescp_core::sites::{FtpOptions, Protocol, Site, SshAuth};
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use shuttlescp_core::transfer::{
     CancelFlag, ItemOutcome, Job, JobKind, JobSummary, Side, TransferEvent, run,
@@ -457,4 +458,100 @@ async fn more_files_at_once_than_the_ftp_server_allows() {
             "{file} differs"
         );
     }
+}
+
+/// Listen on a free local port and pass each connection on to `target`, letting what
+/// comes back through at about `bytes_per_second`; the port.
+async fn slow_link(target: String, bytes_per_second: usize) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listen");
+    let port = listener.local_addr().expect("address").port();
+    tokio::spawn(async move {
+        while let Ok((client, _)) = listener.accept().await {
+            let server = tokio::net::TcpStream::connect(&target)
+                .await
+                .expect("connect to the server");
+            let (mut from_client, mut to_client) = client.into_split();
+            let (mut from_server, mut to_server) = server.into_split();
+            tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut from_client, &mut to_server).await;
+            });
+            tokio::spawn(async move {
+                // A tenth of a second's worth, every tenth of a second.
+                let mut buffer = vec![0; bytes_per_second / 10];
+                while let Ok(read @ 1..) = from_server.read(&mut buffer).await {
+                    if to_client.write_all(&buffer[..read]).await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            });
+        }
+    });
+    port
+}
+
+/// A download from a slow SFTP server finishes. The SFTP library keeps 16 reads of up
+/// to 256 kB waiting at once and gave each one 10 seconds, so any download slower than
+/// about 0.4 MB/s failed with "Timeout".
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn download_from_a_slow_sftp_server() {
+    // Arrange: a 4 MiB file on the server, put there at full speed.
+    const SIZE: usize = 4 * 1024 * 1024;
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let name = format!("slow-{stamp}.bin");
+    std::fs::write(temp.path().join(&name), pattern(SIZE)).expect("write");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(temp.path().join(&name))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    let target = format!("{}:{}", server.site.host, server.site.port);
+    let mut slow = Server {
+        site: server.site.clone(),
+        password: server.password.clone(),
+        dir: server.dir.clone(),
+    };
+    slow.site.host = "127.0.0.1".to_owned();
+    slow.site.port = slow_link(target, 200_000).await;
+    let slow_remote = slow.connect().await;
+
+    // Act: download it through the slow link.
+    let back = temp.path().join("back");
+    std::fs::create_dir(&back).expect("create");
+    let on_server = SidePath::Remote(server.dir.join(&name));
+    let download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![on_server.clone()],
+        SidePath::Local(back.clone()),
+    );
+    let (down, down_errors) = run_job(download, &slow_remote, None).await;
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert: it arrived whole.
+    assert!(down.is_complete(), "download: {down:?} {down_errors:?}");
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+    assert_eq!(
+        std::fs::read(back.join(&name)).expect("read the copy"),
+        pattern(SIZE),
+        "the copy differs"
+    );
 }
