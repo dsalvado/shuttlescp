@@ -25,6 +25,7 @@ use secrecy::SecretString;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::checksum::Checksum;
 use crate::entry::{EntryKind, FileEntry};
 use crate::path::RemotePath;
 use crate::sites::{Protocol, Site};
@@ -350,6 +351,19 @@ impl Remote {
             }
         }
         folders
+    }
+
+    /// The SHA-256 of a file, computed by the server (the file is not sent).
+    ///
+    /// # Errors
+    ///
+    /// Returns why there is none: the server cannot compute checksums (often), or the
+    /// file cannot be read
+    pub async fn sha256(&self, path: &RemotePath) -> Result<Checksum, String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.sha256(path).await,
+            Backend::Ftp(ftp) => ftp.sha256(path).await,
+        }
     }
 
     /// Details of `path`, following a symbolic link to what it points to.

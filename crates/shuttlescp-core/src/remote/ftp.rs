@@ -29,6 +29,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::tls::{self, RejectedSlot};
 use super::{CONNECT_TIMEOUT, ConnectError, RemoteMeta, RemoteReader, RemoteWriter, path_text};
+use crate::checksum::{Checksum, first_checksum_in};
 use crate::path::RemotePath;
 use crate::sites::{FtpEncryption, Site};
 
@@ -58,6 +59,8 @@ struct Settings {
     /// go straight to the older way, saving a refused command each time.
     no_mlsd: AtomicBool,
     no_mlst: AtomicBool,
+    /// The server knows neither HASH nor XSHA256: checksums are not asked for again.
+    no_hash: AtomicBool,
 }
 
 /// An FTP server: its settings and a pool of open connections.
@@ -147,6 +150,7 @@ pub(super) async fn connect(
         plain_fallback: AtomicBool::new(false),
         no_mlsd: AtomicBool::new(false),
         no_mlst: AtomicBool::new(false),
+        no_hash: AtomicBool::new(false),
     });
     tracing::info!(
         "connecting to {}:{} (FTP, {:?}, {} mode)",
@@ -638,6 +642,56 @@ impl Ftp {
             })
         })
         .await
+    }
+
+    /// The SHA-256 of a file, computed by the server: with HASH after choosing SHA-256
+    /// (FileZilla Server, ProFTPD), else XSHA256 (older servers). Many servers have
+    /// neither (vsftpd); once one says so, later files do not ask again.
+    ///
+    /// # Errors
+    ///
+    /// Returns why there is none: the server cannot compute checksums, or the file
+    /// cannot be read
+    pub(super) async fn sha256(&self, path: &RemotePath) -> Result<Checksum, String> {
+        if self.settings.no_hash.load(Ordering::Relaxed) {
+            return Err(crate::tr!("checksum-unsupported"));
+        }
+        let text = path_text(path);
+        let what = crate::i18n::cannot_bare("read", &text);
+        let answer = self
+            .run(&what, &move |connection| {
+                let path = text.clone();
+                Box::pin(async move {
+                    let chosen = connection
+                        .custom_command("OPTS HASH SHA-256", &[Status::CommandOk])
+                        .await;
+                    if unless_unsupported(chosen)?.is_some() {
+                        let hash = connection
+                            .custom_command(format!("HASH {path}"), &[Status::File])
+                            .await;
+                        if let Some(answer) = unless_unsupported(hash)? {
+                            return Ok(Some(answer));
+                        }
+                    }
+                    let older = connection
+                        .custom_command(
+                            format!("XSHA256 {path}"),
+                            &[Status::File, Status::RequestedFileActionOk],
+                        )
+                        .await;
+                    unless_unsupported(older)
+                })
+            })
+            .await?;
+        let Some(answer) = answer else {
+            self.settings.no_hash.store(true, Ordering::Relaxed);
+            return Err(crate::tr!("checksum-unsupported"));
+        };
+        answer
+            .as_string()
+            .ok()
+            .and_then(|text| first_checksum_in(&text))
+            .ok_or_else(|| crate::tr!("checksum-no-answer"))
     }
 }
 

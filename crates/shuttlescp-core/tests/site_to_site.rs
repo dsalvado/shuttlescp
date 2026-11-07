@@ -755,3 +755,61 @@ async fn download_from_a_slow_sftp_server() {
         "the copy differs"
     );
 }
+
+/// An SSH server whose account has a shell computes a file's checksum with
+/// `sha256sum`, the same as this computer's, whatever the file's name.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_server_with_a_shell_computes_checksums() {
+    // Arrange: a file with an awkward name on the server.
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let name = "it's $(id) file.bin";
+    let local = temp.path().join(name);
+    std::fs::write(&local, pattern(300_000)).expect("write");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+
+    // Act
+    let on_server = remote.sha256(&server.dir.join(name)).await;
+    let missing = remote.sha256(&server.dir.join("missing.bin")).await;
+
+    // Assert
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("local checksum");
+    assert_eq!(on_server.expect("server checksum"), here);
+    assert!(
+        missing.is_err(),
+        "a missing file has no checksum: {missing:?}"
+    );
+}
+
+/// Servers that cannot compute checksums (an SFTP-only account, vsftpd) say so, and
+/// soon, rather than hang.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn servers_without_checksums_say_so() {
+    for var in ["SHUTTLESCP_TEST_SFTP", "SHUTTLESCP_TEST_FTP"] {
+        // Arrange
+        let server = Server::from_env(var);
+        let remote = server.connect().await;
+        let file = server.dir.join("links/real-file");
+
+        // Act: twice (FTP remembers the first refusal).
+        let asking = async { (remote.sha256(&file).await, remote.sha256(&file).await) };
+        let answers = tokio::time::timeout(Duration::from_secs(10), asking).await;
+
+        // Assert
+        let (first, second) = answers.unwrap_or_else(|_| panic!("{var}: no answer in 10 s"));
+        assert!(first.is_err(), "{var}: {first:?}");
+        assert!(second.is_err(), "{var}: {second:?}");
+    }
+}

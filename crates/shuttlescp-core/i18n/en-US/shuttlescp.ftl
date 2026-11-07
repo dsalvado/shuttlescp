@@ -703,6 +703,8 @@ error-cannot-rename-bare = cannot rename { $from } to { $to }
 error-no-such-item = no such file or folder
 # $path: a file whose date is before 1970 or after 2106.
 error-sftp-date = { $path } has a date SFTP cannot store
+checksum-unsupported = the server cannot compute checksums
+checksum-no-answer = the server's answer held no checksum
 
 ## Why connecting failed (remote/mod.rs). Shown after the site's name or on their
 ## own, so they start lowercase. $host: a server's address; $reason: what went wrong

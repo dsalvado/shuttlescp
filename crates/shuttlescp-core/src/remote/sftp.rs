@@ -28,6 +28,7 @@ use super::{
     CONNECT_TIMEOUT, ConnectError, Credentials, HostKey, RemoteMeta, RemoteReader, RemoteWriter,
     path_text,
 };
+use crate::checksum::{Checksum, first_checksum_in};
 use crate::path::RemotePath;
 use crate::sites::Site;
 
@@ -149,6 +150,19 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 /// Unanswered keepalives in a row after which the connection counts as dead.
 const KEEPALIVES_MISSED: usize = 4;
 
+/// Longest wait for the server to compute a checksum: it reads the whole file.
+const CHECKSUM_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Most bytes kept of the answer to a checksum command (a checksum takes 64).
+const MAX_CHECKSUM_ANSWER: usize = 64 * 1024;
+
+/// `text` as one word for the server's shell: in single quotes, inside which nothing
+/// (`$`, `;`, backquotes, spaces) has a meaning, each `'` written as `'\''` (end the
+/// quotes, an escaped quote, start them again). Works in sh, bash, zsh and fish.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
 impl Sftp {
     /// The connection in use.
     async fn link(&self) -> Arc<Link> {
@@ -222,6 +236,65 @@ impl Sftp {
             plausible_host_name(&String::from_utf8_lossy(&output))
         };
         tokio::time::timeout(NAME_TIMEOUT, ask).await.ok().flatten()
+    }
+
+    /// The SHA-256 of a file, computed by the server: `sha256sum` (Linux), else
+    /// `shasum -a 256` (macOS) or `sha256 -q` (BSD), run on a second channel of the SSH
+    /// connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns why there is none: the account may not run commands (SFTP-only
+    /// accounts), none of the tools is there, or the file cannot be read
+    pub(super) async fn sha256(&self, path: &RemotePath) -> Result<Checksum, String> {
+        let file = shell_quote(path.as_str());
+        let command =
+            format!("sha256sum -b -- {file} || shasum -a 256 -b -- {file} || sha256 -q -- {file}");
+        let link = self.link().await;
+        let ask = async {
+            let mut channel = link
+                .ssh
+                .channel_open_session()
+                .await
+                .map_err(|error| error.to_string())?;
+            channel
+                .exec(true, command)
+                .await
+                .map_err(|_| crate::tr!("checksum-unsupported"))?;
+            // Nothing to send. An SFTP-only account may start an SFTP server instead,
+            // which then ends rather than wait for requests.
+            let _ = channel.eof().await;
+            let (mut output, mut errors, mut status) = (Vec::new(), Vec::new(), None);
+            while let Some(message) = channel.wait().await {
+                match message {
+                    russh::ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                    russh::ChannelMsg::ExtendedData { data, .. } => {
+                        errors.extend_from_slice(&data);
+                    }
+                    russh::ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    russh::ChannelMsg::Close => break,
+                    _ => {}
+                }
+                if output.len() + errors.len() > MAX_CHECKSUM_ANSWER {
+                    break;
+                }
+            }
+            let _ = channel.close().await;
+            match (status, first_checksum_in(&String::from_utf8_lossy(&output))) {
+                // Some servers send no exit status.
+                (Some(0) | None, Some(checksum)) => Ok(checksum),
+                _ => {
+                    let errors = String::from_utf8_lossy(&errors);
+                    Err(match errors.lines().next() {
+                        Some(line) if !line.trim().is_empty() => line.trim().to_owned(),
+                        _ => crate::tr!("checksum-unsupported"),
+                    })
+                }
+            }
+        };
+        tokio::time::timeout(CHECKSUM_TIMEOUT, ask)
+            .await
+            .unwrap_or_else(|_| Err(crate::tr!("checksum-no-answer")))
     }
 
     pub(super) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
@@ -728,6 +801,39 @@ mod tests {
             None
         );
         assert_eq!(plausible_host_name("a\nb"), None);
+    }
+
+    /// A quoted name reaches the command as it is, whatever it holds, and nothing in it
+    /// runs: checked with a real shell.
+    #[cfg(unix)]
+    #[test]
+    fn quoted_names_stay_names() {
+        // Arrange
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pwned = dir.path().join("pwned");
+        let names = [
+            "plain.txt".to_owned(),
+            "two words.txt".to_owned(),
+            "it's.txt".to_owned(),
+            "'''".to_owned(),
+            "$HOME `id` $(id).txt".to_owned(),
+            format!("a'; touch '{}'; echo '", pwned.display()),
+            "-n".to_owned(),
+            "line\nbreak.txt".to_owned(),
+            "back\\slash \\' \"quotes\"".to_owned(),
+        ];
+        for name in names {
+            // Act
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("printf %s {}", shell_quote(&name)))
+                .output()
+                .expect("run sh");
+
+            // Assert
+            assert_eq!(String::from_utf8_lossy(&output.stdout), name);
+            assert!(!pwned.exists(), "{name:?} ran a command");
+        }
     }
     use crate::sites::{FtpOptions, Protocol, SshAuth};
 

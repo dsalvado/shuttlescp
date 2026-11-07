@@ -42,6 +42,15 @@ impl fmt::Display for Checksum {
     }
 }
 
+/// The checksum in a server's answer: its first word that is one. Answers differ:
+/// `sha256sum` prints "<checksum>  <name>" (with a `\` before it when the name holds a
+/// `\` or a line break), FTP's HASH "213 SHA-256 0-100 <checksum> <name>".
+pub(crate) fn first_checksum_in(answer: &str) -> Option<Checksum> {
+    answer
+        .split_whitespace()
+        .find_map(|word| Checksum::from_hex(word.strip_prefix('\\').unwrap_or(word)))
+}
+
 /// The checksum of a file on this computer. Reading and hashing run on a thread of
 /// their own: a large file keeps a processor core busy for a while.
 ///
@@ -95,6 +104,23 @@ mod tests {
         let checksum = Checksum::from_hex(ABC).expect("valid");
         assert_eq!(checksum.to_string(), ABC);
         assert_eq!(Checksum::from_hex(&ABC.to_uppercase()), Some(checksum));
+    }
+
+    #[test]
+    fn the_checksum_is_found_in_each_kind_of_answer() {
+        let abc = Checksum::from_hex(ABC);
+        for answer in [
+            format!("{ABC}  notes.txt\n"),
+            format!("{ABC} *notes.txt\n"),
+            format!("\\{ABC}  odd\\nname\n"),
+            format!("{ABC}\n"),
+            format!("213 SHA-256 0-3 {ABC} notes.txt"),
+            format!("250 {ABC}"),
+        ] {
+            assert_eq!(first_checksum_in(&answer), abc, "in {answer:?}");
+        }
+        assert_eq!(first_checksum_in("sha256sum: missing: No such file"), None);
+        assert_eq!(first_checksum_in(""), None);
     }
 
     #[test]
