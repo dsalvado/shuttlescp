@@ -517,6 +517,16 @@ login-export-tooltip = Save all sites to a file for another computer
 login-login-tooltip = Connect to the selected site
 # Shown after the Files at once field; $count is the usual number.
 login-files-at-once-usual = (usually { $count })
+login-verify = Verify copies:
+login-verify-tooltip = Whether copies to and from this server are checked against their originals. Checksums only: only where the server can compute checksums, never by reading the copy back (best for slow servers).
+login-verify-same = Same as Preferences
+login-verify-checksums = Checksums only
+login-verify-off = Off
+preferences-verify = _Check copies against their originals
+preferences-read-back = _Read back files up to:
+preferences-read-back-note = When a server cannot compute checksums, a copy is checked by reading it back: a second transfer.
+read-back-never = Never
+read-back-any-size = Any size
 
 ## The Login dialog's prompts and results. $count: a number of sites, transfers or
 ## passwords as the message says; $host: a server's address; $error, $reason: what
@@ -703,6 +713,16 @@ error-cannot-rename-bare = cannot rename { $from } to { $to }
 error-no-such-item = no such file or folder
 # $path: a file whose date is before 1970 or after 2106.
 error-sftp-date = { $path } has a date SFTP cannot store
+checksum-unsupported = the server cannot compute checksums
+checksum-no-answer = the server's answer held no checksum
+verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied
+verify-skipped = skipped by the user
+item-verifying = Verifying…
+item-verified = { $size } · verified
+item-not-verified = { $size } · not verified
+item-not-verified-large = { $size } · not verified (large file)
+item-skip-check = Skip the check
+item-verify-now = Verify now (reads the file back)
 
 ## Why connecting failed (remote/mod.rs). Shown after the site's name or on their
 ## own, so they start lowercase. $host: a server's address; $reason: what went wrong

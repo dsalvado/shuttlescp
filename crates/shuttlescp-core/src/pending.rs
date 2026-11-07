@@ -115,7 +115,7 @@ impl PendingTransfers {
 mod tests {
     use super::*;
     use crate::path::{RemotePath, SidePath};
-    use crate::transfer::{JobKind, Side};
+    use crate::transfer::{JobKind, Side, Verify};
 
     fn pending_job(key: &str, site: &str) -> PendingJob {
         PendingJob {
@@ -131,6 +131,7 @@ mod tests {
                 between_servers: false,
                 left_server: false,
                 resume: false,
+                verify: Verify::default(),
             },
             saved_at: Some(1_761_000_000),
         }

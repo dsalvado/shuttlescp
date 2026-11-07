@@ -24,10 +24,10 @@ use shuttlescp_core::format::{format_duration, format_size};
 use shuttlescp_core::path::SidePath;
 use shuttlescp_core::pending::{PendingJob, PendingTransfers};
 use shuttlescp_core::remote::Remote;
-use shuttlescp_core::sites::new_site_id;
+use shuttlescp_core::sites::{SiteVerify, new_site_id};
 use shuttlescp_core::transfer::{
     self, CancelFlag, ItemKind, ItemOutcome, Job, JobKind, JobSummary, PlanItem, RateMeter, Side,
-    TransferEvent,
+    TransferEvent, Verification, Verify,
 };
 
 use crate::conflict_dialog;
@@ -220,6 +220,8 @@ pub struct PanelConnection {
     pub remote: Remote,
     /// The server's name, for the titles of site-to-site jobs.
     pub name: String,
+    /// The site's choice for checking copies.
+    pub verify: SiteVerify,
     /// In a site-to-site session, the left pane's server (the fields above are the right
     /// pane's).
     pub left: Option<LeftConnection>,
@@ -234,6 +236,8 @@ pub struct LeftConnection {
     pub remote: Remote,
     /// The server's name, for the titles of site-to-site jobs.
     pub name: String,
+    /// The site's choice for checking copies.
+    pub verify: SiteVerify,
 }
 
 /// Messages handled by the transfers panel.
@@ -358,6 +362,8 @@ struct RowKey {
 struct ItemState {
     name: String,
     source: SidePath,
+    /// Where it is copied to (for checking it on request).
+    dest: SidePath,
     kind: ItemKind,
     parent: Option<usize>,
     depth: i32,
@@ -372,6 +378,10 @@ struct ItemState {
     asking: bool,
     /// Paused by the user, waiting to be resumed.
     paused: bool,
+    /// Its copy is being checked against it.
+    verifying: bool,
+    /// What checking its copy found.
+    verification: Option<Verification>,
 }
 
 /// One job in the list.
@@ -502,6 +512,8 @@ pub struct TransferPanel {
     session: SessionId,
     /// The limit on transfers running at once, shared by every session.
     limit: Rc<TransferLimit>,
+    /// How the Preferences say copies are checked, shared by every session.
+    verify: Rc<Cell<Verify>>,
 }
 
 /// What a transfer panel starts with.
@@ -510,6 +522,8 @@ pub struct TransferPanelInit {
     pub session: SessionId,
     /// The limit on transfers running at once, shared by every session.
     pub limit: Rc<TransferLimit>,
+    /// How the Preferences say copies are checked, shared by every session.
+    pub verify: Rc<Cell<Verify>>,
     /// Where unfinished transfers are recorded (shared by all sessions).
     pub pending: Rc<PendingStore>,
     /// Whether "Hide finished files" starts ticked (the user's last choice).
@@ -586,6 +600,7 @@ impl Component for TransferPanel {
         let TransferPanelInit {
             session,
             limit,
+            verify,
             pending,
             hide_finished,
         } = init;
@@ -654,6 +669,7 @@ impl Component for TransferPanel {
             next_shelf: 0,
             session,
             limit,
+            verify,
         };
         let (placeholder, banner, banner_text, list) = (
             &model.placeholders[0],
@@ -757,7 +773,17 @@ impl Component for TransferPanel {
                 self.pause_item(id, item, true);
             }
             TransferPanelMsg::ResumeItem { job: id, item } => {
-                self.pause_item(id, item, false);
+                // The same button checks a copy left unchecked for its size.
+                let large = self.shared.borrow().jobs.get(&id).is_some_and(|job| {
+                    job.items.get(item).is_some_and(|state| {
+                        state.verification == Some(Verification::LargeFile) && !state.verifying
+                    })
+                });
+                if large {
+                    self.verify_now(id, item, &sender);
+                } else {
+                    self.pause_item(id, item, false);
+                }
             }
             TransferPanelMsg::DiscardAll => self.discard_all(&sender),
             TransferPanelMsg::Retry(id) => self.retry(id, false, &sender),
@@ -840,6 +866,13 @@ impl Component for TransferPanel {
         self.announce_target(id, &event, now, &sender);
         match event {
             TransferEvent::Planned(items) => self.show_plan(id, &items, now),
+            TransferEvent::Verifying { id: item } => {
+                self.set_verification(id, item, true, None, now);
+            }
+            TransferEvent::Verified {
+                id: item,
+                verification,
+            } => self.set_verification(id, item, false, Some(verification), now),
             TransferEvent::Resumed { id: item, from } => {
                 let mut shared = self.shared.borrow_mut();
                 let changed = resumed(&mut shared, id, item, from, now);
@@ -1045,6 +1078,20 @@ impl TransferPanel {
         cancel: CancelFlag,
         sender: &ComponentSender<Self>,
     ) {
+        // Checked as the Preferences say now (also for a resumed job), each of the
+        // session's sites making it stricter.
+        let sites: Vec<SiteVerify> = self
+            .connection
+            .iter()
+            .flat_map(|connection| {
+                std::iter::once(connection.verify)
+                    .chain(connection.left.as_ref().map(|left| left.verify))
+            })
+            .collect();
+        let job = Job {
+            verify: self.verify.get().for_sites(&sites),
+            ..job
+        };
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {
@@ -1062,6 +1109,71 @@ impl TransferPanel {
                         let _ = out.send((id, event));
                     })
                     .await;
+                })
+                .drop_on_shutdown()
+        });
+    }
+
+    /// Record that a file's copy is being checked (`verifying`), or what checking it
+    /// found, and redraw its row.
+    fn set_verification(
+        &self,
+        id: u64,
+        item: usize,
+        verifying: bool,
+        verification: Option<Verification>,
+        now: Instant,
+    ) {
+        let mut shared = self.shared.borrow_mut();
+        let Some(state) = shared
+            .jobs
+            .get_mut(&id)
+            .and_then(|job| job.items.get_mut(item))
+        else {
+            return;
+        };
+        state.verifying = verifying;
+        if verification.is_some() {
+            state.verification = verification;
+        }
+        refresh(
+            &shared,
+            &[RowKey {
+                job: id,
+                item: Some(item),
+            }],
+            now,
+        );
+    }
+
+    /// Check a copied file against its source now, whatever its size (Verify now): the
+    /// result comes back as the job's events.
+    fn verify_now(&self, id: u64, item: usize, sender: &ComponentSender<Self>) {
+        let Some((job, source, dest, size)) = self.shared.borrow().jobs.get(&id).and_then(|job| {
+            let state = job.items.get(item)?;
+            Some((
+                job.job.clone(),
+                state.source.clone(),
+                state.dest.clone(),
+                state.size,
+            ))
+        }) else {
+            return;
+        };
+        let (remote, dest_remote, _) = self.connections_for(&job);
+        sender.command(move |out, shutdown| {
+            shutdown
+                .register(async move {
+                    let _ = out.send((id, TransferEvent::Verifying { id: item }));
+                    let verification =
+                        transfer::verify_now(&job, remote, dest_remote, source, dest, size).await;
+                    let _ = out.send((
+                        id,
+                        TransferEvent::Verified {
+                            id: item,
+                            verification,
+                        },
+                    ));
                 })
                 .drop_on_shutdown()
         });
@@ -1530,6 +1642,7 @@ impl TransferPanel {
                     ItemState {
                         name: item.name.clone(),
                         source: item.source.clone(),
+                        dest: item.dest.clone(),
                         kind: item.kind,
                         parent: item.parent,
                         depth,
@@ -1540,6 +1653,8 @@ impl TransferPanel {
                         expanded,
                         asking: false,
                         paused: false,
+                        verifying: false,
+                        verification: None,
                     }
                 })
                 .collect();
@@ -2421,9 +2536,22 @@ fn summary_text(job: &JobState, summary: &JobSummary) -> (String, bool, Option<&
 /// A file or folder line.
 fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
     let deleting = job.job.kind == JobKind::Delete;
+    // Copied, but not checked for its size: it can be checked now.
+    let verify_now = item.outcome == Some(ItemOutcome::Done)
+        && item.verification == Some(Verification::LargeFile);
     let (info, error, status) = match &item.outcome {
+        _ if item.verifying => (tr!("item-verifying"), false, None),
         Some(ItemOutcome::Done) if deleting => (tr!("item-deleted"), false, Some(DONE_ICON)),
-        Some(ItemOutcome::Done) => (format_size(item.size), false, Some(DONE_ICON)),
+        Some(ItemOutcome::Done) => {
+            let size = format_size(item.size);
+            let info = match &item.verification {
+                None => size,
+                Some(Verification::Matched(_)) => tr!("item-verified", size = size),
+                Some(Verification::LargeFile) => tr!("item-not-verified-large", size = size),
+                Some(_) => tr!("item-not-verified", size = size),
+            };
+            (info, false, Some(DONE_ICON))
+        }
         Some(ItemOutcome::Skipped) => (tr!("item-skipped"), false, Some(STOPPED_ICON)),
         Some(ItemOutcome::Failed(error)) => (error.clone(), true, Some(FAILED_ICON)),
         // Pausing stops the job's unfinished files the way cancelling does; they wait to
@@ -2477,7 +2605,12 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             ItemKind::File => "text-x-generic",
         },
         name: item.name.clone(),
-        tooltip: item.source.to_string(),
+        // The check's details: the checksum, or why there was none.
+        tooltip: match &item.verification {
+            Some(Verification::Matched(checksum)) => format!("{}\nSHA-256 {checksum}", item.source),
+            Some(Verification::Unchecked(reason)) => format!("{}\n{reason}", item.source),
+            _ => item.source.to_string(),
+        },
         heading: false,
         fraction: (!deleting).then(|| match item.outcome {
             Some(ItemOutcome::Done) => 1.0,
@@ -2486,9 +2619,12 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         info,
         error,
         status,
-        // A file or folder not done yet can be left out while the rest goes on.
+        // A file or folder not done yet can be left out while the rest goes on; a file
+        // being checked, its check (Verify now cannot be stopped: it is short or asked
+        // for).
         can_cancel: job.is_running() && item.outcome.is_none() && !item.asking,
         cancel_tooltip: match item.kind {
+            _ if item.verifying => tr!("item-skip-check"),
             ItemKind::File => tr!("item-stop-file"),
             ItemKind::Folder => tr!("item-stop-folder"),
         },
@@ -2498,7 +2634,8 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             && !deleting
             && item.outcome.is_none()
             && !item.asking
-            && !item.paused,
+            && !item.paused
+            && !item.verifying,
         pause_tooltip: match item.kind {
             ItemKind::File => tr!("item-pause-file"),
             ItemKind::Folder => tr!("item-pause-folder"),
@@ -2510,10 +2647,18 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             && item.outcome.is_none()
             && !item.asking
             && !item.paused
+            && !item.verifying
             && item.meter.is_some(),
-        can_retry: job.is_running() && !job.paused && item.outcome.is_none() && item.paused,
-        retry_icon: "media-playback-start-symbolic",
+        // Resumes a paused file, or checks a copy left unchecked for its size.
+        can_retry: (job.is_running() && !job.paused && item.outcome.is_none() && item.paused)
+            || (verify_now && !item.verifying),
+        retry_icon: if verify_now {
+            "view-refresh-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        },
         retry_tooltip: match item.kind {
+            _ if verify_now => tr!("item-verify-now"),
             ItemKind::File => tr!("item-resume-file"),
             ItemKind::Folder => tr!("item-resume-folder"),
         },
@@ -2713,6 +2858,7 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
 mod tests {
     use super::*;
     use shuttlescp_core::path::RemotePath;
+    use shuttlescp_core::transfer::Verify;
 
     fn pending(key: &str) -> PendingJob {
         PendingJob {
@@ -2728,6 +2874,7 @@ mod tests {
                 between_servers: false,
                 left_server: false,
                 resume: false,
+                verify: Verify::default(),
             },
             saved_at: None,
         }
@@ -2818,6 +2965,7 @@ mod tests {
                 .map(|(id, (parent, kind, outcome))| ItemState {
                     name: format!("item{id}"),
                     source: SidePath::Local(PathBuf::from(format!("/data/item{id}"))),
+                    dest: SidePath::Remote(RemotePath::new(format!("/srv/item{id}"))),
                     kind: *kind,
                     parent: *parent,
                     depth: 0,
@@ -2828,6 +2976,8 @@ mod tests {
                     expanded: true,
                     asking: false,
                     paused: false,
+                    verifying: false,
+                    verification: None,
                 })
                 .collect(),
             children,

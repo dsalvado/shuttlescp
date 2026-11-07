@@ -13,8 +13,9 @@ use tokio::task::JoinSet;
 use super::endpoint::{Endpoint, partial_path};
 use super::{
     CancelFlag, ConflictAnswer, ConflictChoice, ConflictReply, FILES_AT_ONCE, ItemKind,
-    ItemOutcome, Job, JobKind, PlanItem, Sink, TransferEvent,
+    ItemOutcome, Job, JobKind, PlanItem, Sink, TransferEvent, Verification, Verify,
 };
+use crate::checksum::Checksum;
 use crate::format::format_size;
 
 /// Bytes read and written per step of a file copy.
@@ -144,6 +145,7 @@ pub(super) async fn copy_items(
     sink: &Sink,
 ) -> Vec<ItemOutcome> {
     let delete_source = job.kind == JobKind::Move;
+    let verify = job.verify;
     let mut outcomes: Vec<Option<ItemOutcome>> = vec![None; items.len()];
     let finish = |outcomes: &mut Vec<Option<ItemOutcome>>, id: usize, outcome: ItemOutcome| {
         sink(TransferEvent::ItemFinished {
@@ -283,6 +285,7 @@ pub(super) async fn copy_items(
                             &dst,
                             delete_source,
                             replace,
+                            verify,
                             &cancel,
                             &sink,
                             &times,
@@ -541,7 +544,8 @@ async fn finish_source(item: &PlanItem, src: &Endpoint, delete_source: bool) -> 
 
 /// Copy one file through its partial file, continuing an earlier partial copy when
 /// there is one, then give it its real name (replacing the existing file if `replace`)
-/// and delete the source if moving. A completed copy's times are added to `times`.
+/// and delete the source if moving, once the copy is checked against it if `verify`
+/// says so. A completed copy's times are added to `times`.
 #[allow(clippy::too_many_arguments)]
 async fn copy_file(
     item: &PlanItem,
@@ -549,6 +553,7 @@ async fn copy_file(
     dst: &Endpoint,
     delete_source: bool,
     replace: bool,
+    verify: Verify,
     cancel: &CancelFlag,
     sink: &Sink,
     times: &Mutex<JobTimes>,
@@ -621,6 +626,19 @@ async fn copy_file(
         // The copy itself is fine; only its date differs.
         tracing::debug!("{error}");
     }
+    if verify.enabled {
+        sink(TransferEvent::Verifying { id: item.id });
+        let verification = verify_or_skip(item, src, dst, verify, cancel).await;
+        let mismatched = matches!(verification, Verification::Mismatched { .. });
+        sink(TransferEvent::Verified {
+            id: item.id,
+            verification,
+        });
+        if mismatched {
+            // The original stays, even when moving; so does the copy, to look at.
+            return ItemOutcome::Failed(crate::tr!("verify-mismatch")).into();
+        }
+    }
     let outcome = finish_source(item, src, delete_source).await;
     if outcome == ItemOutcome::Done {
         took.finish = finishing.elapsed();
@@ -630,6 +648,139 @@ async fn copy_file(
         }
     }
     outcome.into()
+}
+
+/// Check the copy at `item.dest` against `item.source` by their SHA-256 checksums
+/// (both sides at once), and write what was found in the log, with the values.
+pub(super) async fn verify_copy(
+    item: &PlanItem,
+    src: &Endpoint,
+    dst: &Endpoint,
+    verify: Verify,
+) -> Verification {
+    let started = Instant::now();
+    let limit = verify.read_back_up_to;
+    let (source, copy) = tokio::join!(
+        checksum_for_check(src, &item.source, item.size, limit),
+        checksum_for_check(dst, &item.dest, item.size, limit),
+    );
+    let took = started.elapsed().as_secs_f64();
+    let what = format!("{} -> {}", item.source, item.dest);
+    let sides = format!(
+        "{}; {}; {took:.1} s",
+        describe_checksum("source", src, &source),
+        describe_checksum("copy", dst, &copy)
+    );
+    match (source, copy) {
+        (Ok((source, _)), Ok((copy, _))) if source == copy => {
+            tracing::info!("verified {what}: {sides}");
+            Verification::Matched(source)
+        }
+        (Ok((source, _)), Ok((copy, _))) => {
+            tracing::warn!("copy differs from its source, {what}: {sides}");
+            Verification::Mismatched { source, copy }
+        }
+        (Err(NoChecksum::Failed(reason)), _) | (_, Err(NoChecksum::Failed(reason))) => {
+            tracing::info!("not verified {what}: {sides}");
+            Verification::Unchecked(reason)
+        }
+        _ => {
+            tracing::info!("not verified {what}: {sides}");
+            Verification::LargeFile
+        }
+    }
+}
+
+/// [`verify_copy`], given up (as unchecked) once the user stops the item or the job:
+/// reading a large file back can take long.
+async fn verify_or_skip(
+    item: &PlanItem,
+    src: &Endpoint,
+    dst: &Endpoint,
+    verify: Verify,
+    cancel: &CancelFlag,
+) -> Verification {
+    let checking = verify_copy(item, src, dst, verify);
+    tokio::pin!(checking);
+    loop {
+        if cancel.is_item_stopped(item.id) || cancel.is_cancelled() {
+            tracing::info!(
+                "not verified {} -> {}: skipped by the user",
+                item.source,
+                item.dest
+            );
+            return Verification::Unchecked(crate::tr!("verify-skipped"));
+        }
+        if let Ok(verification) = tokio::time::timeout(ANSWER_POLL, &mut checking).await {
+            return verification;
+        }
+    }
+}
+
+/// How a checksum for checking a copy was had.
+enum How {
+    /// Computed where the file is (by the server, or here for this computer's files).
+    Computed,
+    /// The server could not: the file was read back here and hashed.
+    ReadBack,
+}
+
+/// Why a side of a copy has no checksum.
+enum NoChecksum {
+    /// It could not be had, for this reason.
+    Failed(String),
+    /// The server cannot compute it, and the file is larger than what is read back.
+    Large,
+}
+
+/// The checksum of a file for checking a copy: computed where it is, or, for a server
+/// that cannot, by reading it back if `read_back_up_to` allows its `size`.
+async fn checksum_for_check(
+    endpoint: &Endpoint,
+    path: &SidePath,
+    size: u64,
+    read_back_up_to: Option<u64>,
+) -> Result<(Checksum, How), NoChecksum> {
+    let reason = match endpoint.sha256(path).await {
+        Ok(checksum) => return Ok((checksum, How::Computed)),
+        Err(reason) => reason,
+    };
+    // Reading back is for servers; here, the file was just read.
+    if matches!(endpoint, Endpoint::Local) {
+        return Err(NoChecksum::Failed(reason));
+    }
+    match read_back_up_to {
+        None => Err(NoChecksum::Failed(reason)),
+        Some(limit) if size > limit => Err(NoChecksum::Large),
+        Some(_) => {
+            tracing::debug!("{path}: {reason}; reading it back to check it");
+            endpoint
+                .read_back_sha256(path)
+                .await
+                .map(|checksum| (checksum, How::ReadBack))
+                .map_err(NoChecksum::Failed)
+        }
+    }
+}
+
+/// One side of a check, for the log, e.g. "copy SHA-256 9f86…, read back from
+/// example.com".
+fn describe_checksum(
+    side: &str,
+    endpoint: &Endpoint,
+    found: &Result<(Checksum, How), NoChecksum>,
+) -> String {
+    let place = endpoint.place();
+    match found {
+        Ok((checksum, How::Computed)) => format!("{side} SHA-256 {checksum}, computed on {place}"),
+        Ok((checksum, How::ReadBack)) => {
+            format!("{side} SHA-256 {checksum}, read back from {place}")
+        }
+        Err(NoChecksum::Failed(reason)) => format!("{side} on {place}: {reason}"),
+        Err(NoChecksum::Large) => {
+            format!("{side} on {place}: no checksum there, and larger than what is read back")
+        }
+    }
 }
 
 /// Record a finished file copy in the log: what went where, how big, how fast, and

@@ -447,6 +447,7 @@ pub fn connect_pair(pair: &str, sender: relm4::ComponentSender<crate::app::App>)
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
+            verify: shuttlescp_core::sites::SiteVerify::default(),
         })
         .collect();
     let [left, right] = <[_; 2]>::try_from(sites)

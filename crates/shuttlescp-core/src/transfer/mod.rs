@@ -39,9 +39,11 @@ pub use ops::{
     windows_restored_name, windows_safe_name,
 };
 
+use crate::checksum::Checksum;
 use crate::format::format_size;
 use crate::path::{RemotePath, SidePath};
 use crate::remote::Remote;
+use crate::sites::SiteVerify;
 use endpoint::Endpoint;
 
 /// Files of one job copied at the same time on this computer alone. More would not add
@@ -119,6 +121,61 @@ pub struct Job {
     /// size and date at the destination) are not copied again or asked about, and
     /// sources already moved away are passed over.
     pub resume: bool,
+    /// Whether to check each copy against its source. Not saved with the job: a
+    /// resumed job follows the settings of the time.
+    pub verify: Verify,
+}
+
+/// Whether and how copies are checked against their sources once made: by comparing
+/// SHA-256 checksums, computed by the servers themselves or on this computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Verify {
+    /// Check copies at all.
+    pub enabled: bool,
+    /// When a server cannot compute a checksum: read the file back through the
+    /// connection and hash it here, if it is not larger than this many bytes. `None`:
+    /// never (it would cost a second transfer).
+    pub read_back_up_to: Option<u64>,
+}
+
+/// Largest file read back by default when a server cannot compute checksums: 1 GiB
+/// (in the units sizes are shown in).
+pub const DEFAULT_READ_BACK_UP_TO: u64 = 1 << 30;
+
+impl Verify {
+    /// The checking for a job with these sites (none for copies on this computer, one,
+    /// or two site to site), from the Preferences (`self`): each site can only make it
+    /// stricter, so with two the stricter choice wins.
+    pub fn for_sites(self, sites: &[SiteVerify]) -> Self {
+        let mut verify = self;
+        for site in sites {
+            match site {
+                SiteVerify::SameAsPreferences => {}
+                SiteVerify::ChecksumsOnly => verify.read_back_up_to = None,
+                SiteVerify::Off => verify.enabled = false,
+            }
+        }
+        verify
+    }
+}
+
+/// What checking a copy found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verification {
+    /// The copy and its source have this checksum.
+    Matched(Checksum),
+    /// They differ: the copy is not what was copied (the item fails).
+    Mismatched {
+        /// The source's checksum.
+        source: Checksum,
+        /// The copy's.
+        copy: Checksum,
+    },
+    /// Not checked, and why (e.g. the server cannot compute checksums).
+    Unchecked(String),
+    /// Not checked: a server cannot compute checksums, and the file is larger than
+    /// [`Verify::read_back_up_to`]. Reading it back is still possible, on request.
+    LargeFile,
 }
 
 impl Job {
@@ -324,6 +381,7 @@ impl From<JobRecord> for Job {
             between_servers: record.between_servers,
             left_server: record.left_server,
             resume: record.resume,
+            verify: Verify::default(),
         };
         job.sources = record
             .sources
@@ -542,6 +600,19 @@ pub enum TransferEvent {
         /// Bytes copied so far.
         done: u64,
     },
+    /// A copied file is being checked against its source (it can be skipped by
+    /// stopping the item, see [`CancelFlag::stop_item`]).
+    Verifying {
+        /// Item id.
+        id: usize,
+    },
+    /// A copied file was checked against its source (before [`Self::ItemFinished`]).
+    Verified {
+        /// Item id.
+        id: usize,
+        /// What the check found.
+        verification: Verification,
+    },
     /// An item finished.
     ItemFinished {
         /// Item id.
@@ -636,6 +707,66 @@ impl CancelFlag {
 /// Receives a job's events; called from background tasks.
 type Sink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
 
+/// The sides a job reads from and writes to, given its connections as [`run`] gets
+/// them: this computer, or a server (`None` where it needs one that is not given).
+fn endpoints(
+    job: &Job,
+    remote: Option<Remote>,
+    dest_remote: Option<Remote>,
+) -> (Option<Endpoint>, Option<Endpoint>) {
+    let endpoint = |side: Side| match side {
+        Side::Local => Some(Endpoint::Local),
+        Side::Remote => remote.clone().map(Endpoint::Remote),
+    };
+    let dest = if job.between_servers {
+        dest_remote.map(Endpoint::Remote)
+    } else {
+        endpoint(job.dest_side())
+    };
+    (endpoint(job.side), dest)
+}
+
+/// Check, on request, one file a job copied against its source, reading back as much
+/// as needed whatever its size (for a copy left as [`Verification::LargeFile`]).
+///
+/// # Arguments
+///
+/// * `job` - The job that copied it (which sides its source and copy are on)
+/// * `remote`, `dest_remote` - Its connections, as for [`run`]
+/// * `source`, `dest` - The file and its copy
+/// * `size` - Its size
+pub async fn verify_now(
+    job: &Job,
+    remote: Option<Remote>,
+    dest_remote: Option<Remote>,
+    source: SidePath,
+    dest: SidePath,
+    size: u64,
+) -> Verification {
+    let (Some(src), Some(dst)) = endpoints(job, remote, dest_remote) else {
+        return Verification::Unchecked(crate::tr!("error-not-connected"));
+    };
+    tracing::info!("checking {dest} against {source}, as asked");
+    let item = PlanItem {
+        id: 0,
+        parent: None,
+        name: String::new(),
+        kind: ItemKind::File,
+        size,
+        source,
+        dest,
+        existing: None,
+        modified: None,
+        existing_is_dir: false,
+        partial: 0,
+    };
+    let verify = Verify {
+        enabled: true,
+        read_back_up_to: Some(u64::MAX),
+    };
+    copy::verify_copy(&item, &src, &dst, verify).await
+}
+
 /// Run `job`, reporting to `on_event` as it goes.
 ///
 /// # Arguments
@@ -661,16 +792,8 @@ pub async fn run(
 ) -> JobSummary {
     let sink: Sink = Arc::new(on_event);
     let started = std::time::Instant::now();
-    let endpoint = |side: Side| match side {
-        Side::Local => Some(Endpoint::Local),
-        Side::Remote => remote.clone().map(Endpoint::Remote),
-    };
-    let dest = if job.between_servers {
-        dest_remote.map(Endpoint::Remote)
-    } else {
-        endpoint(job.dest_side())
-    };
-    let summary = match endpoint(job.side) {
+    let (source, dest) = endpoints(&job, remote, dest_remote);
+    let summary = match source {
         None => failed_to_start(&crate::tr!("error-not-connected")),
         Some(_) if job.between_servers && dest.is_none() => {
             failed_to_start(&crate::tr!("error-not-connected-destination"))

@@ -51,6 +51,7 @@ fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
         between_servers: false,
         left_server: false,
         resume: false,
+        verify: Verify::default(),
     }
 }
 
@@ -596,6 +597,7 @@ fn site_to_site_jobs_go_to_the_server_and_say_so() {
         between_servers: true,
         left_server: false,
         resume: false,
+        verify: Verify::default(),
     };
     assert_eq!(job.dest_side(), Side::Remote);
     assert!(job.uses_server());
@@ -629,6 +631,7 @@ async fn a_site_to_site_job_without_its_destination_does_not_start() {
         between_servers: true,
         left_server: false,
         resume: false,
+        verify: Verify::default(),
     };
     let summary = run(job, None, None, CancelFlag::default(), |_| {}).await;
     assert_eq!(summary.error.as_deref(), Some("not connected to a server"));
@@ -672,6 +675,7 @@ fn jobs_writing_the_same_files_conflict() {
         between_servers: false,
         left_server: false,
         resume: false,
+        verify: Verify::default(),
     };
     let three = upload(&["/home/me/a", "/home/me/b", "/home/me/c"], "/srv");
     // The same files again (the case that once ran twice), and one of them.
@@ -873,6 +877,7 @@ fn job_titles_name_the_direction() {
         between_servers: false,
         left_server: false,
         resume: false,
+        verify: Verify::default(),
     };
     assert_eq!(many.title(), "Delete 2 items from the server");
     assert!(many.uses_server());
@@ -1170,4 +1175,129 @@ fn connections_follow_the_pane_the_sources_are_in() {
         delete.connections(Some(&"left"), &"right"),
         (Some("left"), None)
     );
+}
+
+/// `job`, checking each copy against its source.
+fn verified(job: Job) -> Job {
+    Job {
+        verify: Verify {
+            enabled: true,
+            read_back_up_to: None,
+        },
+        ..job
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_verified_copy_reports_its_sources_checksum() {
+    // Arrange
+    let (_temp, src, dst) = setup();
+    let expected = crate::checksum::local_sha256(src.join("top.txt"))
+        .await
+        .expect("checksum");
+
+    // Act
+    let (summary, events) = run_local(verified(job(
+        JobKind::Copy,
+        vec![src.join("top.txt")],
+        &dst,
+    )))
+    .await;
+
+    // Assert
+    assert!(summary.is_complete(), "{summary:?}");
+    let found: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            TransferEvent::Verified { verification, .. } => Some(verification.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(found, vec![Verification::Matched(expected)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_verify_no_copy_is_checked() {
+    let (_temp, src, dst) = setup();
+    let (summary, events) = run_local(job(JobKind::Copy, vec![src.join("top.txt")], &dst)).await;
+    assert!(summary.is_complete(), "{summary:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, TransferEvent::Verified { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_that_differs_from_its_source_is_reported_with_both_checksums() {
+    // Arrange: a "copy" whose last byte differs.
+    let (_temp, src, dst) = setup();
+    let mut changed = big_content();
+    *changed.last_mut().expect("not empty") ^= 1;
+    std::fs::write(dst.join("top.txt"), &changed).expect("write");
+    let item = PlanItem {
+        id: 0,
+        parent: None,
+        name: "top.txt".to_owned(),
+        kind: ItemKind::File,
+        size: 600_000,
+        source: local(&src.join("top.txt")),
+        dest: local(&dst.join("top.txt")),
+        existing: None,
+        modified: None,
+        existing_is_dir: false,
+        partial: 0,
+    };
+
+    // Act
+    let found =
+        copy::verify_copy(&item, &Endpoint::Local, &Endpoint::Local, Verify::default()).await;
+
+    // Assert
+    let source = crate::checksum::local_sha256(src.join("top.txt")).await;
+    let copy = crate::checksum::local_sha256(dst.join("top.txt")).await;
+    assert_eq!(
+        found,
+        Verification::Mismatched {
+            source: source.expect("checksum"),
+            copy: copy.expect("checksum"),
+        }
+    );
+}
+
+#[test]
+fn each_site_can_only_make_checking_stricter() {
+    use crate::sites::SiteVerify::{ChecksumsOnly, Off, SameAsPreferences};
+    let preferences = Verify {
+        enabled: true,
+        read_back_up_to: Some(1_000),
+    };
+    let no_read_back = Verify {
+        read_back_up_to: None,
+        ..preferences
+    };
+    let off = Verify {
+        enabled: false,
+        ..preferences
+    };
+
+    // No site (on this computer) or one site.
+    assert_eq!(preferences.for_sites(&[]), preferences);
+    assert_eq!(preferences.for_sites(&[SameAsPreferences]), preferences);
+    assert_eq!(preferences.for_sites(&[ChecksumsOnly]), no_read_back);
+    assert_eq!(preferences.for_sites(&[Off]), off);
+
+    // Site to site: the stricter of the two, whichever pane it is in.
+    assert_eq!(
+        preferences.for_sites(&[SameAsPreferences, ChecksumsOnly]),
+        no_read_back
+    );
+    assert_eq!(
+        preferences.for_sites(&[ChecksumsOnly, SameAsPreferences]),
+        no_read_back
+    );
+    assert!(!preferences.for_sites(&[ChecksumsOnly, Off]).enabled);
+
+    // A site cannot turn on what the Preferences turned off.
+    assert_eq!(off.for_sites(&[SameAsPreferences]), off);
 }

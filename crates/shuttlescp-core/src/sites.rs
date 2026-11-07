@@ -111,6 +111,31 @@ pub struct Site {
     /// the list.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub folder: String,
+    /// How copies to and from this server are checked against their sources.
+    #[serde(default, skip_serializing_if = "SiteVerify::is_default")]
+    pub verify: SiteVerify,
+}
+
+/// A site's own choice for checking copies against their sources (the Preferences
+/// have the rest; see `transfer::Verify::for_sites`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SiteVerify {
+    /// As the Preferences say.
+    #[default]
+    SameAsPreferences,
+    /// Only where the server computes checksums: never read files back (a second
+    /// transfer, slow from a slow server).
+    ChecksumsOnly,
+    /// Not checked.
+    Off,
+}
+
+impl SiteVerify {
+    /// The default (for leaving it out of the saved file).
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Files copied at the same time for a site that does not say (files from before the
@@ -563,6 +588,7 @@ mod tests {
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
+            verify: SiteVerify::default(),
         }
     }
 
@@ -705,6 +731,24 @@ mod tests {
         assert_eq!(edited.files_at_once(), 1);
         edited.files_at_once = 99;
         assert_eq!(edited.files_at_once(), usize::from(MAX_FILES_AT_ONCE));
+    }
+
+    #[test]
+    fn a_sites_verify_choice_is_left_out_when_default_and_reads_back() {
+        let old: Site = serde_json::from_str(
+            r#"{"protocol":"sftp","host":"example.com","port":22,"user":"me"}"#,
+        )
+        .expect("read an older site");
+        assert_eq!(old.verify, SiteVerify::SameAsPreferences);
+        let saved = serde_json::to_string(&old).expect("write");
+        assert!(!saved.contains("verify"), "{saved}");
+
+        let mut seedbox = site("me", 22);
+        seedbox.verify = SiteVerify::ChecksumsOnly;
+        let saved = serde_json::to_string(&seedbox).expect("write");
+        assert!(saved.contains(r#""verify":"checksums-only""#), "{saved}");
+        let loaded: Site = serde_json::from_str(&saved).expect("read");
+        assert_eq!(loaded, seedbox);
     }
 
     #[test]
