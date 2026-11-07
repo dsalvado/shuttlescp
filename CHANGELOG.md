@@ -13,6 +13,10 @@ becomes its release notes on GitHub.
   with "Failed to execute helper program" (since 0.18). The installer now includes the
   helper programs GLib uses to start other programs, and the release check fails if
   they are missing.
+- FTP: a server that answers `OPTS HASH SHA-256` with 501 ("Option not understood")
+  was treated as failing, so its older `XSHA256` checksum command was never tried and
+  copies were read back to check them. Any refusal of the option now moves on to
+  `XSHA256`.
 
 ## [0.22.0] - 2026-11-07
 

@@ -665,7 +665,7 @@ impl Ftp {
                     let chosen = connection
                         .custom_command("OPTS HASH SHA-256", &[Status::CommandOk])
                         .await;
-                    if unless_unsupported(chosen)?.is_some() {
+                    if unless_option_refused(chosen)?.is_some() {
                         let hash = connection
                             .custom_command(format!("HASH {path}"), &[Status::File])
                             .await;
@@ -712,6 +712,21 @@ fn unless_unsupported<T>(result: Result<T, FtpError>) -> Result<Option<T>, FtpEr
     match result {
         Ok(value) => Ok(Some(value)),
         Err(error) if unsupported(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// An option command's result (OPTS), with any refusal (a 5xx reply) as `None`: the
+/// option is not offered. Servers say so in different ways; some answer 501
+/// ("Option not understood") rather than 500, 502 or 504.
+fn unless_option_refused<T>(result: Result<T, FtpError>) -> Result<Option<T>, FtpError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(FtpError::UnexpectedResponse(response))
+            if (500..600).contains(&response.status.code()) =>
+        {
+            Ok(None)
+        }
         Err(error) => Err(error),
     }
 }
@@ -854,5 +869,43 @@ impl AsyncWrite for FtpWriter {
             Some(finishing) => finishing.as_mut().poll(cx),
             None => Poll::Ready(Ok(())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use suppaftp::types::Response;
+
+    /// The error a server's reply with this status gives.
+    fn reply(status: Status) -> Result<(), FtpError> {
+        Err(FtpError::UnexpectedResponse(Response::new(
+            status,
+            Vec::new(),
+        )))
+    }
+
+    #[test]
+    fn a_refused_option_means_not_offered() {
+        // The seedbox's answer to OPTS HASH SHA-256: 501 Option not understood.
+        assert!(matches!(
+            unless_option_refused(reply(Status::BadArguments)),
+            Ok(None)
+        ));
+        assert!(matches!(
+            unless_option_refused(reply(Status::NotImplemented)),
+            Ok(None)
+        ));
+        assert!(matches!(unless_option_refused(Ok(())), Ok(Some(()))));
+    }
+
+    #[test]
+    fn a_failed_checksum_command_stays_an_error() {
+        // 550: the file cannot be read; that is no reason to stop asking for checksums.
+        assert!(unless_unsupported(reply(Status::FileUnavailable)).is_err());
+        assert!(matches!(
+            unless_unsupported(reply(Status::NotImplemented)),
+            Ok(None)
+        ));
     }
 }
