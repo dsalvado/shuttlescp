@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.21.5] - 2026-11-07
+
+### Changed
+
+- Transfers to and from an SFTP or SCP server run on a second connection of their own,
+  opened with the session's login when the first one starts. Browsing no longer waits
+  behind a running transfer: on a slow server, changing folders during a download took
+  up to minutes. If the server refuses a second connection, transfers share the
+  browsing one as before.
+
 ## [0.21.4] - 2026-11-06
 
 ### Changed
@@ -481,7 +491,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.4...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.21.5...HEAD
+[0.21.5]: https://github.com/dsalvado/shuttlescp/compare/v0.21.4...v0.21.5
 [0.21.4]: https://github.com/dsalvado/shuttlescp/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/dsalvado/shuttlescp/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/dsalvado/shuttlescp/compare/v0.21.1...v0.21.2
