@@ -105,8 +105,12 @@ fn main() {
 /// "Gtk-WARNING: Failed to load icon", to the app's log instead of the terminal. Each
 /// line starts with the library's name. GLib hides its info and debug messages unless
 /// asked; here they become debug and trace lines.
+///
+/// A message repeated right after itself (GTK says "snapshot symbolic icon using mask"
+/// for every icon it draws) is written once, then counted: the count is written when a
+/// different message comes, or once a minute while the repeats go on.
 fn forward_toolkit_messages() {
-    use relm4::gtk::glib::{self, LogLevel, LogWriterOutput};
+    use relm4::gtk::glib::{self, LogWriterOutput};
 
     glib::log_set_writer_func(|level, fields| {
         let field = |key: &str| {
@@ -117,13 +121,73 @@ fn forward_toolkit_messages() {
         };
         let domain = field("GLIB_DOMAIN").unwrap_or("GLib");
         let message = field("MESSAGE").unwrap_or_default();
-        match level {
-            LogLevel::Error | LogLevel::Critical => tracing::error!("{domain}: {message}"),
-            LogLevel::Warning => tracing::warn!("{domain}: {message}"),
-            LogLevel::Message => tracing::info!("{domain}: {message}"),
-            LogLevel::Info => tracing::debug!("{domain}: {message}"),
-            LogLevel::Debug => tracing::trace!("{domain}: {message}"),
+        let Ok(mut last) = LAST_TOOLKIT_MESSAGE.lock() else {
+            log_toolkit_line(level, domain, message);
+            return LogWriterOutput::Handled;
+        };
+        if let Some(repeat) = last.as_mut()
+            && repeat.level == level
+            && repeat.domain == domain
+            && repeat.message == message
+        {
+            repeat.count += 1;
+            if repeat.since.elapsed() >= REPEATS_SUMMARY_INTERVAL {
+                repeat.summarize();
+            }
+            return LogWriterOutput::Handled;
         }
+        if let Some(repeat) = last.as_mut() {
+            repeat.summarize();
+        }
+        log_toolkit_line(level, domain, message);
+        *last = Some(Repeat {
+            level,
+            domain: domain.to_owned(),
+            message: message.to_owned(),
+            count: 0,
+            since: std::time::Instant::now(),
+        });
         LogWriterOutput::Handled
     });
+}
+
+/// The last toolkit message written, and how often it came again since.
+static LAST_TOOLKIT_MESSAGE: std::sync::Mutex<Option<Repeat>> = std::sync::Mutex::new(None);
+
+/// While a toolkit message keeps repeating, how often to write how many times it did.
+const REPEATS_SUMMARY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A toolkit message, and its repeats not written yet.
+struct Repeat {
+    level: relm4::gtk::glib::LogLevel,
+    domain: String,
+    message: String,
+    count: u64,
+    /// When the count started.
+    since: std::time::Instant,
+}
+
+impl Repeat {
+    /// Write the count, if any, and start a new one.
+    fn summarize(&mut self) {
+        if self.count > 0 {
+            let text = format!("(repeated {} more times)", self.count);
+            log_toolkit_line(self.level, &self.domain, &text);
+        }
+        self.count = 0;
+        self.since = std::time::Instant::now();
+    }
+}
+
+/// Write one toolkit message at the log level matching GLib's.
+fn log_toolkit_line(level: relm4::gtk::glib::LogLevel, domain: &str, message: &str) {
+    use relm4::gtk::glib::LogLevel;
+
+    match level {
+        LogLevel::Error | LogLevel::Critical => tracing::error!("{domain}: {message}"),
+        LogLevel::Warning => tracing::warn!("{domain}: {message}"),
+        LogLevel::Message => tracing::info!("{domain}: {message}"),
+        LogLevel::Info => tracing::debug!("{domain}: {message}"),
+        LogLevel::Debug => tracing::trace!("{domain}: {message}"),
+    }
 }

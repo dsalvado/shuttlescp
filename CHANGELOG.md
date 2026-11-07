@@ -14,6 +14,9 @@ becomes its release notes on GitHub.
   memory for the session to do so, as it already did for FTP.
 - A file copy to or from a server that fails partway (usually a lost connection) is
   continued from its partial copy, up to three times, before it counts as failed.
+- A GTK message repeated right after itself goes into the log once, followed by how
+  many times it repeated. At the trace log level, GTK's "snapshot symbolic icon" line
+  made up almost all of the log.
 
 ## [0.21.3] - 2026-11-06
 
