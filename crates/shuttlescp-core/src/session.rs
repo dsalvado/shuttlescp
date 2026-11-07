@@ -291,6 +291,7 @@ mod tests {
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
+            verify: crate::sites::SiteVerify::default(),
         };
         assert_eq!(keyring_label(&site), "ShuttleSCP: me@host");
     }

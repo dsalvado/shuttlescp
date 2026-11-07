@@ -925,6 +925,7 @@ mod tests {
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
+            verify: crate::sites::SiteVerify::default(),
         };
         let login = |site: Site| async move {
             connect(&site, Credentials::default(), None)

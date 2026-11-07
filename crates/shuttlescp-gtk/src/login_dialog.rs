@@ -28,7 +28,7 @@ use shuttlescp_core::session::{self, ExportReport, ImportReport, KeyringAction};
 use shuttlescp_core::site_export::ExportFile;
 use shuttlescp_core::sites::{
     DEFAULT_FILES_AT_ONCE, FtpEncryption, FtpOptions, MAX_FILES_AT_ONCE, Protocol, Site, SiteBook,
-    SshAuth, address_label, folder_name, join_folder, new_site_id, parent_folder,
+    SiteVerify, SshAuth, address_label, folder_name, join_folder, new_site_id, parent_folder,
 };
 use shuttlescp_core::transfer::{self, JobKind, Side};
 
@@ -1037,6 +1037,9 @@ impl LoginDialog {
             folder: existing
                 .as_ref()
                 .map_or_else(String::new, |site| site.folder.clone()),
+            verify: existing
+                .as_ref()
+                .map_or_else(SiteVerify::default, |site| site.verify),
         };
         if let Some(entry) = old_passphrase {
             sender.oneshot_command(async move {
@@ -3504,6 +3507,7 @@ mod tests {
             alias: String::new(),
             description: String::new(),
             folder: folder.to_owned(),
+            verify: SiteVerify::default(),
         };
         SiteBook {
             sites: vec![site(""), site("Work/Clients"), site("Work")],

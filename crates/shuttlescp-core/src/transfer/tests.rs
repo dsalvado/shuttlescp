@@ -1264,3 +1264,40 @@ async fn a_copy_that_differs_from_its_source_is_reported_with_both_checksums() {
         }
     );
 }
+
+#[test]
+fn each_site_can_only_make_checking_stricter() {
+    use crate::sites::SiteVerify::{ChecksumsOnly, Off, SameAsPreferences};
+    let preferences = Verify {
+        enabled: true,
+        read_back_up_to: Some(1_000),
+    };
+    let no_read_back = Verify {
+        read_back_up_to: None,
+        ..preferences
+    };
+    let off = Verify {
+        enabled: false,
+        ..preferences
+    };
+
+    // No site (on this computer) or one site.
+    assert_eq!(preferences.for_sites(&[]), preferences);
+    assert_eq!(preferences.for_sites(&[SameAsPreferences]), preferences);
+    assert_eq!(preferences.for_sites(&[ChecksumsOnly]), no_read_back);
+    assert_eq!(preferences.for_sites(&[Off]), off);
+
+    // Site to site: the stricter of the two, whichever pane it is in.
+    assert_eq!(
+        preferences.for_sites(&[SameAsPreferences, ChecksumsOnly]),
+        no_read_back
+    );
+    assert_eq!(
+        preferences.for_sites(&[ChecksumsOnly, SameAsPreferences]),
+        no_read_back
+    );
+    assert!(!preferences.for_sites(&[ChecksumsOnly, Off]).enabled);
+
+    // A site cannot turn on what the Preferences turned off.
+    assert_eq!(off.for_sites(&[SameAsPreferences]), off);
+}

@@ -43,6 +43,7 @@ use crate::checksum::Checksum;
 use crate::format::format_size;
 use crate::path::{RemotePath, SidePath};
 use crate::remote::Remote;
+use crate::sites::SiteVerify;
 use endpoint::Endpoint;
 
 /// Files of one job copied at the same time on this computer alone. More would not add
@@ -135,6 +136,26 @@ pub struct Verify {
     /// connection and hash it here, if it is not larger than this many bytes. `None`:
     /// never (it would cost a second transfer).
     pub read_back_up_to: Option<u64>,
+}
+
+/// Largest file read back by default when a server cannot compute checksums: 1 GB.
+pub const DEFAULT_READ_BACK_UP_TO: u64 = 1_000_000_000;
+
+impl Verify {
+    /// The checking for a job with these sites (none for copies on this computer, one,
+    /// or two site to site), from the Preferences (`self`): each site can only make it
+    /// stricter, so with two the stricter choice wins.
+    pub fn for_sites(self, sites: &[SiteVerify]) -> Self {
+        let mut verify = self;
+        for site in sites {
+            match site {
+                SiteVerify::SameAsPreferences => {}
+                SiteVerify::ChecksumsOnly => verify.read_back_up_to = None,
+                SiteVerify::Off => verify.enabled = false,
+            }
+        }
+        verify
+    }
 }
 
 /// What checking a copy found.

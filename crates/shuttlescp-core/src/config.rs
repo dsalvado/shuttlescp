@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::logging::LogLevel;
+use crate::transfer::{DEFAULT_READ_BACK_UP_TO, Verify};
 
 /// Error raised while loading or saving the configuration file.
 #[derive(Debug, Error)]
@@ -162,6 +163,11 @@ pub struct Config {
     check_for_updates: bool,
     /// When the app last looked for a newer release, in seconds since 1970.
     last_update_check: Option<u64>,
+    /// Check each copy against its source (see `verify`).
+    verify_copies: bool,
+    /// Largest file read back to check it when a server cannot compute checksums;
+    /// `None`: never.
+    read_back_up_to: Option<u64>,
 }
 
 // Written out by hand (not derived) because the Login dialog should show at startup
@@ -182,6 +188,8 @@ impl Default for Config {
             window_maximized: false,
             check_for_updates: true,
             last_update_check: None,
+            verify_copies: true,
+            read_back_up_to: Some(DEFAULT_READ_BACK_UP_TO),
         }
     }
 }
@@ -483,6 +491,25 @@ impl Config {
         self.transfer_limit = number.clamp(1, MAX_TRANSFER_LIMIT);
     }
 
+    /// How the Preferences say copies are checked (each site may make it stricter, see
+    /// [`Verify::for_sites`]).
+    pub fn verify(&self) -> Verify {
+        Verify {
+            enabled: self.verify_copies,
+            read_back_up_to: self.read_back_up_to,
+        }
+    }
+
+    /// Change how copies are checked (call [`Config::save`] to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `verify` - Whether to check copies, and the largest file read back
+    pub fn set_verify(&mut self, verify: Verify) {
+        self.verify_copies = verify.enabled;
+        self.read_back_up_to = verify.read_back_up_to;
+    }
+
     /// Whether to look for a newer release at startup.
     pub fn check_for_updates(&self) -> bool {
         self.check_for_updates
@@ -620,6 +647,10 @@ mod tests {
         config.set_hide_finished_files(false);
         config.set_transfer_limit(true, 4);
         config.set_language("fr-FR");
+        config.set_verify(Verify {
+            enabled: false,
+            read_back_up_to: None,
+        });
 
         // Act
         config.save(&path).expect("save config");
@@ -646,6 +677,14 @@ mod tests {
         assert_eq!(loaded.transfer_limit_number(), DEFAULT_TRANSFER_LIMIT);
         // English until the user picks another language.
         assert_eq!(loaded.language(), DEFAULT_LANGUAGE);
+        // Copies are checked, reading back files up to 1 GB.
+        assert_eq!(
+            loaded.verify(),
+            Verify {
+                enabled: true,
+                read_back_up_to: Some(DEFAULT_READ_BACK_UP_TO),
+            }
+        );
 
         fs::write(&path, "not json").expect("write file");
         assert!(matches!(Config::load(&path), Err(ConfigError::Json { .. })));

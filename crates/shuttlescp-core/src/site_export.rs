@@ -417,6 +417,7 @@ pub fn import_sites(
                 alias: exported.alias.clone(),
                 description: exported.description.clone(),
                 folder: crate::sites::normalize_folder(&exported.folder),
+                verify: crate::sites::SiteVerify::default(),
             };
             Ok((site, password))
         })
@@ -544,6 +545,7 @@ mod tests {
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
+            verify: crate::sites::SiteVerify::default(),
         }
     }
 
@@ -587,6 +589,7 @@ mod tests {
                 alias: String::from("Web"),
                 description: String::from("Live site\nBe careful"),
                 folder: String::from("Work/Clients"),
+                verify: crate::sites::SiteVerify::default(),
                 ..site("a.example")
             },
             site("b.example"),

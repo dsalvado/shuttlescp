@@ -69,6 +69,7 @@ impl Server {
                 alias: String::new(),
                 description: String::new(),
                 folder: String::new(),
+                verify: shuttlescp_core::sites::SiteVerify::default(),
             },
             password: password.to_owned(),
             dir: RemotePath::new(format!("/{dir}")),
