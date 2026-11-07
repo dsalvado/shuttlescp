@@ -13,7 +13,7 @@ use tokio::task::JoinSet;
 use super::endpoint::{Endpoint, partial_path};
 use super::{
     CancelFlag, ConflictAnswer, ConflictChoice, ConflictReply, FILES_AT_ONCE, ItemKind,
-    ItemOutcome, Job, JobKind, PlanItem, Sink, TransferEvent,
+    ItemOutcome, Job, JobKind, PlanItem, Sink, TransferEvent, Verification, Verify,
 };
 use crate::format::format_size;
 
@@ -144,6 +144,7 @@ pub(super) async fn copy_items(
     sink: &Sink,
 ) -> Vec<ItemOutcome> {
     let delete_source = job.kind == JobKind::Move;
+    let verify = job.verify;
     let mut outcomes: Vec<Option<ItemOutcome>> = vec![None; items.len()];
     let finish = |outcomes: &mut Vec<Option<ItemOutcome>>, id: usize, outcome: ItemOutcome| {
         sink(TransferEvent::ItemFinished {
@@ -283,6 +284,7 @@ pub(super) async fn copy_items(
                             &dst,
                             delete_source,
                             replace,
+                            verify,
                             &cancel,
                             &sink,
                             &times,
@@ -541,7 +543,8 @@ async fn finish_source(item: &PlanItem, src: &Endpoint, delete_source: bool) -> 
 
 /// Copy one file through its partial file, continuing an earlier partial copy when
 /// there is one, then give it its real name (replacing the existing file if `replace`)
-/// and delete the source if moving. A completed copy's times are added to `times`.
+/// and delete the source if moving, once the copy is checked against it if `verify`
+/// says so. A completed copy's times are added to `times`.
 #[allow(clippy::too_many_arguments)]
 async fn copy_file(
     item: &PlanItem,
@@ -549,6 +552,7 @@ async fn copy_file(
     dst: &Endpoint,
     delete_source: bool,
     replace: bool,
+    verify: Verify,
     cancel: &CancelFlag,
     sink: &Sink,
     times: &Mutex<JobTimes>,
@@ -621,6 +625,18 @@ async fn copy_file(
         // The copy itself is fine; only its date differs.
         tracing::debug!("{error}");
     }
+    if verify.enabled {
+        let verification = verify_copy(item, src, dst).await;
+        let mismatched = matches!(verification, Verification::Mismatched { .. });
+        sink(TransferEvent::Verified {
+            id: item.id,
+            verification,
+        });
+        if mismatched {
+            // The original stays, even when moving; so does the copy, to look at.
+            return ItemOutcome::Failed(crate::tr!("verify-mismatch")).into();
+        }
+    }
     let outcome = finish_source(item, src, delete_source).await;
     if outcome == ItemOutcome::Done {
         took.finish = finishing.elapsed();
@@ -630,6 +646,47 @@ async fn copy_file(
         }
     }
     outcome.into()
+}
+
+/// Check the copy at `item.dest` against `item.source` by their SHA-256 checksums
+/// (both asked for at once), and write what was found in the log, with the values.
+pub(super) async fn verify_copy(item: &PlanItem, src: &Endpoint, dst: &Endpoint) -> Verification {
+    let started = Instant::now();
+    let (source, copy) = tokio::join!(src.sha256(&item.source), dst.sha256(&item.dest));
+    let (from, to) = (src.place(), dst.place());
+    let took = started.elapsed().as_secs_f64();
+    let what = format!("{} -> {}", item.source, item.dest);
+    match (source, copy) {
+        (Ok(source), Ok(copy)) if source == copy => {
+            tracing::info!(
+                "verified {what}: SHA-256 {source} (source on {from}, copy on {to}; {took:.1} s)"
+            );
+            Verification::Matched(source)
+        }
+        (Ok(source), Ok(copy)) => {
+            tracing::warn!(
+                "copy differs from its source, {what}: SHA-256 {source} (source on {from}), \
+                 {copy} (copy on {to}; {took:.1} s)"
+            );
+            Verification::Mismatched { source, copy }
+        }
+        (Err(reason), Ok(copy)) => {
+            tracing::info!(
+                "not verified {what}: source on {from}: {reason} (copy on {to}: SHA-256 {copy})"
+            );
+            Verification::Unchecked(reason)
+        }
+        (Ok(source), Err(reason)) => {
+            tracing::info!(
+                "not verified {what}: copy on {to}: {reason} (source on {from}: SHA-256 {source})"
+            );
+            Verification::Unchecked(reason)
+        }
+        (Err(reason), Err(_)) => {
+            tracing::info!("not verified {what}: {reason}");
+            Verification::Unchecked(reason)
+        }
+    }
 }
 
 /// Record a finished file copy in the log: what went where, how big, how fast, and

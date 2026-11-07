@@ -39,6 +39,7 @@ pub use ops::{
     windows_restored_name, windows_safe_name,
 };
 
+use crate::checksum::Checksum;
 use crate::format::format_size;
 use crate::path::{RemotePath, SidePath};
 use crate::remote::Remote;
@@ -119,6 +120,33 @@ pub struct Job {
     /// size and date at the destination) are not copied again or asked about, and
     /// sources already moved away are passed over.
     pub resume: bool,
+    /// Whether to check each copy against its source. Not saved with the job: a
+    /// resumed job follows the settings of the time.
+    pub verify: Verify,
+}
+
+/// Whether and how copies are checked against their sources once made: by comparing
+/// SHA-256 checksums, computed by the servers themselves or on this computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Verify {
+    /// Check copies at all.
+    pub enabled: bool,
+}
+
+/// What checking a copy found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verification {
+    /// The copy and its source have this checksum.
+    Matched(Checksum),
+    /// They differ: the copy is not what was copied (the item fails).
+    Mismatched {
+        /// The source's checksum.
+        source: Checksum,
+        /// The copy's.
+        copy: Checksum,
+    },
+    /// Not checked, and why (e.g. the server cannot compute checksums).
+    Unchecked(String),
 }
 
 impl Job {
@@ -324,6 +352,7 @@ impl From<JobRecord> for Job {
             between_servers: record.between_servers,
             left_server: record.left_server,
             resume: record.resume,
+            verify: Verify::default(),
         };
         job.sources = record
             .sources
@@ -541,6 +570,13 @@ pub enum TransferEvent {
         id: usize,
         /// Bytes copied so far.
         done: u64,
+    },
+    /// A copied file was checked against its source (before [`Self::ItemFinished`]).
+    Verified {
+        /// Item id.
+        id: usize,
+        /// What the check found.
+        verification: Verification,
     },
     /// An item finished.
     ItemFinished {

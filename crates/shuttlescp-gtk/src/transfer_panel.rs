@@ -840,6 +840,8 @@ impl Component for TransferPanel {
         self.announce_target(id, &event, now, &sender);
         match event {
             TransferEvent::Planned(items) => self.show_plan(id, &items, now),
+            // Not shown in the list yet; the log has it.
+            TransferEvent::Verified { .. } => {}
             TransferEvent::Resumed { id: item, from } => {
                 let mut shared = self.shared.borrow_mut();
                 let changed = resumed(&mut shared, id, item, from, now);
@@ -2713,6 +2715,7 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
 mod tests {
     use super::*;
     use shuttlescp_core::path::RemotePath;
+    use shuttlescp_core::transfer::Verify;
 
     fn pending(key: &str) -> PendingJob {
         PendingJob {
@@ -2728,6 +2731,7 @@ mod tests {
                 between_servers: false,
                 left_server: false,
                 resume: false,
+                verify: Verify::default(),
             },
             saved_at: None,
         }

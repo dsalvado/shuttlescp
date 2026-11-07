@@ -946,6 +946,7 @@ mod tests {
             between_servers: false,
             left_server: false,
             resume: false,
+            verify: shuttlescp_core::transfer::Verify::default(),
         }
     }
 

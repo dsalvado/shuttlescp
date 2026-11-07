@@ -510,6 +510,7 @@ error-no-such-item = 没有这个文件或文件夹
 error-sftp-date = { $path } 的日期无法用 SFTP 保存
 checksum-unsupported = 服务器无法计算校验和
 checksum-no-answer = 服务器的回复中没有校验和
+verify-mismatch = 副本的校验和与原文件不同：副本与所复制的内容不一致
 connect-unsupported = 尚不支持 { $protocol } 连接
 connect-timeout = { $host } 没有响应（超时）
 connect-network = 无法连接到 { $host }：{ $reason }

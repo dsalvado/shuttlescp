@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite};
 
+use crate::checksum::{Checksum, local_sha256};
 use crate::path::{RemotePath, SidePath};
 use crate::remote::{Remote, RemoteMeta};
 
@@ -91,6 +92,29 @@ impl Endpoint {
                 };
                 Ok(remote_node(&metadata))
             }
+        }
+    }
+
+    /// The SHA-256 of a file: hashed here for this computer, by the server for a
+    /// server's (the file is not sent).
+    ///
+    /// # Errors
+    ///
+    /// Returns why there is none (often: the server cannot compute checksums)
+    pub(super) async fn sha256(&self, path: &SidePath) -> Result<Checksum, String> {
+        match self.target(path)? {
+            Target::Local(path) => local_sha256(path.to_owned())
+                .await
+                .map_err(|error| crate::i18n::cannot("read", path.display(), &error)),
+            Target::Remote(remote, path) => remote.sha256(path).await,
+        }
+    }
+
+    /// Where this side's files are, for the log: "this computer" or the server.
+    pub(super) fn place(&self) -> String {
+        match self {
+            Self::Local => "this computer".to_owned(),
+            Self::Remote(remote) => remote.host().to_owned(),
         }
     }
 

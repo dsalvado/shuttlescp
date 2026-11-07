@@ -24,7 +24,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use shuttlescp_core::transfer::{
-    CancelFlag, ItemOutcome, Job, JobKind, JobSummary, Side, TransferEvent, run,
+    CancelFlag, ItemOutcome, Job, JobKind, JobSummary, Side, TransferEvent, Verification, Verify,
+    run,
 };
 
 /// A test server, from `SHUTTLESCP_TEST_SFTP` or `SHUTTLESCP_TEST_FTP`.
@@ -131,6 +132,7 @@ fn job(kind: JobKind, side: Side, sources: Vec<SidePath>, dest_dir: SidePath) ->
         dest_dir,
         same_side: false,
         resume: false,
+        verify: Verify::default(),
     }
 }
 
@@ -811,5 +813,79 @@ async fn servers_without_checksums_say_so() {
         let (first, second) = answers.unwrap_or_else(|_| panic!("{var}: no answer in 10 s"));
         assert!(first.is_err(), "{var}: {first:?}");
         assert!(second.is_err(), "{var}: {second:?}");
+    }
+}
+
+/// Downloads checked against their source: matched where the server can compute
+/// checksums, left unchecked (but done) where it cannot.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn downloads_are_verified_where_the_server_can() {
+    for (var, can) in [
+        ("SHUTTLESCP_TEST_SSH_SHELL", true),
+        ("SHUTTLESCP_TEST_SFTP", false),
+    ] {
+        // Arrange: a file on the server.
+        let server = Server::from_env(var);
+        let remote = server.connect().await;
+        let temp = tempfile::tempdir().expect("temp dir");
+        let name = "verified.bin";
+        std::fs::write(temp.path().join(name), pattern(700_000)).expect("write");
+        let upload = job(
+            JobKind::Copy,
+            Side::Local,
+            vec![SidePath::Local(temp.path().join(name))],
+            SidePath::Remote(server.dir.clone()),
+        );
+        let (up, up_errors) = run_job(upload, &remote, None).await;
+        assert!(up.is_complete(), "{var} upload: {up:?} {up_errors:?}");
+        let back = temp.path().join("back");
+        std::fs::create_dir(&back).expect("create");
+        let on_server = SidePath::Remote(server.dir.join(name));
+        let download = Job {
+            verify: Verify { enabled: true },
+            ..job(
+                JobKind::Copy,
+                Side::Remote,
+                vec![on_server.clone()],
+                SidePath::Local(back.clone()),
+            )
+        };
+
+        // Act
+        let found = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&found);
+        let down = run(
+            download,
+            Some(remote.clone()),
+            None,
+            CancelFlag::default(),
+            move |event| {
+                if let TransferEvent::Verified { verification, .. } = event {
+                    seen.lock().expect("lock").push(verification);
+                }
+            },
+        )
+        .await;
+        let clean_up = job(
+            JobKind::Delete,
+            Side::Remote,
+            vec![on_server.clone()],
+            on_server,
+        );
+        let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+        // Assert
+        assert!(down.is_complete(), "{var} download: {down:?}");
+        assert!(deleted.is_complete(), "{var} clean up: {deleted:?}");
+        let expected = shuttlescp_core::checksum::local_sha256(temp.path().join(name))
+            .await
+            .expect("checksum");
+        let found = found.lock().expect("lock").clone();
+        match found.as_slice() {
+            [Verification::Matched(checksum)] if can => assert_eq!(*checksum, expected),
+            [Verification::Unchecked(_)] if !can => {}
+            other => panic!("{var}: {other:?}"),
+        }
     }
 }

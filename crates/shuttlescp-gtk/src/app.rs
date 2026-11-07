@@ -21,7 +21,7 @@ use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::pending::PendingTransfers;
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteBook};
-use shuttlescp_core::transfer::{Job, JobKind, Side};
+use shuttlescp_core::transfer::{Job, JobKind, Side, Verify};
 use shuttlescp_core::update::{self, Manifest};
 
 use crate::build_info::{build_info, show_about};
@@ -1111,6 +1111,7 @@ impl SimpleComponent for App {
                         between_servers: false,
                         left_server: false,
                         resume: false,
+                        verify: Verify::default(),
                     },
                 );
             }
@@ -1707,6 +1708,7 @@ impl App {
             between_servers: false,
             left_server: false,
             resume: false,
+            verify: Verify::default(),
         };
         if kind != JobKind::Delete {
             self.start_job(session, job);

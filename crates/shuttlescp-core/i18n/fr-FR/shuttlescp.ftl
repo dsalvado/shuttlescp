@@ -569,6 +569,7 @@ error-no-such-item = aucun fichier ou dossier de ce nom
 error-sftp-date = { $path } a une date que SFTP ne peut pas enregistrer
 checksum-unsupported = le serveur ne peut pas calculer de sommes de contrôle
 checksum-no-answer = la réponse du serveur ne contenait aucune somme de contrôle
+verify-mismatch = la somme de contrôle de la copie diffère de celle de l'original : la copie n'est pas ce qui a été copié
 connect-unsupported = les connexions { $protocol } ne sont pas encore prises en charge
 connect-timeout = { $host } n'a pas répondu (délai dépassé)
 connect-network = impossible de se connecter à { $host } : { $reason }

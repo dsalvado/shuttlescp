@@ -569,6 +569,7 @@ error-no-such-item = no existe ese archivo o carpeta
 error-sftp-date = { $path } tiene una fecha que SFTP no puede guardar
 checksum-unsupported = el servidor no puede calcular sumas de comprobación
 checksum-no-answer = la respuesta del servidor no contenía ninguna suma de comprobación
+verify-mismatch = la suma de comprobación de la copia difiere de la del original: la copia no es lo que se copió
 connect-unsupported = las conexiones { $protocol } aún no son compatibles
 connect-timeout = { $host } no respondió (tiempo agotado)
 connect-network = no se puede conectar a { $host }: { $reason }

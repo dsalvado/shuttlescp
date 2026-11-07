@@ -705,6 +705,7 @@ error-no-such-item = no such file or folder
 error-sftp-date = { $path } has a date SFTP cannot store
 checksum-unsupported = the server cannot compute checksums
 checksum-no-answer = the server's answer held no checksum
+verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied
 
 ## Why connecting failed (remote/mod.rs). Shown after the site's name or on their
 ## own, so they start lowercase. $host: a server's address; $reason: what went wrong
