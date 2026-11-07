@@ -517,14 +517,14 @@ login-export-tooltip = Save all sites to a file for another computer
 login-login-tooltip = Connect to the selected site
 # Shown after the Files at once field; $count is the usual number.
 login-files-at-once-usual = (usually { $count })
-login-verify = Verify copies:
-login-verify-tooltip = Whether copies to and from this server are checked against their originals. Checksums only: only where the server can compute checksums, never by reading the copy back (best for slow servers).
+login-verify = Verify checksums:
+login-verify-tooltip = Whether file checksums are verified after each transfer to or from this server. Server checksums only: only where the server can compute them, never by reading the file back (best for slow servers).
 login-verify-same = Same as Preferences
-login-verify-checksums = Checksums only
+login-verify-checksums = Server checksums only
 login-verify-off = Off
-preferences-verify = _Check copies against their originals
+preferences-verify = _Verify file checksums after completion
 preferences-read-back = _Read back files up to:
-preferences-read-back-note = When a server cannot compute checksums, a copy is checked by reading it back: a second transfer.
+preferences-read-back-note = When a server cannot compute checksums, the file is read back to verify it: a second transfer.
 read-back-never = Never
 read-back-any-size = Any size
 

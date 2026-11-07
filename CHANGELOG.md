@@ -7,6 +7,12 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- Clearer wording for checking copies: Preferences say "Verify file checksums after
+  completion", and a site's Advanced section "Verify checksums: Same as Preferences /
+  Server checksums only / Off".
+
 ## [0.22.1] - 2026-11-07
 
 ### Fixed
