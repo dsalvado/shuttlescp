@@ -971,6 +971,7 @@ async fn copies_are_read_back_up_to_the_limit() {
         on_server.clone(),
         SidePath::Local(temp.path().join("b").join(name)),
         SIZE as u64,
+        |_| {},
     )
     .await;
     let never = run_verifying(download("c"), verify(None), &remote).await;

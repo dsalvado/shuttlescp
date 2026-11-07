@@ -70,19 +70,27 @@ pub async fn local_sha256(path: PathBuf) -> io::Result<Checksum> {
 }
 
 /// The checksum of everything `reader` gives, such as a file read from a server.
+/// `progress` is called with the bytes read so far after each piece, to show how far
+/// the reading has got.
 ///
 /// # Errors
 ///
 /// Returns the error of reading
-pub(crate) async fn sha256_of(mut reader: impl AsyncRead + Unpin) -> io::Result<Checksum> {
+pub(crate) async fn sha256_of(
+    mut reader: impl AsyncRead + Unpin,
+    mut progress: impl FnMut(u64),
+) -> io::Result<Checksum> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 256 * 1024];
+    let mut done = 0u64;
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
             return Ok(Checksum(hasher.finalize().into()));
         }
         hasher.update(&buffer[..read]);
+        done += read as u64;
+        progress(done);
     }
 }
 
@@ -118,10 +126,29 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join("f"), &bytes).expect("write");
         assert_eq!(
-            sha256_of(bytes.as_slice()).await.expect("hash"),
+            sha256_of(bytes.as_slice(), |_| {}).await.expect("hash"),
             local_sha256(dir.path().join("f")).await.expect("hash")
         );
-        assert_eq!(sha256_of(&b"abc"[..]).await.expect("hash").to_string(), ABC);
+        assert_eq!(
+            sha256_of(&b"abc"[..], |_| {})
+                .await
+                .expect("hash")
+                .to_string(),
+            ABC
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_reports_its_progress() {
+        let bytes = vec![7_u8; 700_000];
+        let mut reported = Vec::new();
+
+        sha256_of(bytes.as_slice(), |done| reported.push(done))
+            .await
+            .expect("hash");
+
+        // One report per 256 KiB piece, the last one the whole size.
+        assert_eq!(reported, [262_144, 524_288, 700_000]);
     }
 
     #[tokio::test]

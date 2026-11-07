@@ -606,6 +606,14 @@ pub enum TransferEvent {
         /// Item id.
         id: usize,
     },
+    /// A file being checked is read back (its server cannot compute checksums): `done`
+    /// of its bytes so far. Checks done by the server report no progress.
+    VerifyProgress {
+        /// Item id.
+        id: usize,
+        /// Bytes read back so far.
+        done: u64,
+    },
     /// A copied file was checked against its source (before [`Self::ItemFinished`]).
     Verified {
         /// Item id.
@@ -735,6 +743,8 @@ fn endpoints(
 /// * `remote`, `dest_remote` - Its connections, as for [`run`]
 /// * `source`, `dest` - The file and its copy
 /// * `size` - Its size
+/// * `progress` - Gets the bytes read back so far, when a side is read back (as
+///   [`TransferEvent::VerifyProgress`] has them)
 pub async fn verify_now(
     job: &Job,
     remote: Option<Remote>,
@@ -742,6 +752,7 @@ pub async fn verify_now(
     source: SidePath,
     dest: SidePath,
     size: u64,
+    progress: impl Fn(u64) + Send + Sync,
 ) -> Verification {
     let (Some(src), Some(dst)) = endpoints(job, remote, dest_remote) else {
         return Verification::Unchecked(crate::tr!("error-not-connected"));
@@ -764,7 +775,7 @@ pub async fn verify_now(
         enabled: true,
         read_back_up_to: Some(u64::MAX),
     };
-    copy::verify_copy(&item, &src, &dst, verify).await
+    copy::verify_copy(&item, &src, &dst, verify, &progress).await
 }
 
 /// Run `job`, reporting to `on_event` as it goes.

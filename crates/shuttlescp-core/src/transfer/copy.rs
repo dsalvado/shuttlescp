@@ -3,6 +3,7 @@
 
 use crate::path::SidePath;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -628,7 +629,8 @@ async fn copy_file(
     }
     if verify.enabled {
         sink(TransferEvent::Verifying { id: item.id });
-        let verification = verify_or_skip(item, src, dst, verify, cancel).await;
+        let progress = |done| sink(TransferEvent::VerifyProgress { id: item.id, done });
+        let verification = verify_or_skip(item, src, dst, verify, cancel, &progress).await;
         let mismatched = matches!(verification, Verification::Mismatched { .. });
         sink(TransferEvent::Verified {
             id: item.id,
@@ -652,17 +654,37 @@ async fn copy_file(
 
 /// Check the copy at `item.dest` against `item.source` by their SHA-256 checksums
 /// (both sides at once), and write what was found in the log, with the values.
+/// `progress` gets the bytes read back so far, when a side is read back; if both are,
+/// the slower one's, as the check ends when both are done.
 pub(super) async fn verify_copy(
     item: &PlanItem,
     src: &Endpoint,
     dst: &Endpoint,
     verify: Verify,
+    progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Verification {
     let started = Instant::now();
     let limit = verify.read_back_up_to;
+    // Bytes read back on each side so far; u64::MAX while a side is not reading back.
+    let read = [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)];
+    // Reported at most every PROGRESS_INTERVAL, as copying is.
+    let reported = Mutex::new(Instant::now());
+    let report = |side: usize, done: u64| {
+        read[side].store(done, Ordering::Relaxed);
+        let Ok(mut reported) = reported.lock() else {
+            return;
+        };
+        if reported.elapsed() >= PROGRESS_INTERVAL {
+            *reported = Instant::now();
+            let slower = read[0]
+                .load(Ordering::Relaxed)
+                .min(read[1].load(Ordering::Relaxed));
+            progress(slower);
+        }
+    };
     let (source, copy) = tokio::join!(
-        checksum_for_check(src, &item.source, item.size, limit),
-        checksum_for_check(dst, &item.dest, item.size, limit),
+        checksum_for_check(src, &item.source, item.size, limit, |done| report(0, done)),
+        checksum_for_check(dst, &item.dest, item.size, limit, |done| report(1, done)),
     );
     let took = started.elapsed().as_secs_f64();
     let what = format!("{} -> {}", item.source, item.dest);
@@ -699,8 +721,9 @@ async fn verify_or_skip(
     dst: &Endpoint,
     verify: Verify,
     cancel: &CancelFlag,
+    progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Verification {
-    let checking = verify_copy(item, src, dst, verify);
+    let checking = verify_copy(item, src, dst, verify, progress);
     tokio::pin!(checking);
     loop {
         if cancel.is_item_stopped(item.id) || cancel.is_cancelled() {
@@ -734,12 +757,14 @@ enum NoChecksum {
 }
 
 /// The checksum of a file for checking a copy: computed where it is, or, for a server
-/// that cannot, by reading it back if `read_back_up_to` allows its `size`.
+/// that cannot, by reading it back if `read_back_up_to` allows its `size`; `progress`
+/// then gets the bytes read back so far.
 async fn checksum_for_check(
     endpoint: &Endpoint,
     path: &SidePath,
     size: u64,
     read_back_up_to: Option<u64>,
+    progress: impl FnMut(u64),
 ) -> Result<(Checksum, How), NoChecksum> {
     let reason = match endpoint.sha256(path).await {
         Ok(checksum) => return Ok((checksum, How::Computed)),
@@ -755,7 +780,7 @@ async fn checksum_for_check(
         Some(_) => {
             tracing::debug!("{path}: {reason}; reading it back to check it");
             endpoint
-                .read_back_sha256(path)
+                .read_back_sha256(path, progress)
                 .await
                 .map(|checksum| (checksum, How::ReadBack))
                 .map_err(NoChecksum::Failed)

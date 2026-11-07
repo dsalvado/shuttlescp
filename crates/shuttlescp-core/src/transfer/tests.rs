@@ -1250,8 +1250,14 @@ async fn a_copy_that_differs_from_its_source_is_reported_with_both_checksums() {
     };
 
     // Act
-    let found =
-        copy::verify_copy(&item, &Endpoint::Local, &Endpoint::Local, Verify::default()).await;
+    let found = copy::verify_copy(
+        &item,
+        &Endpoint::Local,
+        &Endpoint::Local,
+        Verify::default(),
+        &|_| {},
+    )
+    .await;
 
     // Assert
     let source = crate::checksum::local_sha256(src.join("top.txt")).await;

@@ -17,6 +17,10 @@ becomes its release notes on GitHub.
   was treated as failing, so its older `XSHA256` checksum command was never tried and
   copies were read back to check them. Any refusal of the option now moves on to
   `XSHA256`.
+- A copy being read back to check it showed only "Verifying…" for as long as the read
+  took, which looked stuck. It now shows how far the check has got ("Verifying… 35%"),
+  and its progress bar fills again, also for Verify now. Checks done by the server
+  still show "Verifying…".
 
 ## [0.22.0] - 2026-11-07
 

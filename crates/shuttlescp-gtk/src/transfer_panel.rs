@@ -380,6 +380,8 @@ struct ItemState {
     paused: bool,
     /// Its copy is being checked against it.
     verifying: bool,
+    /// While its copy is checked by reading it back: the bytes read back so far.
+    verify_done: Option<u64>,
     /// What checking its copy found.
     verification: Option<Verification>,
 }
@@ -869,6 +871,9 @@ impl Component for TransferPanel {
             TransferEvent::Verifying { id: item } => {
                 self.set_verification(id, item, true, None, now);
             }
+            TransferEvent::VerifyProgress { id: item, done } => {
+                self.set_verify_progress(id, item, done, now);
+            }
             TransferEvent::Verified {
                 id: item,
                 verification,
@@ -1133,9 +1138,32 @@ impl TransferPanel {
             return;
         };
         state.verifying = verifying;
+        // A check starting or ending: no read-back progress (yet, or any more).
+        state.verify_done = None;
         if verification.is_some() {
             state.verification = verification;
         }
+        refresh(
+            &shared,
+            &[RowKey {
+                job: id,
+                item: Some(item),
+            }],
+            now,
+        );
+    }
+
+    /// Record how far reading a file back to check it has got (`done` bytes).
+    fn set_verify_progress(&self, id: u64, item: usize, done: u64, now: Instant) {
+        let mut shared = self.shared.borrow_mut();
+        let Some(state) = shared
+            .jobs
+            .get_mut(&id)
+            .and_then(|job| job.items.get_mut(item))
+        else {
+            return;
+        };
+        state.verify_done = Some(done);
         refresh(
             &shared,
             &[RowKey {
@@ -1165,8 +1193,21 @@ impl TransferPanel {
             shutdown
                 .register(async move {
                     let _ = out.send((id, TransferEvent::Verifying { id: item }));
-                    let verification =
-                        transfer::verify_now(&job, remote, dest_remote, source, dest, size).await;
+                    let progress_out = out.clone();
+                    let progress = move |done| {
+                        let _ = progress_out
+                            .send((id, TransferEvent::VerifyProgress { id: item, done }));
+                    };
+                    let verification = transfer::verify_now(
+                        &job,
+                        remote,
+                        dest_remote,
+                        source,
+                        dest,
+                        size,
+                        progress,
+                    )
+                    .await;
                     let _ = out.send((
                         id,
                         TransferEvent::Verified {
@@ -1654,6 +1695,7 @@ impl TransferPanel {
                         asking: false,
                         paused: false,
                         verifying: false,
+                        verify_done: None,
                         verification: None,
                     }
                 })
@@ -2540,7 +2582,22 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
     let verify_now = item.outcome == Some(ItemOutcome::Done)
         && item.verification == Some(Verification::LargeFile);
     let (info, error, status) = match &item.outcome {
-        _ if item.verifying => (tr!("item-verifying"), false, None),
+        _ if item.verifying => {
+            // "Verifying… 35%" while it is read back; checks done by the server have no
+            // progress to show.
+            let info = match item.verify_done {
+                Some(done) => format!(
+                    "{} {}",
+                    tr!("item-verifying"),
+                    tr!(
+                        "progress-percent",
+                        percent = transfer::percent(done, item.size)
+                    )
+                ),
+                None => tr!("item-verifying"),
+            };
+            (info, false, None)
+        }
         Some(ItemOutcome::Done) if deleting => (tr!("item-deleted"), false, Some(DONE_ICON)),
         Some(ItemOutcome::Done) => {
             let size = format_size(item.size);
@@ -2612,8 +2669,10 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             _ => item.source.to_string(),
         },
         heading: false,
-        fraction: (!deleting).then(|| match item.outcome {
-            Some(ItemOutcome::Done) => 1.0,
+        // While it is read back to check it, the bar fills again with the check.
+        fraction: (!deleting).then(|| match (item.verify_done, &item.outcome) {
+            (Some(checked), _) if item.verifying => transfer::fraction(checked, item.size),
+            (_, Some(ItemOutcome::Done)) => 1.0,
             _ => transfer::fraction(item.done, item.size),
         }),
         info,
@@ -2977,6 +3036,7 @@ mod tests {
                     asking: false,
                     paused: false,
                     verifying: false,
+                    verify_done: None,
                     verification: None,
                 })
                 .collect(),
