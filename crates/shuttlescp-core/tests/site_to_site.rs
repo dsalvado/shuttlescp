@@ -961,7 +961,18 @@ async fn copies_are_read_back_up_to_the_limit() {
     // Act
     let up = run_verifying(upload, verify(Some(1_000_000)), &remote).await;
     let read_back = run_verifying(download("a"), verify(Some(1_000_000)), &remote).await;
-    let too_large = run_verifying(download("b"), verify(Some(100_000)), &remote).await;
+    let large_job = download("b");
+    let too_large = run_verifying(large_job.clone(), verify(Some(100_000)), &remote).await;
+    // Then checked on request (Verify now), whatever its size.
+    let on_request = shuttlescp_core::transfer::verify_now(
+        &large_job,
+        Some(remote.clone()),
+        None,
+        on_server.clone(),
+        SidePath::Local(temp.path().join("b").join(name)),
+        SIZE as u64,
+    )
+    .await;
     let never = run_verifying(download("c"), verify(None), &remote).await;
     let clean_up = job(
         JobKind::Delete,
@@ -988,9 +999,90 @@ async fn copies_are_read_back_up_to_the_limit() {
         "download"
     );
     assert_eq!(too_large.1, vec![Verification::LargeFile], "over the limit");
+    assert_eq!(on_request, Verification::Matched(expected), "verify now");
     assert!(
         matches!(never.1.as_slice(), [Verification::Unchecked(_)]),
         "never: {:?}",
         never.1
     );
+}
+
+/// Skipping a check (stopping the file while its copy is checked) ends the check at
+/// once: the copy counts as done, unchecked, without waiting for a slow read-back.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_check_can_be_skipped() {
+    // Arrange: 2 MiB on the SFTP-only server, downloaded at 200 kB/s (about 10 s),
+    // where reading it back to check it would take as long again.
+    const SIZE: usize = 2 * 1024 * 1024;
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let name = "skipped.bin";
+    std::fs::write(temp.path().join(name), pattern(SIZE)).expect("write");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(temp.path().join(name))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    let link = TestLink::start(&server, Some(200_000)).await;
+    let slow = link.to(&server).connect().await;
+    let back = temp.path().join("back");
+    std::fs::create_dir(&back).expect("create");
+    let on_server = SidePath::Remote(server.dir.join(name));
+    let download = Job {
+        verify: Verify {
+            enabled: true,
+            read_back_up_to: Some(u64::MAX),
+        },
+        ..job(
+            JobKind::Copy,
+            Side::Remote,
+            vec![on_server.clone()],
+            SidePath::Local(back.clone()),
+        )
+    };
+
+    // Act: skip as soon as the check starts.
+    let cancel = CancelFlag::default();
+    let skipping = cancel.clone();
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&found);
+    let started = std::time::Instant::now();
+    let down = run(
+        download,
+        Some(slow),
+        None,
+        cancel,
+        move |event| match event {
+            TransferEvent::Verifying { id } => skipping.stop_item(id),
+            TransferEvent::Verified { verification, .. } => {
+                seen.lock().expect("lock").push(verification);
+            }
+            _ => {}
+        },
+    )
+    .await;
+    let took = started.elapsed();
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert: done, unchecked, and not slowed by a read-back.
+    assert!(down.is_complete(), "download: {down:?}");
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+    let found = found.lock().expect("lock").clone();
+    assert!(
+        matches!(found.as_slice(), [Verification::Unchecked(_)]),
+        "{found:?}"
+    );
+    assert!(took < Duration::from_secs(16), "took {took:?}");
+    assert_eq!(std::fs::read(back.join(name)).expect("read"), pattern(SIZE));
 }

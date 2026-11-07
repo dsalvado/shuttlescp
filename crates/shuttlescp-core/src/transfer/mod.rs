@@ -600,6 +600,12 @@ pub enum TransferEvent {
         /// Bytes copied so far.
         done: u64,
     },
+    /// A copied file is being checked against its source (it can be skipped by
+    /// stopping the item, see [`CancelFlag::stop_item`]).
+    Verifying {
+        /// Item id.
+        id: usize,
+    },
     /// A copied file was checked against its source (before [`Self::ItemFinished`]).
     Verified {
         /// Item id.
@@ -701,6 +707,66 @@ impl CancelFlag {
 /// Receives a job's events; called from background tasks.
 type Sink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
 
+/// The sides a job reads from and writes to, given its connections as [`run`] gets
+/// them: this computer, or a server (`None` where it needs one that is not given).
+fn endpoints(
+    job: &Job,
+    remote: Option<Remote>,
+    dest_remote: Option<Remote>,
+) -> (Option<Endpoint>, Option<Endpoint>) {
+    let endpoint = |side: Side| match side {
+        Side::Local => Some(Endpoint::Local),
+        Side::Remote => remote.clone().map(Endpoint::Remote),
+    };
+    let dest = if job.between_servers {
+        dest_remote.map(Endpoint::Remote)
+    } else {
+        endpoint(job.dest_side())
+    };
+    (endpoint(job.side), dest)
+}
+
+/// Check, on request, one file a job copied against its source, reading back as much
+/// as needed whatever its size (for a copy left as [`Verification::LargeFile`]).
+///
+/// # Arguments
+///
+/// * `job` - The job that copied it (which sides its source and copy are on)
+/// * `remote`, `dest_remote` - Its connections, as for [`run`]
+/// * `source`, `dest` - The file and its copy
+/// * `size` - Its size
+pub async fn verify_now(
+    job: &Job,
+    remote: Option<Remote>,
+    dest_remote: Option<Remote>,
+    source: SidePath,
+    dest: SidePath,
+    size: u64,
+) -> Verification {
+    let (Some(src), Some(dst)) = endpoints(job, remote, dest_remote) else {
+        return Verification::Unchecked(crate::tr!("error-not-connected"));
+    };
+    tracing::info!("checking {dest} against {source}, as asked");
+    let item = PlanItem {
+        id: 0,
+        parent: None,
+        name: String::new(),
+        kind: ItemKind::File,
+        size,
+        source,
+        dest,
+        existing: None,
+        modified: None,
+        existing_is_dir: false,
+        partial: 0,
+    };
+    let verify = Verify {
+        enabled: true,
+        read_back_up_to: Some(u64::MAX),
+    };
+    copy::verify_copy(&item, &src, &dst, verify).await
+}
+
 /// Run `job`, reporting to `on_event` as it goes.
 ///
 /// # Arguments
@@ -726,16 +792,8 @@ pub async fn run(
 ) -> JobSummary {
     let sink: Sink = Arc::new(on_event);
     let started = std::time::Instant::now();
-    let endpoint = |side: Side| match side {
-        Side::Local => Some(Endpoint::Local),
-        Side::Remote => remote.clone().map(Endpoint::Remote),
-    };
-    let dest = if job.between_servers {
-        dest_remote.map(Endpoint::Remote)
-    } else {
-        endpoint(job.dest_side())
-    };
-    let summary = match endpoint(job.side) {
+    let (source, dest) = endpoints(&job, remote, dest_remote);
+    let summary = match source {
         None => failed_to_start(&crate::tr!("error-not-connected")),
         Some(_) if job.between_servers && dest.is_none() => {
             failed_to_start(&crate::tr!("error-not-connected-destination"))

@@ -627,7 +627,8 @@ async fn copy_file(
         tracing::debug!("{error}");
     }
     if verify.enabled {
-        let verification = verify_copy(item, src, dst, verify).await;
+        sink(TransferEvent::Verifying { id: item.id });
+        let verification = verify_or_skip(item, src, dst, verify, cancel).await;
         let mismatched = matches!(verification, Verification::Mismatched { .. });
         sink(TransferEvent::Verified {
             id: item.id,
@@ -686,6 +687,32 @@ pub(super) async fn verify_copy(
         _ => {
             tracing::info!("not verified {what}: {sides}");
             Verification::LargeFile
+        }
+    }
+}
+
+/// [`verify_copy`], given up (as unchecked) once the user stops the item or the job:
+/// reading a large file back can take long.
+async fn verify_or_skip(
+    item: &PlanItem,
+    src: &Endpoint,
+    dst: &Endpoint,
+    verify: Verify,
+    cancel: &CancelFlag,
+) -> Verification {
+    let checking = verify_copy(item, src, dst, verify);
+    tokio::pin!(checking);
+    loop {
+        if cancel.is_item_stopped(item.id) || cancel.is_cancelled() {
+            tracing::info!(
+                "not verified {} -> {}: skipped by the user",
+                item.source,
+                item.dest
+            );
+            return Verification::Unchecked(crate::tr!("verify-skipped"));
+        }
+        if let Ok(verification) = tokio::time::timeout(ANSWER_POLL, &mut checking).await {
+            return verification;
         }
     }
 }

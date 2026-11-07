@@ -7,6 +7,22 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- Copies are checked against their originals. Once a file is copied (uploaded,
+  downloaded, site to site or on this computer), its SHA-256 checksum is compared with
+  the original's, each computed where the file is: by the server (`sha256sum` over SSH,
+  or FTP's `HASH`/`XSHA256` where offered) or on this computer. A copy that differs
+  counts as failed, and a move keeps its original. Where a server cannot compute
+  checksums, the copy is read back to check it, for files up to a size you choose
+  (1 GiB at first); larger ones show "not verified (large file)" and a Verify now
+  button. The transfer list shows "Verifying…" (with a button to skip the check),
+  then "verified" or "not verified" with the checksum or the reason; the log has every
+  check, with both checksums.
+- Preferences: "Check copies against their originals" (on) and "Read back files up
+  to". Each site's Advanced section can follow them, check only by the server's
+  checksums (never read back, for slow servers), or turn checking off.
+
 ## [0.21.5] - 2026-11-07
 
 ### Changed
