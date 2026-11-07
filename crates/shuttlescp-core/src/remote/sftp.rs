@@ -18,6 +18,7 @@ use russh::keys::{
     HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, check_known_hosts,
 };
 use russh_sftp::client::SftpSession;
+use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::fs::Metadata;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
@@ -92,12 +93,44 @@ impl client::Handler for HostKeyCheck {
     }
 }
 
-/// An open SFTP session.
+/// An open SFTP session. When its connection turns out to be lost, it logs in again.
 pub(super) struct Sftp {
+    /// Where and how to log in again (the password stays in memory, as for FTP).
+    site: Site,
+    credentials: Credentials,
+    /// The connection in use, replaced by a new one once it is lost.
+    link: tokio::sync::Mutex<Arc<Link>>,
+}
+
+/// One SSH connection with SFTP running on it.
+struct Link {
     session: SftpSession,
     /// Keeps the SSH connection open for as long as the session is in use (and opens
     /// other channels on it, see [`Sftp::server_name`]).
     ssh: client::Handle<HostKeyCheck>,
+}
+
+/// Why an operation failed: the server's answer, or the new login after a lost
+/// connection.
+#[derive(Debug)]
+enum Failure {
+    Sftp(SftpError),
+    Login(ConnectError),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sftp(error) => error.fmt(f),
+            Self::Login(error) => error.fmt(f),
+        }
+    }
+}
+
+/// The SFTP library found its connection closed. It says so before sending the
+/// request, so the server never saw it, and it is safe to send it again on a new one.
+fn is_lost(error: &SftpError) -> bool {
+    matches!(error, SftpError::UnexpectedBehavior(message) if message == "session closed")
 }
 
 /// Longest wait for the server to say its name.
@@ -116,12 +149,59 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const KEEPALIVES_MISSED: usize = 4;
 
 impl Sftp {
+    /// The connection in use.
+    async fn link(&self) -> Arc<Link> {
+        Arc::clone(&*self.link.lock().await)
+    }
+
+    /// Log in again to replace `lost`, unless another task already has (then its new
+    /// connection is used).
+    ///
+    /// # Returns
+    ///
+    /// The connection to use from now on
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`ConnectError`] of the new login
+    async fn reconnect(&self, lost: &Arc<Link>) -> Result<Arc<Link>, ConnectError> {
+        // Held while logging in: the others who found the connection lost wait here.
+        let mut current = self.link.lock().await;
+        if Arc::ptr_eq(&current, lost) {
+            tracing::info!(
+                "the connection to {} was lost; logging in again",
+                self.site.host
+            );
+            let (link, _) = open_link(&self.site, &self.credentials, None).await?;
+            *current = Arc::new(link);
+        }
+        Ok(Arc::clone(&current))
+    }
+
+    /// Run `operation` on the connection in use. If that connection was lost, log in
+    /// again and run it once more (see [`is_lost`]: the server never saw the first try).
+    async fn run<T, F, Fut>(&self, operation: F) -> Result<T, Failure>
+    where
+        F: Fn(Arc<Link>) -> Fut,
+        Fut: Future<Output = Result<T, SftpError>>,
+    {
+        let link = self.link().await;
+        match operation(Arc::clone(&link)).await {
+            Err(error) if is_lost(&error) => {
+                let link = self.reconnect(&link).await.map_err(Failure::Login)?;
+                operation(link).await.map_err(Failure::Sftp)
+            }
+            result => result.map_err(Failure::Sftp),
+        }
+    }
+
     /// The server's own name (`uname -n`), asked on a second channel of the SSH
     /// connection. `None` if the account may not run commands (SFTP-only accounts), the
     /// answer is not a plausible host name, or it takes longer than [`NAME_TIMEOUT`].
     pub(super) async fn server_name(&self) -> Option<String> {
+        let link = self.link().await;
         let ask = async {
-            let mut channel = self.ssh.channel_open_session().await.ok()?;
+            let mut channel = link.ssh.channel_open_session().await.ok()?;
             channel.exec(true, "uname -n").await.ok()?;
             let (mut output, mut status) = (Vec::new(), None);
             while let Some(message) = channel.wait().await {
@@ -145,20 +225,24 @@ impl Sftp {
 
     pub(super) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         let text = path_text(path);
-        self.session
-            .metadata(text.clone())
-            .await
-            .map(|metadata| meta(&metadata))
-            .map_err(|error| crate::i18n::cannot("read", &text, &error))
+        self.run(|link| {
+            let text = text.clone();
+            async move { link.session.metadata(text).await }
+        })
+        .await
+        .map(|metadata| meta(&metadata))
+        .map_err(|error| crate::i18n::cannot("read", &text, &error))
     }
 
     pub(super) async fn lstat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         let text = path_text(path);
-        self.session
-            .symlink_metadata(text.clone())
-            .await
-            .map(|metadata| meta(&metadata))
-            .map_err(|error| crate::i18n::cannot("read", &text, &error))
+        self.run(|link| {
+            let text = text.clone();
+            async move { link.session.symlink_metadata(text).await }
+        })
+        .await
+        .map(|metadata| meta(&metadata))
+        .map_err(|error| crate::i18n::cannot("read", &text, &error))
     }
 
     pub(super) async fn read_dir(
@@ -167,8 +251,10 @@ impl Sftp {
     ) -> Result<Vec<(String, RemoteMeta)>, String> {
         let text = path_text(dir);
         let listing = self
-            .session
-            .read_dir(text.clone())
+            .run(|link| {
+                let text = text.clone();
+                async move { link.session.read_dir(text).await }
+            })
             .await
             .map_err(|error| crate::i18n::cannot("open", &text, &error))?;
         Ok(listing
@@ -184,8 +270,10 @@ impl Sftp {
     ) -> Result<RemoteReader, String> {
         let text = path_text(path);
         let mut file = self
-            .session
-            .open(text.clone())
+            .run(|link| {
+                let text = text.clone();
+                async move { link.session.open(text).await }
+            })
             .await
             .map_err(|error| crate::i18n::cannot("open", &text, &error))?;
         if offset > 0 {
@@ -207,8 +295,10 @@ impl Sftp {
             flags |= OpenFlags::TRUNCATE;
         }
         let mut file = self
-            .session
-            .open_with_flags(text.clone(), flags)
+            .run(|link| {
+                let text = text.clone();
+                async move { link.session.open_with_flags(text, flags).await }
+            })
             .await
             .map_err(|error| crate::i18n::cannot("write", &text, &error))?;
         if offset > 0 {
@@ -221,41 +311,49 @@ impl Sftp {
 
     pub(super) async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), String> {
         let (from_text, to_text) = (path_text(from), path_text(to));
-        self.session
-            .rename(from_text.clone(), to_text.clone())
-            .await
-            .map_err(|error| {
-                crate::tr!(
-                    "error-cannot-rename",
-                    from = from_text.to_string(),
-                    to = to_text.to_string(),
-                    reason = error.to_string()
-                )
-            })
+        self.run(|link| {
+            let (from, to) = (from_text.clone(), to_text.clone());
+            async move { link.session.rename(from, to).await }
+        })
+        .await
+        .map_err(|error| {
+            crate::tr!(
+                "error-cannot-rename",
+                from = from_text.to_string(),
+                to = to_text.to_string(),
+                reason = error.to_string()
+            )
+        })
     }
 
     pub(super) async fn create_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
-        self.session
-            .create_dir(text.clone())
-            .await
-            .map_err(|error| crate::i18n::cannot("create-folder", &text, &error))
+        self.run(|link| {
+            let text = text.clone();
+            async move { link.session.create_dir(text).await }
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("create-folder", &text, &error))
     }
 
     pub(super) async fn remove_file(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
-        self.session
-            .remove_file(text.clone())
-            .await
-            .map_err(|error| crate::i18n::cannot("delete", &text, &error))
+        self.run(|link| {
+            let text = text.clone();
+            async move { link.session.remove_file(text).await }
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("delete", &text, &error))
     }
 
     pub(super) async fn remove_dir(&self, path: &RemotePath) -> Result<(), String> {
         let text = path_text(path);
-        self.session
-            .remove_dir(text.clone())
-            .await
-            .map_err(|error| crate::i18n::cannot("delete-folder", &text, &error))
+        self.run(|link| {
+            let text = text.clone();
+            async move { link.session.remove_dir(text).await }
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("delete-folder", &text, &error))
     }
 
     pub(super) async fn set_modified(
@@ -274,10 +372,12 @@ impl Sftp {
             mtime: Some(seconds),
             ..FileAttributes::empty()
         };
-        self.session
-            .set_metadata(text.clone(), attributes)
-            .await
-            .map_err(|error| crate::i18n::cannot("set-time", &text, &error))
+        self.run(|link| {
+            let (text, attributes) = (text.clone(), attributes.clone());
+            async move { link.session.set_metadata(text, attributes).await }
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("set-time", &text, &error))
     }
 }
 
@@ -323,6 +423,22 @@ pub(super) async fn connect(
     credentials: Credentials,
     approved_key: Option<HostKey>,
 ) -> Result<(Sftp, RemotePath), ConnectError> {
+    let (link, home) = open_link(site, &credentials, approved_key).await?;
+    let sftp = Sftp {
+        site: site.clone(),
+        credentials,
+        link: tokio::sync::Mutex::new(Arc::new(link)),
+    };
+    Ok((sftp, home))
+}
+
+/// One connection for [`connect`], or to replace a lost one: the same steps and
+/// arguments, and it returns the connection and the user's home folder.
+async fn open_link(
+    site: &Site,
+    credentials: &Credentials,
+    approved_key: Option<HostKey>,
+) -> Result<(Link, RemotePath), ConnectError> {
     let verdict = Arc::new(Mutex::new(None));
     let handler = HostKeyCheck {
         host: site.host.clone(),
@@ -363,7 +479,7 @@ pub(super) async fn connect(
         Ok(Ok(ssh)) => ssh,
     };
 
-    authenticate(&mut ssh, site, &credentials).await?;
+    authenticate(&mut ssh, site, credentials).await?;
     let network = |error: russh::Error| ConnectError::Network {
         host: site.host.clone(),
         reason: error.to_string(),
@@ -381,7 +497,7 @@ pub(super) async fn connect(
         .canonicalize(".")
         .await
         .map_err(|error| ConnectError::Sftp(error.to_string()))?;
-    Ok((Sftp { session: sftp, ssh }, RemotePath::new(home)))
+    Ok((Link { session: sftp, ssh }, RemotePath::new(home)))
 }
 
 /// Log in: with the site's key file, then the agent's keys, then the password.

@@ -460,36 +460,102 @@ async fn more_files_at_once_than_the_ftp_server_allows() {
     }
 }
 
-/// Listen on a free local port and pass each connection on to `target`, letting what
-/// comes back through at about `bytes_per_second`; the port.
-async fn slow_link(target: String, bytes_per_second: usize) -> u16 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("listen");
-    let port = listener.local_addr().expect("address").port();
-    tokio::spawn(async move {
-        while let Ok((client, _)) = listener.accept().await {
-            let server = tokio::net::TcpStream::connect(&target)
-                .await
-                .expect("connect to the server");
-            let (mut from_client, mut to_client) = client.into_split();
-            let (mut from_server, mut to_server) = server.into_split();
-            tokio::spawn(async move {
-                let _ = tokio::io::copy(&mut from_client, &mut to_server).await;
-            });
-            tokio::spawn(async move {
-                // A tenth of a second's worth, every tenth of a second.
-                let mut buffer = vec![0; bytes_per_second / 10];
-                while let Ok(read @ 1..) = from_server.read(&mut buffer).await {
-                    if to_client.write_all(&buffer[..read]).await.is_err() {
-                        break;
+/// A stand-in for the network between ShuttleSCP and a test server: a local port that
+/// passes each connection on to the server. It can slow down what comes back, and cut
+/// every connection at once, as a dropped line would.
+struct TestLink {
+    port: u16,
+    /// The tasks passing the bytes along; ending them closes both ends.
+    tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
+}
+
+impl TestLink {
+    /// Start passing connections on to `server`, what comes back at about
+    /// `bytes_per_second` (`None`: as fast as it comes).
+    async fn start(server: &Server, bytes_per_second: Option<usize>) -> Self {
+        let target = format!("{}:{}", server.site.host, server.site.port);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listen");
+        let port = listener.local_addr().expect("address").port();
+        let tasks = Arc::new(Mutex::new(tokio::task::JoinSet::new()));
+        let spawn_in = Arc::clone(&tasks);
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let server = tokio::net::TcpStream::connect(&target)
+                    .await
+                    .expect("connect to the server");
+                let (mut from_client, mut to_client) = client.into_split();
+                let (mut from_server, mut to_server) = server.into_split();
+                let mut tasks = spawn_in.lock().expect("lock");
+                tasks.spawn(async move {
+                    let _ = tokio::io::copy(&mut from_client, &mut to_server).await;
+                });
+                tasks.spawn(async move {
+                    let Some(bytes_per_second) = bytes_per_second else {
+                        let _ = tokio::io::copy(&mut from_server, &mut to_client).await;
+                        return;
+                    };
+                    // A tenth of a second's worth, every tenth of a second.
+                    let mut buffer = vec![0; bytes_per_second / 10];
+                    while let Ok(read @ 1..) = from_server.read(&mut buffer).await {
+                        if to_client.write_all(&buffer[..read]).await.is_err() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            });
+                });
+            }
+        });
+        Self { port, tasks }
+    }
+
+    /// Cut every connection made so far. New ones still get through.
+    fn cut(&self) {
+        self.tasks.lock().expect("lock").abort_all();
+    }
+
+    /// `server`, reached through this link.
+    fn to(&self, server: &Server) -> Server {
+        let mut site = server.site.clone();
+        site.host = "127.0.0.1".to_owned();
+        site.port = self.port;
+        Server {
+            site,
+            password: server.password.clone(),
+            dir: server.dir.clone(),
         }
-    });
-    port
+    }
+}
+
+/// After the connection to an SFTP server is lost, the next action logs in again by
+/// itself, instead of failing with "session closed" until the user logs in again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn sftp_logs_in_again_after_losing_the_connection() {
+    // Arrange: a session through a test link, which then drops.
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let link = TestLink::start(&server, None).await;
+    let remote = link.to(&server).connect().await;
+    let before = remote.list_dir(&server.dir).await.expect("list");
+    link.cut();
+    // Give the SSH library a moment to see the connection closed.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Act
+    let after = remote.list_dir(&server.dir).await;
+
+    // Assert: listed as before.
+    let names = |entries: &[shuttlescp_core::entry::FileEntry]| {
+        entries
+            .iter()
+            .map(|entry| entry.name().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&after.expect("list after the connection was lost")),
+        names(&before)
+    );
 }
 
 /// A download from a slow SFTP server finishes. The SFTP library keeps 16 reads of up
@@ -517,15 +583,8 @@ async fn download_from_a_slow_sftp_server() {
     );
     let (up, up_errors) = run_job(upload, &remote, None).await;
     assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
-    let target = format!("{}:{}", server.site.host, server.site.port);
-    let mut slow = Server {
-        site: server.site.clone(),
-        password: server.password.clone(),
-        dir: server.dir.clone(),
-    };
-    slow.site.host = "127.0.0.1".to_owned();
-    slow.site.port = slow_link(target, 200_000).await;
-    let slow_remote = slow.connect().await;
+    let slow_link = TestLink::start(&server, Some(200_000)).await;
+    let slow_remote = slow_link.to(&server).connect().await;
 
     // Act: download it through the slow link.
     let back = temp.path().join("back");
