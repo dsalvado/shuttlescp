@@ -4,6 +4,8 @@
 //! job starts; beyond it, it waits in line (oldest first) until a running job ends.
 //! Raising the limit starts waiting jobs; lowering it holds back the jobs started last,
 //! which go back to the front of the line and continue first when there is room again.
+//! "Start now" puts a job ahead: at the limit, the job started last steps back the same
+//! way.
 //!
 //! This is only the bookkeeping: it says which jobs to start or hold back, and the
 //! panels do it.
@@ -177,6 +179,33 @@ impl Slots {
         }
     }
 
+    /// Start `job` now, ahead of the line (the user's "Start now"): it leaves the line
+    /// and runs. At the limit, the job started last steps back to the front of the line,
+    /// to continue first when there is room.
+    ///
+    /// # Returns
+    ///
+    /// `job` to start, and the job to hold back if one had to make room (nothing if `job`
+    /// is already running)
+    pub fn start_now(&mut self, job: JobRef) -> Changes {
+        if self.running.contains(&job) {
+            return Changes::default();
+        }
+        self.waiting.retain(|waiting| *waiting != job);
+        let mut hold = Vec::new();
+        if !self.has_room()
+            && let Some(last) = self.running.pop()
+        {
+            self.waiting.push_front(last);
+            hold.push(last);
+        }
+        self.running.push(job);
+        Changes {
+            start: vec![job],
+            hold,
+        }
+    }
+
     /// Whether another job can run.
     fn has_room(&self) -> bool {
         self.limit.is_none_or(|limit| self.running.len() < limit)
@@ -275,6 +304,13 @@ impl TransferLimit {
     /// See [`Slots::set_limit`]; the panels are told which jobs to start or hold back.
     pub fn set_limit(&self, limit: Option<usize>) {
         let changes = self.slots.borrow_mut().set_limit(limit);
+        self.tell(&changes);
+    }
+
+    /// See [`Slots::start_now`]; the panels are told which job to start and which to
+    /// hold back.
+    pub fn start_now(&self, job: JobRef) {
+        let changes = self.slots.borrow_mut().start_now(job);
         self.tell(&changes);
     }
 
@@ -439,5 +475,46 @@ mod tests {
         assert!(slots.request(left));
         assert!(!slots.request(right));
         assert_eq!(slots.release(left), [right]);
+    }
+
+    #[test]
+    fn start_now_puts_a_waiting_job_ahead_and_the_last_started_steps_back() {
+        // Two running (1, 2), two waiting (3, 4).
+        let mut slots = Slots::new(Some(2));
+        for id in 1..=4 {
+            slots.request(job(id));
+        }
+
+        let changes = slots.start_now(job(4));
+
+        // Job 4 runs; job 2, started last, steps back to the front of the line.
+        assert_eq!(changes.start, [job(4)]);
+        assert_eq!(changes.hold, [job(2)]);
+        assert_eq!((slots.running(), slots.waiting()), (2, 2));
+        // When there is room, job 2 continues before job 3.
+        assert_eq!(slots.release(job(1)), [job(2)]);
+        assert_eq!(slots.release(job(4)), [job(3)]);
+    }
+
+    #[test]
+    fn start_now_with_room_holds_nothing_back() {
+        let mut slots = Slots::new(None);
+        slots.request(job(1));
+
+        let changes = slots.start_now(job(2));
+
+        assert_eq!(changes.start, [job(2)]);
+        assert!(changes.hold.is_empty());
+        assert_eq!(slots.running(), 2);
+    }
+
+    #[test]
+    fn start_now_on_a_running_job_changes_nothing() {
+        let mut slots = Slots::new(Some(1));
+        slots.request(job(1));
+        slots.request(job(2));
+
+        assert_eq!(slots.start_now(job(1)), Changes::default());
+        assert!(slots.is_waiting(job(2)));
     }
 }

@@ -274,6 +274,7 @@ job-cancel = Die ganze Übertragung abbrechen
 job-cancel-paused = Die angehaltene Übertragung abbrechen
 job-pause = Anhalten: vorerst stoppen und Kopiertes behalten
 job-resume = Fortsetzen: dort weitermachen, wo angehalten wurde
+job-start-now = Jetzt starten
 job-retry = Wiederholen: dort weitermachen, wo sie stoppte
 job-remove = Aus der Liste entfernen
 

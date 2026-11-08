@@ -7,6 +7,15 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-08
+
+### Added
+
+- Start now: right-click a transfer that is waiting for room, held back by the
+  transfer limit, or paused, and choose Start now to run it at once. At the limit, the
+  transfer started last steps back to the front of the line and continues first, from
+  its partial files, when there is room again.
+
 ## [0.22.2] - 2026-11-07
 
 ### Changed
@@ -541,7 +550,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.22.2...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/dsalvado/shuttlescp/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/dsalvado/shuttlescp/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/dsalvado/shuttlescp/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/dsalvado/shuttlescp/compare/v0.21.5...v0.22.0

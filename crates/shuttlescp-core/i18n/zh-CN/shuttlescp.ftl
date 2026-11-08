@@ -249,6 +249,7 @@ job-cancel = 取消整个传输
 job-cancel-paused = 取消已暂停的传输
 job-pause = 暂停：暂时停止，保留已复制的内容
 job-resume = 继续：从暂停处继续
+job-start-now = 立即开始
 job-retry = 重试：从停止处继续
 job-remove = 从列表中移除
 

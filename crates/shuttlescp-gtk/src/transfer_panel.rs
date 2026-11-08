@@ -273,6 +273,9 @@ pub enum TransferPanelMsg {
         item: usize,
     },
     /// Run an unfinished job again, continuing where it stopped.
+    /// Start this waiting, held-back or paused job now, ahead of the others: at the
+    /// transfer limit, the job started last steps back ("Start now").
+    StartNow(u64),
     Retry(u64),
     /// Show or hide the contents of a job (`item` is `None`) or folder.
     Toggle {
@@ -458,6 +461,8 @@ struct RowWidgets {
     line: gtk::Box,
     /// Removes a finished job from the list.
     remove: gtk::Button,
+    /// The row shows a job that can start now (see [`RowView::can_start_now`]).
+    can_start_now: Rc<Cell<bool>>,
 }
 
 /// State shared by the panel and its list rows.
@@ -789,6 +794,7 @@ impl Component for TransferPanel {
             }
             TransferPanelMsg::DiscardAll => self.discard_all(&sender),
             TransferPanelMsg::Retry(id) => self.retry(id, false, &sender),
+            TransferPanelMsg::StartNow(id) => self.start_now(id, &sender),
             TransferPanelMsg::SlotFree(id) => self.slot_free(id, &sender),
             TransferPanelMsg::Hold(id) => self.hold(id),
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
@@ -1335,6 +1341,46 @@ impl TransferPanel {
                 store.remove(added);
                 store.insert(place, &row);
             }
+        }
+    }
+
+    /// Start a waiting, held-back or paused job now (see [`TransferPanelMsg::StartNow`]).
+    fn start_now(&mut self, id: u64, sender: &ComponentSender<Self>) {
+        /// Where the job is.
+        enum Now {
+            /// Waiting for room, or held back and stopped: it is in the limit's line.
+            InLine,
+            /// Paused by the user and stopped: it is not in the line.
+            Paused,
+            /// Running, finished, or still stopping: nothing to do.
+            Nothing,
+        }
+        let now = match self.shared.borrow().jobs.get(&id) {
+            Some(job) if job.waiting || (job.held && !job.is_running()) => Now::InLine,
+            Some(job) if job.paused && !job.is_running() => Now::Paused,
+            _ => Now::Nothing,
+        };
+        match now {
+            Now::InLine => {
+                tracing::info!("starting transfer {id} now, ahead of the others");
+                self.limit.start_now(self.job_ref(id));
+            }
+            Now::Paused => {
+                tracing::info!("starting paused transfer {id} now, ahead of the others");
+                // It continues as a new job, which may have to wait for room.
+                self.retry(id, false, sender);
+                let continued = self.next_id - 1;
+                let waiting = self
+                    .shared
+                    .borrow()
+                    .jobs
+                    .get(&continued)
+                    .is_some_and(|job| job.waiting);
+                if waiting {
+                    self.limit.start_now(self.job_ref(continued));
+                }
+            }
+            Now::Nothing => {}
         }
     }
 
@@ -2264,6 +2310,8 @@ struct RowView {
     retry_tooltip: String,
     /// A finished job's header: it can be removed from the list.
     can_remove: bool,
+    /// A job's header that can start now, ahead of the others (its right-click menu).
+    can_start_now: bool,
 }
 
 /// Show a row's current state in its widgets.
@@ -2321,6 +2369,7 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
         .status
         .set_visible(!row.can_cancel && !row.can_retry);
     widgets.remove.set_visible(row.can_remove);
+    widgets.can_start_now.set(row.can_start_now);
     let complete = job.summary.as_ref().is_some_and(JobSummary::is_complete);
     set_class(&widgets.line, "finished-ok", job.flashing && complete);
     set_class(&widgets.line, "finished-bad", job.flashing && !complete);
@@ -2504,6 +2553,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         },
         // Finished jobs in the Queue are on their way out on their own.
         can_remove: !job.is_running() && job.list != ListKind::Queue,
+        can_start_now: job.waiting || (!job.is_running() && (job.held || job.paused)),
     }
 }
 
@@ -2722,6 +2772,7 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             ItemKind::Folder => tr!("item-resume-folder"),
         },
         can_remove: false,
+        can_start_now: false,
     }
 }
 
@@ -2852,6 +2903,38 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     send(&cancel, "cancel");
     send(&retry, "retry");
     send(&remove, "dismiss");
+
+    // Right-click on a job's line: "Start now", for a job waiting, held back or paused.
+    let can_start_now: Rc<Cell<bool>> = Rc::default();
+    let menu = gio::Menu::new();
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_parent(&line);
+    popover.set_has_arrow(false);
+    let right_click = gtk::GestureClick::builder()
+        .button(gtk::gdk::BUTTON_SECONDARY)
+        .build();
+    {
+        let (key, can_start_now) = (Rc::clone(&key), Rc::clone(&can_start_now));
+        right_click.connect_pressed(move |_, _, x, y| {
+            let Some(RowKey { job, item: None }) = key.get() else {
+                return;
+            };
+            if !can_start_now.get() {
+                return;
+            }
+            let start = gio::MenuItem::new(Some(&tr!("job-start-now")), None);
+            start.set_action_and_target_value(
+                Some(&format!("{ACTION_GROUP}.start-now")),
+                Some(&(job, -1_i64).to_variant()),
+            );
+            menu.remove_all();
+            menu.append_item(&start);
+            // Rounded to the pixel the menu points at.
+            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.popup();
+        });
+    }
+    line.add_controller(right_click);
     (
         line.clone(),
         RowWidgets {
@@ -2868,6 +2951,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
             retry,
             line,
             remove,
+            can_start_now,
         },
     )
 }
@@ -2906,6 +2990,7 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
         Some(item) => TransferPanelMsg::PauseItem { job, item },
     });
     add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
+    add("start-now", |job, _| TransferPanelMsg::StartNow(job));
     add("retry", |job, item| match item {
         None => TransferPanelMsg::Retry(job),
         Some(item) => TransferPanelMsg::ResumeItem { job, item },

@@ -274,6 +274,7 @@ job-cancel = Annuler tout le transfert
 job-cancel-paused = Annuler le transfert en pause
 job-pause = Pause : arrêter pour l'instant, en gardant ce qui est copié
 job-resume = Reprendre : continuer là où il a été mis en pause
+job-start-now = Démarrer maintenant
 job-retry = Réessayer : continuer là où il s'est arrêté
 job-remove = Retirer de la liste
 

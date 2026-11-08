@@ -355,6 +355,7 @@ job-cancel = Cancel the whole transfer
 job-cancel-paused = Cancel the paused transfer
 job-pause = Pause: stop for now, keeping what is copied
 job-resume = Resume: continue where it was paused
+job-start-now = Start now
 job-retry = Retry: continue where it stopped
 job-remove = Remove from the list
 
