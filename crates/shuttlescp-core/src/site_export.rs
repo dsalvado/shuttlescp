@@ -447,7 +447,10 @@ fn cipher_for(
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(passphrase.expose_secret().as_bytes(), salt, key.as_mut())
         .map_err(|error| ExportError::BadSettings(error.to_string()))?;
-    Ok(XChaCha20Poly1305::new(Key::from_slice(key.as_ref())))
+    // Borrowed, not copied: a copy would not be wiped.
+    let key = <&Key>::try_from(key.as_slice())
+        .map_err(|_| ExportError::BadSettings(String::from("key length")))?;
+    Ok(XChaCha20Poly1305::new(key))
 }
 
 /// Encrypt one password, bound to its site id.
@@ -473,7 +476,7 @@ fn encrypt(
         aad: site_id.as_bytes(),
     };
     let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), payload)
+        .encrypt(&XNonce::from(nonce), payload)
         .map_err(|_| ExportError::BadSettings(String::from("encryption failed")))?;
     let mut sealed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     sealed.extend_from_slice(&nonce);
@@ -506,13 +509,14 @@ fn decrypt(
         return Err(ExportError::WrongPassphrase);
     }
     let (nonce, ciphertext) = sealed.split_at(NONCE_LEN);
+    let nonce = <&XNonce>::try_from(nonce).map_err(|_| ExportError::WrongPassphrase)?;
     let payload = Payload {
         msg: ciphertext,
         aad: site_id.as_bytes(),
     };
     let plain = Zeroizing::new(
         cipher
-            .decrypt(XNonce::from_slice(nonce), payload)
+            .decrypt(nonce, payload)
             .map_err(|_| ExportError::WrongPassphrase)?,
     );
     let text = std::str::from_utf8(&plain).map_err(|_| ExportError::WrongPassphrase)?;
