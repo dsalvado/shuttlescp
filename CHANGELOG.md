@@ -7,11 +7,20 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-11-07
+
 ### Changed
 
+- Going up out of a folder (with "..", Backspace or the path bar) selects the folder
+  you came from and scrolls it into view, and a new folder is selected and scrolled
+  to once created. Before, the list jumped back to the top.
 - Clearer wording for checking copies: Preferences say "Verify file checksums after
   completion", and a site's Advanced section "Verify checksums: Same as Preferences /
   Server checksums only / Off".
+- Updated the libraries behind password-protected site exports (argon2 0.6,
+  chacha20poly1305 0.11, base64 0.23, getrandom 0.4). Exports made by earlier versions
+  still open: a test now opens one made by 0.22.1. On Windows, getrandom 0.4 also checks
+  that the system's random number source succeeded.
 
 ## [0.22.1] - 2026-11-07
 
@@ -532,7 +541,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.22.2...HEAD
+[0.22.2]: https://github.com/dsalvado/shuttlescp/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/dsalvado/shuttlescp/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/dsalvado/shuttlescp/compare/v0.21.5...v0.22.0
 [0.21.5]: https://github.com/dsalvado/shuttlescp/compare/v0.21.4...v0.21.5
