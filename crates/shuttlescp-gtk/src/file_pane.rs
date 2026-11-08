@@ -384,6 +384,10 @@ pub struct FilePane {
     loading: bool,
     /// Re-read the folder once that listing arrives ([`FilePaneMsg::RefreshAfterChange`]).
     refresh_after: bool,
+    /// A folder to select and scroll into view once the next listing shows: the one
+    /// just left when going up, or one just created. Kept through a saved listing
+    /// until the fresh one arrives.
+    focus_after: Option<SidePath>,
     /// Items running transfers use; shared with the rows.
     in_use: Rc<InUseMarks>,
 }
@@ -452,6 +456,11 @@ impl FilePane {
     /// * `sender` - Component sender used to spawn the work and receive its result
     fn request_listing(&mut self, dir: SidePath, sender: &ComponentSender<Self>) {
         tracing::debug!("listing {dir}");
+        // Another folder: going up, bring the one just left into view (from /a/b/c to
+        // /a: /a/b); anywhere else, nothing. A refresh keeps what was asked for.
+        if dir != self.current_dir {
+            self.focus_after = child_towards(&dir, &self.current_dir);
+        }
         self.requested_dir = dir.clone();
         self.loading = true;
         self.status = tr!("pane-gathering");
@@ -609,6 +618,32 @@ impl FilePane {
                     special_icon,
                 }
             }));
+    }
+
+    /// Select the row showing `path` (and only it), and scroll it to the middle of the
+    /// view.
+    fn bring_into_view(&self, path: &SidePath) {
+        let selection = &self.entries.selection_model;
+        let rows = selection.n_items();
+        let Some(position) = (0..rows).find(|&position| {
+            self.entries.get_visible(position).is_some_and(
+                |item| matches!(&*item.borrow(), Row::Entry { path: shown, .. } if shown == path),
+            )
+        }) else {
+            return;
+        };
+        selection.select_item(position, true);
+        let Some(scroll) = self.entries.view.vadjustment() else {
+            return;
+        };
+        // After the next layout, once the list has its new height. Rows are all one
+        // height, so a row's place is its share of the list's height (set_value keeps
+        // it within the list's ends).
+        glib::idle_add_local_once(move || {
+            let row = (scroll.upper() - scroll.lower()) / f64::from(rows);
+            let top = scroll.lower() + row * f64::from(position);
+            scroll.set_value(top + row / 2.0 - scroll.page_size() / 2.0);
+        });
     }
 
     /// Select the rows showing these paths again (after the list was rebuilt).
@@ -900,6 +935,7 @@ impl Component for FilePane {
             saved_from: None,
             loading: false,
             refresh_after: false,
+            focus_after: None,
             title: title.clone(),
             requested_dir: start_dir.clone(),
             entries,
@@ -1123,6 +1159,8 @@ impl Component for FilePane {
                 );
             }
             FilePaneMsg::CreateFolder(name) => {
+                // Shown once the folder is listed after its creation.
+                self.focus_after = Some(self.current_dir.join(&name));
                 let (remote, dir) = (self.remote.clone(), self.current_dir.clone());
                 sender.oneshot_command(async move {
                     PaneCommand::Operation(
@@ -1210,6 +1248,7 @@ impl Component for FilePane {
                     });
                 }
                 self.show_listing(listing.dir, entries, &sender);
+                self.focus_after = None;
             }
             // Sent elsewhere before anything was shown (e.g. to a resumed transfer's
             // folder, since deleted): show the start folder after all, with the error.
@@ -1268,6 +1307,9 @@ impl FilePane {
                 // After the next layout, once the list has its new height.
                 glib::idle_add_local_once(move || scroll.set_value(value));
             }
+        }
+        if let Some(path) = &self.focus_after {
+            self.bring_into_view(path);
         }
         // Only local disks remember their last folder.
         let disk_root = disks::disk_index(self.disk_picker.disks(), &dir)
@@ -2151,9 +2193,50 @@ impl RelmColumn for ModifiedColumn {
     }
 }
 
+/// The folder inside `ancestor` on the way down to `dir` (from /a to /a/b/c: /a/b),
+/// if `ancestor` contains `dir`.
+fn child_towards(ancestor: &SidePath, dir: &SidePath) -> Option<SidePath> {
+    let mut child = dir.clone();
+    while let Some(parent) = child.parent() {
+        if parent == *ancestor {
+            return Some(child);
+        }
+        child = parent;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn going_up_brings_the_folder_on_the_way_back_into_view() {
+        let remote = |path: &str| SidePath::Remote(shuttlescp_core::path::RemotePath::new(path));
+        // One level up, several levels, to the top.
+        assert_eq!(
+            child_towards(&remote("/a/b"), &remote("/a/b/c")),
+            Some(remote("/a/b/c"))
+        );
+        assert_eq!(
+            child_towards(&remote("/a"), &remote("/a/b/c")),
+            Some(remote("/a/b"))
+        );
+        assert_eq!(
+            child_towards(&remote("/"), &remote("/a/b")),
+            Some(remote("/a"))
+        );
+        // Not going up: into a folder, sideways, or staying.
+        assert_eq!(child_towards(&remote("/a/b"), &remote("/a")), None);
+        assert_eq!(child_towards(&remote("/x"), &remote("/a/b")), None);
+        assert_eq!(child_towards(&remote("/a"), &remote("/a")), None);
+        // This computer's folders too.
+        let local = |path: &str| SidePath::Local(PathBuf::from(path));
+        assert_eq!(
+            child_towards(&local("/home"), &local("/home/me/docs")),
+            Some(local("/home/me"))
+        );
+    }
 
     #[test]
     fn menu_items_name_where_copies_go() {
