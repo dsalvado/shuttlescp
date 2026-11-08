@@ -12,7 +12,8 @@ homepage.workspace = true
 # crate, never the other way round.
 [dependencies]
 argon2 = "0.6"
-base64 = "0.22"
+# Without the default SIMD engines: export files hold a few short strings.
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 chacha20poly1305 = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 dirs = "7"
