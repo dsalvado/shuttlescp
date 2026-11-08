@@ -11,7 +11,7 @@ homepage.workspace = true
 # No GUI toolkit (GTK, GLib, relm4, ...) may be added here: front ends depend on this
 # crate, never the other way round.
 [dependencies]
-argon2 = "0.5"
+argon2 = "0.6"
 base64 = "0.22"
 chacha20poly1305 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
