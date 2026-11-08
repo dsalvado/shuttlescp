@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-11-08
+
+### Security
+
+- Updated the SSH library (russh 0.65.1): two security fixes, and fixes for valid
+  packets being rejected with encrypt-then-MAC ciphers and for servers whose P-521
+  ECDSA host keys could not connect.
+- Updated the web library used for update checks and downloads (ureq 3.5.1): security
+  fixes in its TLS libraries, and timeouts that now also cover the TLS handshake.
+
 ## [0.23.0] - 2026-11-08
 
 ### Added
@@ -550,7 +560,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/dsalvado/shuttlescp/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/dsalvado/shuttlescp/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/dsalvado/shuttlescp/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/dsalvado/shuttlescp/compare/v0.22.0...v0.22.1
