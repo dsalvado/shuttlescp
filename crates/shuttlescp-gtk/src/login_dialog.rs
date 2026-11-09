@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, UNIX_EPOCH};
 
-use relm4::RelmRemoveAllExt;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 use secrecy::{ExposeSecret, SecretString};
@@ -428,8 +427,6 @@ pub struct LoginDialog {
     status: String,
     /// An export or import is running.
     busy: bool,
-    /// The open file chooser; kept here so it stays alive until the user answers.
-    chooser: Option<gtk::FileChooserNative>,
     /// Whether the dialog opens when the app starts (saved by the main window).
     show_at_startup: bool,
     /// The tab in front.
@@ -1238,83 +1235,76 @@ impl LoginDialog {
         }
     }
 
-    /// Open a file chooser for the private key file, starting in `~/.ssh`.
+    /// Open a file dialog for the private key file, starting in `~/.ssh`.
     ///
     /// # Arguments
     ///
     /// * `root` - The dialog window
     /// * `sender` - Receives the chosen file
-    fn choose_key_file(&mut self, root: &gtk::Window, sender: &ComponentSender<Self>) {
-        let chooser = gtk::FileChooserNative::new(
-            Some(&tr!("login-key-chooser-title")),
-            Some(root),
-            gtk::FileChooserAction::Open,
-            Some(&tr!("login-key-chooser-choose")),
-            Some(&tr!("login-chooser-cancel")),
-        );
+    fn choose_key_file(root: &gtk::Window, sender: &ComponentSender<Self>) {
+        let dialog = gtk::FileDialog::builder()
+            .title(tr!("login-key-chooser-title"))
+            .accept_label(tr!("login-key-chooser-choose"))
+            .modal(true)
+            .build();
         if let Some(ssh) = std::env::home_dir().map(|home| home.join(".ssh"))
             && ssh.is_dir()
         {
-            let _ = chooser.set_current_folder(Some(&gtk::gio::File::for_path(ssh)));
+            dialog.set_initial_folder(Some(&gtk::gio::File::for_path(ssh)));
         }
         let sender = sender.clone();
-        chooser.connect_response(move |chooser, response| {
-            let path = (response == gtk::ResponseType::Accept)
-                .then(|| chooser.file().and_then(|file| file.path()))
-                .flatten();
+        // The dialog keeps itself alive until it calls back: with the file, or with an
+        // error when the user cancels.
+        dialog.open(Some(root), gtk::gio::Cancellable::NONE, move |result| {
+            let path = result.ok().and_then(|file| file.path());
             sender.input(path.map_or(LoginMsg::Abandoned, LoginMsg::KeyFileChosen));
         });
-        chooser.show();
-        self.chooser = Some(chooser);
     }
 
-    /// Open a native file chooser over the dialog.
+    /// Open a file dialog over the dialog: a save dialog to export sites, an open
+    /// dialog to import them.
     ///
     /// # Arguments
     ///
     /// * `root` - The dialog window
     /// * `exporting` - Save dialog for export, open dialog for import
     /// * `sender` - Receives the chosen file
-    fn choose_file(&mut self, root: &gtk::Window, exporting: bool, sender: &ComponentSender<Self>) {
-        let chooser = gtk::FileChooserNative::new(
-            Some(&if exporting {
-                tr!("passphrase-export-title")
-            } else {
-                tr!("passphrase-import-title")
-            }),
-            Some(root),
-            if exporting {
-                gtk::FileChooserAction::Save
-            } else {
-                gtk::FileChooserAction::Open
-            },
-            Some(&if exporting {
-                tr!("login-chooser-export")
-            } else {
-                tr!("login-chooser-import")
-            }),
-            Some(&tr!("login-chooser-cancel")),
-        );
+    fn choose_file(root: &gtk::Window, exporting: bool, sender: &ComponentSender<Self>) {
         let filter = gtk::FileFilter::new();
         filter.set_name(Some(&tr!("login-chooser-filter")));
         filter.add_pattern("*.json");
-        chooser.add_filter(&filter);
-        if exporting {
-            chooser.set_current_name(EXPORT_FILE_NAME);
-        }
+        let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder()
+            .title(if exporting {
+                tr!("passphrase-export-title")
+            } else {
+                tr!("passphrase-import-title")
+            })
+            .accept_label(if exporting {
+                tr!("login-chooser-export")
+            } else {
+                tr!("login-chooser-import")
+            })
+            .modal(true)
+            .filters(&filters)
+            .default_filter(&filter)
+            .build();
         let sender = sender.clone();
-        chooser.connect_response(move |chooser, response| {
-            let path = (response == gtk::ResponseType::Accept)
-                .then(|| chooser.file().and_then(|file| file.path()))
-                .flatten();
-            sender.input(match path {
+        // With the file, or with an error when the user cancels.
+        let answer = move |result: Result<gtk::gio::File, gtk::glib::Error>| {
+            sender.input(match result.ok().and_then(|file| file.path()) {
                 Some(path) if exporting => LoginMsg::ExportTo(path),
                 Some(path) => LoginMsg::ImportFrom(path),
                 None => LoginMsg::Abandoned,
             });
-        });
-        chooser.show();
-        self.chooser = Some(chooser);
+        };
+        if exporting {
+            dialog.set_initial_name(Some(EXPORT_FILE_NAME));
+            dialog.save(Some(root), gtk::gio::Cancellable::NONE, answer);
+        } else {
+            dialog.open(Some(root), gtk::gio::Cancellable::NONE, answer);
+        }
     }
 }
 
@@ -2269,7 +2259,6 @@ impl Component for LoginDialog {
             site_list,
             status: String::new(),
             busy: false,
-            chooser: None,
             show_at_startup,
             tab: LoginTab::Direct,
             pair_lists,
@@ -2522,9 +2511,8 @@ impl Component for LoginDialog {
             LoginMsg::VerifyChanged(position) => self.verify = site_verify_at(position),
             LoginMsg::AdvancedToggled(open) => self.advanced_open = open,
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
-            LoginMsg::BrowseKeyFile => self.choose_key_file(root.upcast_ref(), &sender),
+            LoginMsg::BrowseKeyFile => Self::choose_key_file(root.upcast_ref(), &sender),
             LoginMsg::KeyFileChosen(path) => {
-                self.chooser = None;
                 self.key_file.set_text(path.display().to_string());
             }
             LoginMsg::UseAgentToggled(active) => self.use_agent = active,
@@ -2608,11 +2596,11 @@ impl Component for LoginDialog {
             }
             // Nothing to store: the update itself refreshes the Save button.
             LoginMsg::FormEdited => {}
-            LoginMsg::ExportClicked => self.choose_file(root.upcast_ref(), true, &sender),
-            LoginMsg::ImportClicked => self.choose_file(root.upcast_ref(), false, &sender),
-            LoginMsg::Abandoned => self.chooser = None,
+            LoginMsg::ExportClicked => Self::choose_file(root.upcast_ref(), true, &sender),
+            LoginMsg::ImportClicked => Self::choose_file(root.upcast_ref(), false, &sender),
+            // Nothing was left open waiting for the answer.
+            LoginMsg::Abandoned => {}
             LoginMsg::ExportTo(path) => {
-                self.chooser = None;
                 if self.book.sites.iter().any(|site| site.password_saved) {
                     let sender = sender.clone();
                     passphrase_dialog::ask(root, PassphrasePurpose::Export, move |answer| {
@@ -2645,34 +2633,29 @@ impl Component for LoginDialog {
                     LoginCmd::Exported(session::export_to_file(sites, path, passphrase).await)
                 });
             }
-            LoginMsg::ImportFrom(path) => {
-                self.chooser = None;
-                match ExportFile::read(&path) {
-                    Err(error) => {
-                        self.status = tr!("login-import-failed", error = error.to_string());
-                    }
-                    Ok(file) if file.has_passwords() => {
-                        let sender = sender.clone();
-                        passphrase_dialog::ask(root, PassphrasePurpose::Import, move |answer| {
-                            sender.input(match answer {
-                                Some(PassphraseAnswer::Passphrase(passphrase)) => {
-                                    LoginMsg::ImportConfirmed {
-                                        file: file.clone(),
-                                        passphrase: Some(passphrase),
-                                    }
-                                }
-                                Some(PassphraseAnswer::WithoutPasswords) | None => {
-                                    LoginMsg::Abandoned
-                                }
-                            });
-                        });
-                    }
-                    Ok(file) => sender.input(LoginMsg::ImportConfirmed {
-                        file,
-                        passphrase: None,
-                    }),
+            LoginMsg::ImportFrom(path) => match ExportFile::read(&path) {
+                Err(error) => {
+                    self.status = tr!("login-import-failed", error = error.to_string());
                 }
-            }
+                Ok(file) if file.has_passwords() => {
+                    let sender = sender.clone();
+                    passphrase_dialog::ask(root, PassphrasePurpose::Import, move |answer| {
+                        sender.input(match answer {
+                            Some(PassphraseAnswer::Passphrase(passphrase)) => {
+                                LoginMsg::ImportConfirmed {
+                                    file: file.clone(),
+                                    passphrase: Some(passphrase),
+                                }
+                            }
+                            Some(PassphraseAnswer::WithoutPasswords) | None => LoginMsg::Abandoned,
+                        });
+                    });
+                }
+                Ok(file) => sender.input(LoginMsg::ImportConfirmed {
+                    file,
+                    passphrase: None,
+                }),
+            },
             LoginMsg::ImportConfirmed { file, passphrase } => {
                 self.busy = true;
                 self.status = tr!("login-importing");

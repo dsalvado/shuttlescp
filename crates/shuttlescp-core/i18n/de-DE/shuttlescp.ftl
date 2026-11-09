@@ -340,7 +340,6 @@ login-key-chooser-title = Private Schlüsseldatei
 login-key-chooser-choose = _Auswählen
 login-chooser-export = _Exportieren
 login-chooser-import = _Importieren
-login-chooser-cancel = Abb_rechen
 login-chooser-filter = Site-Exporte (*.json)
 
 login-unfinished-tab = Unvollendet

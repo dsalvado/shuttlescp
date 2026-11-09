@@ -12,6 +12,10 @@ homepage.workspace = true
 [dependencies]
 shuttlescp-core = { path = "../shuttlescp-core" }
 relm4 = "0.11"
+# The same GTK relm4 uses, with GTK 4.12's functions turned on (FileDialog,
+# ColumnView::scroll_to). Every release bundles GTK 4.14 or newer, and building needs
+# 4.14 (see README).
+gtk4 = { version = "0.11", features = ["v4_12"] }
 secrecy.workspace = true
 tracing.workspace = true
 

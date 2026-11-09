@@ -7,6 +7,13 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Changed
+
+- The file dialogs (choosing a private key, importing and exporting sites) use GTK's
+  newer file dialog, which shows the desktop's own file picker where there is one.
+- Going up out of a folder now also puts the keyboard cursor on the folder you came
+  from, so Enter and the arrow keys carry on from there.
+
 ## [0.23.1] - 2026-11-08
 
 ### Security

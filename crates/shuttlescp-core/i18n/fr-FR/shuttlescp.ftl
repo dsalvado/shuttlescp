@@ -340,7 +340,6 @@ login-key-chooser-title = Fichier de clé privée
 login-key-chooser-choose = _Choisir
 login-chooser-export = _Exporter
 login-chooser-import = _Importer
-login-chooser-cancel = _Annuler
 login-chooser-filter = Exports de sites (*.json)
 
 login-unfinished-tab = Inachevés

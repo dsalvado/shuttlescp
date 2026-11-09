@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use relm4::RelmRemoveAllExt;
 use relm4::gtk;
 use relm4::gtk::glib::variant::ToVariant;
 use relm4::gtk::prelude::*;
