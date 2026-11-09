@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-11-09
+
 ### Changed
 
 - The file dialogs (choosing a private key, importing and exporting sites) use GTK's
@@ -567,7 +569,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.2...HEAD
+[0.23.2]: https://github.com/dsalvado/shuttlescp/compare/v0.23.1...v0.23.2
 [0.23.1]: https://github.com/dsalvado/shuttlescp/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/dsalvado/shuttlescp/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/dsalvado/shuttlescp/compare/v0.22.1...v0.22.2
