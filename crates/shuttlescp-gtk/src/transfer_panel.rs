@@ -2781,11 +2781,16 @@ fn row_factory(shared: &Rc<RefCell<Shared>>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     // The widgets of each row, by the address of its list item (stable while it lives).
     let rows: Rc<RefCell<HashMap<usize, RowWidgets>>> = Rc::default();
-    let address = |list_item: &gtk::ListItem| list_item.as_ptr() as usize;
+    let address = |object: &glib::Object| object.as_ptr() as usize;
+    // Since GTK 4.12 a factory can also build section headers, so it is handed any
+    // object; this list has none, so each is a list item.
+    let as_list_item = |object: &glib::Object| object.downcast_ref::<gtk::ListItem>().cloned();
     {
         let rows = Rc::clone(&rows);
         factory.connect_setup(move |_, object| {
-            let list_item = object;
+            let Some(list_item) = as_list_item(object) else {
+                return;
+            };
             let (root, widgets) = build_row();
             list_item.set_child(Some(&root));
             list_item.set_activatable(false);
@@ -2795,7 +2800,9 @@ fn row_factory(shared: &Rc<RefCell<Shared>>) -> gtk::SignalListItemFactory {
     {
         let (rows, shared) = (Rc::clone(&rows), Rc::clone(shared));
         factory.connect_bind(move |_, object| {
-            let list_item = object;
+            let Some(list_item) = as_list_item(object) else {
+                return;
+            };
             let (Some(key), Some(widgets)) = (
                 list_item.item().as_ref().and_then(row_key),
                 rows.borrow().get(&address(object)).cloned(),

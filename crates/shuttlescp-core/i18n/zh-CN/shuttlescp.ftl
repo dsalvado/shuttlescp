@@ -307,7 +307,6 @@ login-key-chooser-title = 私钥文件
 login-key-chooser-choose = 选择(_C)
 login-chooser-export = 导出(_E)
 login-chooser-import = 导入(_I)
-login-chooser-cancel = 取消(_C)
 login-chooser-filter = 站点导出文件（*.json）
 
 login-unfinished-tab = 未完成

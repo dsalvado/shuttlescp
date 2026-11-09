@@ -620,30 +620,24 @@ impl FilePane {
             }));
     }
 
-    /// Select the row showing `path` (and only it), and scroll it to the middle of the
-    /// view.
+    /// Select the row showing `path` (and only it) and scroll it into view, with the
+    /// keyboard cursor on it if the list has the keyboard (not taking it from the other
+    /// pane when a slow listing arrives).
     fn bring_into_view(&self, path: &SidePath) {
         let selection = &self.entries.selection_model;
-        let rows = selection.n_items();
-        let Some(position) = (0..rows).find(|&position| {
+        let Some(position) = (0..selection.n_items()).find(|&position| {
             self.entries.get_visible(position).is_some_and(
                 |item| matches!(&*item.borrow(), Row::Entry { path: shown, .. } if shown == path),
             )
         }) else {
             return;
         };
-        selection.select_item(position, true);
-        let Some(scroll) = self.entries.view.vadjustment() else {
-            return;
-        };
-        // After the next layout, once the list has its new height. Rows are all one
-        // height, so a row's place is its share of the list's height (set_value keeps
-        // it within the list's ends).
-        glib::idle_add_local_once(move || {
-            let row = (scroll.upper() - scroll.lower()) / f64::from(rows);
-            let top = scroll.lower() + row * f64::from(position);
-            scroll.set_value(top + row / 2.0 - scroll.page_size() / 2.0);
-        });
+        let view = &self.entries.view;
+        let mut flags = gtk::ListScrollFlags::SELECT;
+        if view.has_focus() || view.focus_child().is_some() {
+            flags |= gtk::ListScrollFlags::FOCUS;
+        }
+        view.scroll_to(position, None::<&gtk::ColumnViewColumn>, flags, None);
     }
 
     /// Select the rows showing these paths again (after the list was rebuilt).

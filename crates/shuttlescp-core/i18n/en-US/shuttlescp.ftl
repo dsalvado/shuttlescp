@@ -439,7 +439,6 @@ login-key-chooser-title = Private Key File
 login-key-chooser-choose = _Choose
 login-chooser-export = _Export
 login-chooser-import = _Import
-login-chooser-cancel = _Cancel
 login-chooser-filter = Site exports (*.json)
 
 ## The Unfinished tab. $count: transfers; $subject: what a transfer copies (a name,
