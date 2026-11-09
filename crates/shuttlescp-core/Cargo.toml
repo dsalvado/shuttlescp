@@ -43,7 +43,7 @@ fluent-templates = "0.15.1"
 # the macOS Keychain and the Windows Credential Manager. Other systems get a stub that
 # reports the keyring as unavailable.
 [target.'cfg(target_os = "linux")'.dependencies]
-oo7 = "0.6"
+oo7 = "0.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
