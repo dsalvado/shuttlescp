@@ -62,8 +62,16 @@ pub async fn local_sha256(path: PathBuf) -> io::Result<Checksum> {
     tokio::task::spawn_blocking(move || {
         let mut file = std::fs::File::open(&path)?;
         let mut hasher = Sha256::new();
-        io::copy(&mut file, &mut hasher)?;
-        Ok(Checksum(hasher.finalize().into()))
+        let mut buffer = vec![0; 256 * 1024];
+        loop {
+            match io::Read::read(&mut file, &mut buffer) {
+                Ok(0) => return Ok(Checksum(hasher.finalize().into())),
+                Ok(read) => hasher.update(&buffer[..read]),
+                // A signal broke off the read: nothing was lost, read again.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
     })
     .await
     .map_err(io::Error::other)?
