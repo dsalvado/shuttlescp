@@ -382,9 +382,10 @@ mod tests {
         );
     }
 
-    /// Writes to the real login Keychain (macOS) or Credential Manager (Windows), so only
-    /// run on request: `cargo test -p shuttlescp-core keychain_round_trip -- --ignored`
-    #[cfg(any(target_os = "macos", windows))]
+    /// Writes to the real password store (the desktop's keyring on Linux, the login
+    /// Keychain on macOS, Credential Manager on Windows), so only run on request:
+    /// `cargo test -p shuttlescp-core keychain_round_trip -- --ignored`
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[tokio::test]
     #[ignore = "uses the user's real password store"]
     async fn keychain_round_trip() {
