@@ -1295,15 +1295,19 @@ impl FilePane {
             )
         });
         self.show_entries(&dir, entries);
-        if let Some((selected, scrolled)) = kept {
-            self.reselect(&selected);
-            if let (Some(value), Some(scroll)) = (scrolled, self.entries.view.vadjustment()) {
-                // After the next layout, once the list has its new height.
-                glib::idle_add_local_once(move || scroll.set_value(value));
+        match (&self.focus_after, kept) {
+            // A folder to show takes over selection and scroll position: restoring the
+            // old position (after the next layout) would undo it, as a server's fresh
+            // listing replaced its saved one.
+            (Some(path), _) => self.bring_into_view(path),
+            (None, Some((selected, scrolled))) => {
+                self.reselect(&selected);
+                if let (Some(value), Some(scroll)) = (scrolled, self.entries.view.vadjustment()) {
+                    // After the next layout, once the list has its new height.
+                    glib::idle_add_local_once(move || scroll.set_value(value));
+                }
             }
-        }
-        if let Some(path) = &self.focus_after {
-            self.bring_into_view(path);
+            (None, None) => {}
         }
         // Only local disks remember their last folder.
         let disk_root = disks::disk_index(self.disk_picker.disks(), &dir)
