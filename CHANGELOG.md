@@ -7,6 +7,14 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.23.4] - 2026-11-11
+
+### Fixed
+
+- On a server, going up out of a folder jumped back to the top of the list once the
+  fresh listing replaced the saved one (since 0.23.2). The folder you came from now
+  stays selected and in view.
+
 ## [0.23.3] - 2026-11-09
 
 ### Changed
@@ -578,7 +586,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.3...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.4...HEAD
+[0.23.4]: https://github.com/dsalvado/shuttlescp/compare/v0.23.3...v0.23.4
 [0.23.3]: https://github.com/dsalvado/shuttlescp/compare/v0.23.2...v0.23.3
 [0.23.2]: https://github.com/dsalvado/shuttlescp/compare/v0.23.1...v0.23.2
 [0.23.1]: https://github.com/dsalvado/shuttlescp/compare/v0.23.0...v0.23.1
