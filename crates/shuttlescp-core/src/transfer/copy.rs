@@ -13,8 +13,8 @@ use tokio::task::JoinSet;
 
 use super::endpoint::{Endpoint, partial_path};
 use super::{
-    CancelFlag, ConflictAnswer, ConflictChoice, ConflictReply, FILES_AT_ONCE, ItemKind,
-    ItemOutcome, Job, JobKind, PlanItem, Sink, TransferEvent, Verification, Verify,
+    CancelFlag, ConflictAnswer, ConflictChoice, ConflictReply, FILES_AT_ONCE, FilePlaces, ItemKind,
+    ItemOutcome, Job, JobKind, Place, PlanItem, Sink, TransferEvent, Verification, Verify,
 };
 use crate::checksum::Checksum;
 use crate::format::format_size;
@@ -35,6 +35,9 @@ const PAUSE_POLL: Duration = Duration::from_millis(200);
 /// How a file's copy ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FileEnd {
+    /// The shared limit held it back with this many bytes in its partial copy: it waits
+    /// for a place again, to continue from there.
+    Held(u64),
     /// It ended for good.
     Outcome(ItemOutcome),
     /// The user paused it with this many bytes in its partial copy.
@@ -220,7 +223,22 @@ pub(super) async fn copy_items(
         waiting.push_back((item.clone(), action));
     }
     let mut paused: Vec<(PlanItem, FileAction)> = Vec::new();
+    // The job's place in the shared limit's line, if there is one; dropped at the end,
+    // which takes its waiting files out of the line.
+    let ticket = cancel.places().map(FilePlaces::join);
+    let forget = |item: &PlanItem| {
+        if let Some(ticket) = &ticket {
+            ticket.forget(item.id);
+        }
+    };
     loop {
+        // Start now: the job goes first in the shared limit's line.
+        if cancel.take_start_now()
+            && let Some(ticket) = &ticket
+        {
+            tracing::info!("starting a file of this job now, ahead of the others");
+            ticket.start_now();
+        }
         // Paused files that were resumed queue up again; stopped or cancelled ones end.
         let mut still_paused = Vec::new();
         for (item, action) in paused.drain(..) {
@@ -247,21 +265,37 @@ pub(super) async fn copy_items(
         // Start the files waiting their turn, while there is room.
         while let Some((item, action)) = waiting.pop_front() {
             if cancel.is_cancelled() {
+                forget(&item);
                 finish(&mut outcomes, item.id, ItemOutcome::Cancelled);
                 continue;
             }
             if cancel.is_item_stopped(item.id) {
                 tracing::info!("stopped by the user before copying: {}", item.source);
+                forget(&item);
                 finish(&mut outcomes, item.id, ItemOutcome::Stopped);
                 continue;
             }
             if cancel.is_item_paused(item.id) {
+                forget(&item);
                 paused.push((item, action));
                 continue;
             }
             let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
                 waiting.push_front((item, action));
                 break;
+            };
+            // Also a place within the limit shared by every job: without one, the file
+            // waits in line (it asks again on the next round).
+            let place = match &ticket {
+                Some(ticket) => match ticket.try_take(item.id) {
+                    Some(place) => Some(place),
+                    None => {
+                        drop(slot);
+                        waiting.push_front((item, action));
+                        break;
+                    }
+                },
+                None => None,
             };
             let (src, dst, cancel, sink, times) = (
                 src.clone(),
@@ -271,7 +305,8 @@ pub(super) async fn copy_items(
                 Arc::clone(&times),
             );
             running.spawn(async move {
-                // Holding the slot until the copy ends lets the next file start.
+                // Holding the slot and the place until the copy ends lets the next file
+                // start.
                 let _slot = slot;
                 let end = match action {
                     FileAction::AlreadyThere => {
@@ -287,6 +322,7 @@ pub(super) async fn copy_items(
                             delete_source,
                             replace,
                             verify,
+                            place.as_ref(),
                             &cancel,
                             &sink,
                             &times,
@@ -310,6 +346,16 @@ pub(super) async fn copy_items(
                 // Resuming continues from what the partial copy holds now.
                 item.partial = at;
                 paused.push((item, action));
+            }
+            Ok(Some(Ok((mut item, action, FileEnd::Held(at))))) => {
+                // First of the job's files to continue, from its partial copy.
+                tracing::info!(
+                    "held back by the transfer limit at {at} bytes: {}",
+                    item.dest
+                );
+                sink(TransferEvent::Held { id: item.id });
+                item.partial = at;
+                waiting.push_front((item, action));
             }
             Ok(Some(Ok((item, _, FileEnd::Outcome(outcome))))) => {
                 finish(&mut outcomes, item.id, outcome);
@@ -555,6 +601,7 @@ async fn copy_file(
     delete_source: bool,
     replace: bool,
     verify: Verify,
+    place: Option<&Place>,
     cancel: &CancelFlag,
     sink: &Sink,
     times: &Mutex<JobTimes>,
@@ -570,7 +617,7 @@ async fn copy_file(
         } else {
             tracing::debug!("copying {} to {}", item.source, item.dest);
         }
-        match copy_contents(item, src, dst, &partial, offset, cancel, sink).await {
+        match copy_contents(item, src, dst, &partial, offset, place, cancel, sink).await {
             Ok(took) => break (took, offset),
             Err(Unfinished::Partway(error)) if with_server && tries < PARTWAY_TRIES => {
                 tries += 1;
@@ -584,6 +631,7 @@ async fn copy_file(
                 tracing::warn!("{error}; the partial copy is kept for resuming");
                 return ItemOutcome::Failed(error).into();
             }
+            Err(Unfinished::End(FileEnd::Held(at))) => return FileEnd::Held(at),
             Err(Unfinished::End(FileEnd::Paused(at))) => {
                 tracing::info!("paused {} at {at} of {} bytes", item.dest, item.size);
                 return FileEnd::Paused(at);
@@ -883,12 +931,14 @@ async fn resume_offset(
 ///
 /// Returns why the copy did not complete: how it ended (an outcome, or paused), or
 /// that it failed partway
+#[allow(clippy::too_many_arguments)]
 async fn copy_contents(
     item: &PlanItem,
     src: &Endpoint,
     dst: &Endpoint,
     partial: &SidePath,
     offset: u64,
+    place: Option<&Place>,
     cancel: &CancelFlag,
     sink: &Sink,
 ) -> Result<FileTimes, Unfinished> {
@@ -927,6 +977,13 @@ async fn copy_contents(
             })?;
             sink(TransferEvent::Progress { id: item.id, done });
             return Err(Unfinished::End(FileEnd::Paused(done)));
+        }
+        if place.is_some_and(Place::is_held) {
+            writer.shutdown().await.map_err(|error| {
+                ItemOutcome::Failed(crate::i18n::cannot("finish", partial, &error))
+            })?;
+            sink(TransferEvent::Progress { id: item.id, done });
+            return Err(Unfinished::End(FileEnd::Held(done)));
         }
         let read = match reader.read(&mut buffer).await {
             Ok(read) => read,

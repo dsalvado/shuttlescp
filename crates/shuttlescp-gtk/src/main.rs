@@ -28,7 +28,6 @@ mod theme;
 mod theme_list;
 mod tooltip;
 mod transfer_panel;
-mod transfer_slots;
 #[cfg(debug_assertions)]
 mod ui_gallery;
 mod update_dialog;

@@ -21,6 +21,7 @@ mod copy;
 mod endpoint;
 mod meter;
 mod ops;
+mod places;
 mod plan;
 
 use std::collections::HashSet;
@@ -38,6 +39,7 @@ pub use ops::{
     check_name, check_same_side, create_folder, rename, windows_name_problem,
     windows_restored_name, windows_safe_name,
 };
+pub use places::{FilePlaces, Place, Ticket};
 
 use crate::checksum::Checksum;
 use crate::format::format_size;
@@ -600,6 +602,12 @@ pub enum TransferEvent {
         /// Bytes copied so far.
         done: u64,
     },
+    /// A file was held back by the shared limit (lowered, or another job started now):
+    /// it waits for a place, to continue from its partial copy.
+    Held {
+        /// Item id.
+        id: usize,
+    },
     /// A copied file is being checked against its source (it can be skipped by
     /// stopping the item, see [`CancelFlag::stop_item`]).
     Verifying {
@@ -644,9 +652,42 @@ pub struct CancelFlag {
     stopped: Arc<Mutex<HashSet<usize>>>,
     /// The files paused on their own, by id.
     paused_items: Arc<Mutex<HashSet<usize>>>,
+    /// The limit on files copied at once that the job shares with every other one;
+    /// `None` for no shared limit.
+    places: Option<Arc<FilePlaces>>,
+    /// Start now was asked for: the job goes first in the shared limit's line.
+    start_now: Arc<AtomicBool>,
 }
 
 impl CancelFlag {
+    /// Copy files within this shared limit: each file waits for a place in it.
+    ///
+    /// # Arguments
+    ///
+    /// * `places` - The limit, shared by every job
+    #[must_use]
+    pub fn with_places(mut self, places: Arc<FilePlaces>) -> Self {
+        self.places = Some(places);
+        self
+    }
+
+    /// The shared limit, if the job has one.
+    pub(super) fn places(&self) -> Option<&Arc<FilePlaces>> {
+        self.places.as_ref()
+    }
+
+    /// Ask for the job to go first in the shared limit's line ("Start now"): its next
+    /// file starts as soon as possible, holding back another job's file if there is no
+    /// room.
+    pub fn start_now(&self) {
+        self.start_now.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether Start now was asked for since the last time; asking clears it.
+    pub(super) fn take_start_now(&self) -> bool {
+        self.start_now.swap(false, Ordering::Relaxed)
+    }
+
     /// Ask the job to pause: it stops like [`CancelFlag::cancel`], but files being
     /// copied keep their partial copies, so running the job again with `resume`
     /// continues them where they stopped.

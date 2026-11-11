@@ -24,8 +24,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use shuttlescp_core::transfer::{
-    CancelFlag, ItemOutcome, Job, JobKind, JobSummary, Side, TransferEvent, Verification, Verify,
-    run,
+    CancelFlag, FilePlaces, ItemOutcome, Job, JobKind, JobSummary, Side, TransferEvent,
+    Verification, Verify, run,
 };
 
 /// A test server, from `SHUTTLESCP_TEST_SFTP` or `SHUTTLESCP_TEST_FTP`.
@@ -1085,5 +1085,75 @@ async fn a_check_can_be_skipped() {
         "{found:?}"
     );
     assert!(took < Duration::from_secs(16), "took {took:?}");
+    assert_eq!(std::fs::read(back.join(name)).expect("read"), pattern(SIZE));
+}
+
+/// A file held back by the shared limit (lowered while it is copied) stops, waits, and
+/// continues from its partial copy once there is room again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_file_held_back_by_the_limit_continues_from_its_partial_copy() {
+    // Arrange: 2 MiB on the server, downloaded at 200 kB/s (about 10 s), within a
+    // shared limit; 2 s in, the limit drops to 0, and 2 s later it is lifted.
+    const SIZE: usize = 2 * 1024 * 1024;
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let name = "held.bin";
+    std::fs::write(temp.path().join(name), pattern(SIZE)).expect("write");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(temp.path().join(name))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    let link = TestLink::start(&server, Some(200_000)).await;
+    let slow = link.to(&server).connect().await;
+    let back = temp.path().join("back");
+    std::fs::create_dir(&back).expect("create");
+    let on_server = SidePath::Remote(server.dir.join(name));
+    let download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![on_server.clone()],
+        SidePath::Local(back.clone()),
+    );
+    let places = FilePlaces::new(Some(2));
+    let limits = Arc::clone(&places);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        limits.set_limit(Some(0));
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        limits.set_limit(None);
+    });
+
+    // Act
+    let resumed_at = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&resumed_at);
+    let cancel = CancelFlag::default().with_places(Arc::clone(&places));
+    let down = run(download, Some(slow), None, cancel, move |event| {
+        if let TransferEvent::Resumed { from, .. } = event {
+            *seen.lock().expect("lock") = Some(from);
+        }
+    })
+    .await;
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert: continued, not restarted, and whole.
+    assert!(down.is_complete(), "download: {down:?}");
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+    let resumed_at = resumed_at
+        .lock()
+        .expect("lock")
+        .expect("it was held back and continued");
+    assert!(resumed_at > 0, "it started over");
     assert_eq!(std::fs::read(back.join(name)).expect("read"), pattern(SIZE));
 }

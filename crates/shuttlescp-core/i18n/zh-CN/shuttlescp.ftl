@@ -13,8 +13,8 @@ preferences-title = 首选项
 preferences-language = 界面语言(_L)：
 preferences-restart = 重新启动 { -app-name } 以使用新语言。
 
-status-transfers-unlimited = 传输：不限
-status-transfers-limited = 传输：{ $running }/{ $limit }
+status-transfers-unlimited = 文件：不限
+status-transfers-limited = 文件：{ $running } / { $limit }
 status-transfers-waiting = { $count } 个等待中
 dialog-cancel = 取消
 
@@ -114,7 +114,7 @@ this-computer-title = 本机 · { $name }
 this-computer = 本机
 status-connected = 已连接到 { $name }
 status-connected-pair = 已连接到 { $left } 和 { $right }
-status-transfers-tooltip = 所有连接中同时进行的传输。点击以限制数量。
+status-transfers-tooltip = 所有连接中同时复制的文件数。点击以限制。
 status-log-level = 日志级别：{ $level }
 session-activity = 传输进行中
 session-close = 断开连接并关闭此会话
@@ -132,10 +132,10 @@ update-notice-waiting-tooltip = 正在进行的传输完成后，{ -app-name } �
 update-notice-restart-tooltip = { -app-name } { $version } 已就绪。点击以重新启动为新版本。
 update-notice-hide = 隐藏此通知
 
-limit-title = 同时进行的传输
+limit-title = 同时复制的文件数
 limit-unlimited = 不限
 limit-at-most = 最多
-limit-hint = 适用于所有连接。超出的传输在队列中等待，其他传输完成后再开始。
+limit-hint = 所有连接合计。其余文件按顺序等待，先开始的传输优先。
 
 relay-tooltip = 在两台服务器之间复制的文件会经过本机
 relay-to-right = 正在从左侧服务器复制到右侧服务器
@@ -228,7 +228,6 @@ progress-speed = { $size }/秒
 progress-files = { $done }/{ $total } 个文件
 progress-bytes = { $done }/{ $total }
 
-job-waiting-slot = 正在等待空闲的传输位置
 job-pausing = 正在暂停……
 job-paused = 已暂停
 job-paused-copied = 已暂停：已复制 { $done }/{ $total }

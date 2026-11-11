@@ -182,7 +182,7 @@ mod tests {
     fn variables_are_filled_in() {
         assert_eq!(
             tr!("status-transfers-limited", running = 2, limit = 4),
-            "Transfers: 2 of 4"
+            "Files: 2 of 4"
         );
     }
 

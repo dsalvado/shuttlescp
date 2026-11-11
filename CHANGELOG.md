@@ -7,6 +7,19 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-11
+
+### Changed
+
+- The transfer limit in the status bar now counts files, not transfers: with a limit of
+  2, a transfer of one file and the first file of a transfer of five run, and the other
+  four wait their turn. Files go oldest transfer first, each transfer's in its own order,
+  and a site's own "Files at once" still applies too. The status bar shows "Files: 2 of
+  2 · 4 waiting".
+- Lowering the limit pauses the files that started last; they continue from their
+  partial copies when there is room. Start now (right-click a transfer with files
+  waiting, or a paused one) starts its next file at once.
+
 ## [0.23.4] - 2026-11-11
 
 ### Fixed
@@ -586,7 +599,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.23.4...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/dsalvado/shuttlescp/compare/v0.23.4...v0.24.0
 [0.23.4]: https://github.com/dsalvado/shuttlescp/compare/v0.23.3...v0.23.4
 [0.23.3]: https://github.com/dsalvado/shuttlescp/compare/v0.23.2...v0.23.3
 [0.23.2]: https://github.com/dsalvado/shuttlescp/compare/v0.23.1...v0.23.2

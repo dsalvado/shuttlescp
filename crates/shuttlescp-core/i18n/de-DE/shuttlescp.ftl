@@ -14,8 +14,8 @@ preferences-title = Einstellungen
 preferences-language = _Sprache der Oberfläche:
 preferences-restart = Starten Sie { -app-name } neu, um die neue Sprache zu verwenden.
 
-status-transfers-unlimited = Übertragungen: unbegrenzt
-status-transfers-limited = Übertragungen: { $running } von { $limit }
+status-transfers-unlimited = Dateien: unbegrenzt
+status-transfers-limited = Dateien: { $running } von { $limit }
 status-transfers-waiting = { $count } wartend
 dialog-cancel = Abbrechen
 
@@ -127,7 +127,7 @@ this-computer-title = Dieser Computer · { $name }
 this-computer = diesen Computer
 status-connected = Verbunden mit { $name }
 status-connected-pair = Verbunden mit { $left } und { $right }
-status-transfers-tooltip = Gleichzeitige Übertragungen über alle Verbindungen. Klicken, um sie zu begrenzen.
+status-transfers-tooltip = Gleichzeitig kopierte Dateien, über alle Verbindungen. Klicken, um sie zu begrenzen.
 status-log-level = Protokollstufe: { $level }
 session-activity = Übertragungen laufen
 session-close = Trennen und diese Sitzung schließen
@@ -149,10 +149,10 @@ update-notice-waiting-tooltip = { -app-name } startet mit { $version } neu, soba
 update-notice-restart-tooltip = { -app-name } { $version } ist bereit. Klicken, um damit neu zu starten.
 update-notice-hide = Diesen Hinweis ausblenden
 
-limit-title = Gleichzeitige Übertragungen
+limit-title = Gleichzeitig kopierte Dateien
 limit-unlimited = Unbegrenzt
 limit-at-most = Höchstens
-limit-hint = Über alle Verbindungen. Weitere warten in der Warteschlange und starten, sobald andere fertig sind.
+limit-hint = Über alle Verbindungen. Weitere Dateien warten, bis sie dran sind, die älteste Übertragung zuerst.
 
 relay-tooltip = Zwischen den beiden Servern kopierte Dateien laufen über diesen Computer
 relay-to-right = Kopieren vom linken zum rechten Server
@@ -253,7 +253,6 @@ progress-speed = { $size }/s
 progress-files = { $done } von { $total } Dateien
 progress-bytes = { $done } von { $total }
 
-job-waiting-slot = Wartet auf einen freien Übertragungsplatz
 job-pausing = Wird angehalten...
 job-paused = Angehalten
 job-paused-copied = Angehalten: { $done } von { $total } kopiert

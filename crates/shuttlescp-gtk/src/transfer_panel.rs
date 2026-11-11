@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use relm4::gtk::prelude::*;
@@ -26,14 +27,12 @@ use shuttlescp_core::pending::{PendingJob, PendingTransfers};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{SiteVerify, new_site_id};
 use shuttlescp_core::transfer::{
-    self, CancelFlag, ItemKind, ItemOutcome, Job, JobKind, JobSummary, PlanItem, RateMeter, Side,
-    TransferEvent, Verification, Verify,
+    self, CancelFlag, FilePlaces, ItemKind, ItemOutcome, Job, JobKind, JobSummary, PlanItem,
+    RateMeter, Side, TransferEvent, Verification, Verify,
 };
 
 use crate::conflict_dialog;
-use crate::session::SessionId;
 use crate::tooltip::TooltipExt;
-use crate::transfer_slots::{JobRef, TransferLimit};
 use shuttlescp_core::tr;
 
 /// Jobs with more items than this start with their folders collapsed.
@@ -303,12 +302,6 @@ pub enum TransferPanelMsg {
     DiscardInterrupted,
     /// Leave finished files out of the Queue (`true`), or show them again.
     HideFinished(bool),
-    /// The transfer limit has room for this job: start it if it was waiting, or
-    /// continue it if the limit held it back.
-    SlotFree(u64),
-    /// The transfer limit was lowered: pause this running job, to continue when there
-    /// is room again.
-    Hold(u64),
     /// Give up every unfinished job (running or paused) before the app quits: stop
     /// them, forget their records and delete their partial files; then report
     /// [`TransferPanelOutput::Discarded`].
@@ -381,6 +374,9 @@ struct ItemState {
     asking: bool,
     /// Paused by the user, waiting to be resumed.
     paused: bool,
+    /// Held back by the transfer limit: it waits for a place, to continue from its
+    /// partial copy.
+    held: bool,
     /// Its copy is being checked against it.
     verifying: bool,
     /// While its copy is checked by reading it back: the bytes read back so far.
@@ -400,13 +396,6 @@ struct JobState {
     /// Paused by the user: once stopped it waits in the Queue to be resumed (and is
     /// offered for resuming after a restart).
     paused: bool,
-    /// Not started yet: waiting for room within the transfer limit.
-    waiting: bool,
-    /// Paused because the transfer limit was lowered (`paused` is set too): it
-    /// continues by itself when there is room.
-    held: bool,
-    /// Held, but given room again before it had stopped: continue once it has.
-    resume_on_stop: bool,
     items: Vec<ItemState>,
     children: Vec<Vec<usize>>,
     roots: Vec<usize>,
@@ -515,20 +504,16 @@ pub struct TransferPanel {
     last_target_refresh: Option<Instant>,
     /// Counter giving each shelved job its place in time.
     next_shelf: u64,
-    /// The session this panel belongs to.
-    session: SessionId,
-    /// The limit on transfers running at once, shared by every session.
-    limit: Rc<TransferLimit>,
+    /// The limit on files copied at once, shared by every session.
+    places: Arc<FilePlaces>,
     /// How the Preferences say copies are checked, shared by every session.
     verify: Rc<Cell<Verify>>,
 }
 
 /// What a transfer panel starts with.
 pub struct TransferPanelInit {
-    /// The session it belongs to.
-    pub session: SessionId,
-    /// The limit on transfers running at once, shared by every session.
-    pub limit: Rc<TransferLimit>,
+    /// The limit on files copied at once, shared by every session.
+    pub places: Arc<FilePlaces>,
     /// How the Preferences say copies are checked, shared by every session.
     pub verify: Rc<Cell<Verify>>,
     /// Where unfinished transfers are recorded (shared by all sessions).
@@ -605,13 +590,11 @@ impl Component for TransferPanel {
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let TransferPanelInit {
-            session,
-            limit,
+            places,
             verify,
             pending,
             hide_finished,
         } = init;
-        limit.register(session, sender.input_sender().clone());
         let shared = Rc::new(RefCell::new(Shared {
             hide_finished,
             ..Shared::default()
@@ -674,8 +657,7 @@ impl Component for TransferPanel {
             relaying: (false, false),
             last_target_refresh: None,
             next_shelf: 0,
-            session,
-            limit,
+            places,
             verify,
         };
         let (placeholder, banner, banner_text, list) = (
@@ -688,49 +670,16 @@ impl Component for TransferPanel {
         ComponentParts { model, widgets }
     }
 
-    fn shutdown(&mut self, _widgets: &mut Self::Widgets, _output: relm4::Sender<Self::Output>) {
-        // The session closed: its jobs give up their places in the transfer limit.
-        self.limit.unregister(self.session);
-    }
-
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
         match message {
-            TransferPanelMsg::Start(job) => self.start(job, None, None, &sender),
+            TransferPanelMsg::Start(job) => self.start(job, None, &sender),
             TransferPanelMsg::Cancel(id) => {
-                // Never started: there is no copy to stop, so it ends here.
-                let waiting = {
-                    let mut shared = self.shared.borrow_mut();
-                    match shared.jobs.get_mut(&id) {
-                        Some(job) if job.waiting => {
-                            job.waiting = false;
-                            job.user_cancelled = true;
-                            Some(job.job.sources.len())
-                        }
-                        _ => None,
-                    }
-                };
-                if let Some(sources) = waiting {
-                    tracing::info!("cancelling transfer {id} before it started");
-                    let summary = JobSummary {
-                        cancelled: sources,
-                        ..JobSummary::default()
-                    };
-                    self.job_finished(id, summary, &sender);
-                    return;
-                }
                 let forget = {
                     let mut shared = self.shared.borrow_mut();
                     let Some(job) = shared.jobs.get_mut(&id) else {
                         return;
                     };
                     tracing::info!("cancelling transfer {id}");
-                    // Held back by the limit and stopped: it gives up its place in line.
-                    if std::mem::take(&mut job.held) && !job.is_running() {
-                        self.limit.release(JobRef {
-                            session: self.session,
-                            job: id,
-                        });
-                    }
                     job.user_cancelled = true;
                     job.cancel.cancel();
                     // A paused job has already stopped: it goes to Failed, where it can
@@ -793,10 +742,8 @@ impl Component for TransferPanel {
                 }
             }
             TransferPanelMsg::DiscardAll => self.discard_all(&sender),
-            TransferPanelMsg::Retry(id) => self.retry(id, false, &sender),
+            TransferPanelMsg::Retry(id) => self.retry(id, &sender),
             TransferPanelMsg::StartNow(id) => self.start_now(id, &sender),
-            TransferPanelMsg::SlotFree(id) => self.slot_free(id, &sender),
-            TransferPanelMsg::Hold(id) => self.hold(id),
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
             TransferPanelMsg::Clear(kind) => self.clear(kind),
             TransferPanelMsg::Dismiss(id) => {
@@ -884,8 +831,34 @@ impl Component for TransferPanel {
                 id: item,
                 verification,
             } => self.set_verification(id, item, false, Some(verification), now),
+            TransferEvent::Held { id: item } => {
+                let mut shared = self.shared.borrow_mut();
+                if let Some(state) = shared
+                    .jobs
+                    .get_mut(&id)
+                    .and_then(|job| job.items.get_mut(item))
+                {
+                    state.held = true;
+                }
+                refresh(
+                    &shared,
+                    &[RowKey {
+                        job: id,
+                        item: Some(item),
+                    }],
+                    now,
+                );
+            }
             TransferEvent::Resumed { id: item, from } => {
                 let mut shared = self.shared.borrow_mut();
+                // Continuing after being held back by the limit.
+                if let Some(state) = shared
+                    .jobs
+                    .get_mut(&id)
+                    .and_then(|job| job.items.get_mut(item))
+                {
+                    state.held = false;
+                }
                 let changed = resumed(&mut shared, id, item, from, now);
                 refresh(&shared, &changed, now);
             }
@@ -949,13 +922,7 @@ impl TransferPanel {
     /// * `job` - What to do
     /// * `pending_key` - Its entry in the unfinished-transfers file, when resuming
     /// * `sender` - Runs the job and receives its events
-    fn start(
-        &mut self,
-        job: Job,
-        pending_key: Option<String>,
-        slot: Option<JobRef>,
-        sender: &ComponentSender<Self>,
-    ) {
+    fn start(&mut self, job: Job, pending_key: Option<String>, sender: &ComponentSender<Self>) {
         let id = self.next_id;
         self.next_id += 1;
         // Two jobs must never write the same files (their partial files would mix): one
@@ -1000,7 +967,8 @@ impl TransferPanel {
             }
             _ => None,
         };
-        let cancel = CancelFlag::default();
+        // Its files wait for places within the limit shared by every job.
+        let cancel = CancelFlag::default().with_places(Arc::clone(&self.places));
         self.shared.borrow_mut().jobs.insert(
             id,
             JobState {
@@ -1009,9 +977,6 @@ impl TransferPanel {
                 cancel: cancel.clone(),
                 user_cancelled: false,
                 paused: false,
-                waiting: false,
-                held: false,
-                resume_on_stop: false,
                 items: Vec::new(),
                 children: Vec::new(),
                 roots: Vec::new(),
@@ -1053,28 +1018,6 @@ impl TransferPanel {
             return;
         }
 
-        // Within the transfer limit it starts now; otherwise it waits for room. A job
-        // continued for the limit takes over its earlier place.
-        let job_ref = self.job_ref(id);
-        let can_run = match slot {
-            Some(old) => {
-                self.limit.replace(old, job_ref);
-                true
-            }
-            None => self.limit.request(job_ref),
-        };
-        if !can_run {
-            tracing::info!(
-                "waiting for room within the transfer limit: {}",
-                job.title()
-            );
-            let mut shared = self.shared.borrow_mut();
-            if let Some(state) = shared.jobs.get_mut(&id) {
-                state.waiting = true;
-            }
-            refresh_job(&shared, id);
-            return;
-        }
         self.launch(id, job, remote, dest_remote, cancel, sender);
     }
 
@@ -1301,12 +1244,9 @@ impl TransferPanel {
 
     /// Run a finished, incomplete job again (back in the Queue), continuing where it
     /// stopped.
-    ///
-    /// `for_limit`: the transfer limit continues a job it held back, which keeps its
-    /// place; otherwise the job asks for a place as a new one.
-    fn retry(&mut self, id: u64, for_limit: bool, sender: &ComponentSender<Self>) {
-        // A job continued in the Queue (paused, or held back by the transfer limit)
-        // keeps its line there, so running jobs are not split up by paused ones.
+    fn retry(&mut self, id: u64, sender: &ComponentSender<Self>) {
+        // A paused job continued in the Queue keeps its line there, so running jobs are
+        // not split up by paused ones.
         let place = self
             .position_of(RowKey {
                 job: id,
@@ -1325,8 +1265,7 @@ impl TransferPanel {
         }
         let mut job = old.job;
         job.resume = true;
-        let slot = for_limit.then(|| self.job_ref(id));
-        self.start(job, old.pending_key, slot, sender);
+        self.start(job, old.pending_key, sender);
         // `start` added it at the end of the Queue, under the id it just took.
         if let Some(place) = place {
             let store = self.store(ListKind::Queue);
@@ -1344,121 +1283,25 @@ impl TransferPanel {
         }
     }
 
-    /// Start a waiting, held-back or paused job now (see [`TransferPanelMsg::StartNow`]).
+    /// Start a file of a job now, ahead of the others (see [`TransferPanelMsg::StartNow`]):
+    /// a running job's next waiting file, or a paused job's, which is resumed first.
     fn start_now(&mut self, id: u64, sender: &ComponentSender<Self>) {
-        /// Where the job is.
-        enum Now {
-            /// Waiting for room, or held back and stopped: it is in the limit's line.
-            InLine,
-            /// Paused by the user and stopped: it is not in the line.
-            Paused,
-            /// Running, finished, or still stopping: nothing to do.
-            Nothing,
-        }
-        let now = match self.shared.borrow().jobs.get(&id) {
-            Some(job) if job.waiting || (job.held && !job.is_running()) => Now::InLine,
-            Some(job) if job.paused && !job.is_running() => Now::Paused,
-            _ => Now::Nothing,
+        let (cancel, paused) = match self.shared.borrow().jobs.get(&id) {
+            Some(job) if job.is_running() && !job.paused => (job.cancel.clone(), false),
+            Some(job) if job.paused && !job.is_running() => (job.cancel.clone(), true),
+            _ => return,
         };
-        match now {
-            Now::InLine => {
-                tracing::info!("starting transfer {id} now, ahead of the others");
-                self.limit.start_now(self.job_ref(id));
+        if paused {
+            tracing::info!("starting paused transfer {id} now, ahead of the others");
+            // It continues as a new job, under the id `retry` gives it.
+            self.retry(id, sender);
+            let continued = self.next_id - 1;
+            if let Some(job) = self.shared.borrow().jobs.get(&continued) {
+                job.cancel.start_now();
             }
-            Now::Paused => {
-                tracing::info!("starting paused transfer {id} now, ahead of the others");
-                // It continues as a new job, which may have to wait for room.
-                self.retry(id, false, sender);
-                let continued = self.next_id - 1;
-                let waiting = self
-                    .shared
-                    .borrow()
-                    .jobs
-                    .get(&continued)
-                    .is_some_and(|job| job.waiting);
-                if waiting {
-                    self.limit.start_now(self.job_ref(continued));
-                }
-            }
-            Now::Nothing => {}
-        }
-    }
-
-    /// The transfer limit has room for a job (see [`TransferPanelMsg::SlotFree`]).
-    fn slot_free(&mut self, id: u64, sender: &ComponentSender<Self>) {
-        /// What to do with the job.
-        enum Next {
-            /// It was waiting: start it.
-            Launch(Job, CancelFlag),
-            /// It was held back and has stopped: continue it.
-            Continue,
-            /// It was held back and is still stopping: continue it once it has.
-            Later,
-            /// It is gone or finished: give the place back.
-            GiveBack,
-        }
-        let next = {
-            let mut shared = self.shared.borrow_mut();
-            let next = match shared.jobs.get_mut(&id) {
-                Some(job) if job.waiting => {
-                    job.waiting = false;
-                    Next::Launch(job.job.clone(), job.cancel.clone())
-                }
-                Some(job) if job.held && !job.is_running() => Next::Continue,
-                Some(job) if job.held => {
-                    job.resume_on_stop = true;
-                    Next::Later
-                }
-                _ => Next::GiveBack,
-            };
-            refresh_job(&shared, id);
-            next
-        };
-        match next {
-            Next::Launch(job, cancel) => {
-                tracing::info!("room within the transfer limit: starting {}", job.title());
-                let (remote, dest_remote, _) = self.connections_for(&job);
-                self.launch(id, job, remote, dest_remote, cancel, sender);
-            }
-            Next::Continue => self.retry(id, true, sender),
-            Next::Later => {}
-            Next::GiveBack => self.limit.release(self.job_ref(id)),
-        }
-    }
-
-    /// The transfer limit was lowered: pause a running job, to continue when there is
-    /// room (see [`TransferPanelMsg::Hold`]).
-    fn hold(&mut self, id: u64) {
-        let give_back = {
-            let mut shared = self.shared.borrow_mut();
-            let give_back = match shared.jobs.get_mut(&id) {
-                // Running: pause it, keeping its partial files.
-                Some(job) if job.is_running() && !job.waiting && !job.paused => {
-                    tracing::info!("transfer limit lowered: holding back {}", job.job.title());
-                    job.paused = true;
-                    job.held = true;
-                    job.cancel.pause();
-                    false
-                }
-                // Paused by the user, or not started: it ends or starts as it is, and its
-                // place follows then.
-                Some(job) if job.is_running() => false,
-                // Already finished: its place in line is not needed.
-                _ => true,
-            };
-            refresh_job(&shared, id);
-            give_back
-        };
-        if give_back {
-            self.limit.release(self.job_ref(id));
-        }
-    }
-
-    /// Where a job of this panel is, for the transfer limit.
-    fn job_ref(&self, id: u64) -> JobRef {
-        JobRef {
-            session: self.session,
-            job: id,
+        } else {
+            tracing::info!("starting a file of transfer {id} now, ahead of the others");
+            cancel.start_now();
         }
     }
 
@@ -1651,7 +1494,7 @@ impl TransferPanel {
         tracing::info!("resuming interrupted transfer: {}", pending.job.title());
         let mut job = pending.job;
         job.resume = true;
-        self.start(job, Some(pending.key), None, sender);
+        self.start(job, Some(pending.key), sender);
     }
 
     /// Show (or hide) the banner offering the interrupted transfers.
@@ -1740,6 +1583,7 @@ impl TransferPanel {
                         expanded,
                         asking: false,
                         paused: false,
+                        held: false,
                         verifying: false,
                         verify_done: None,
                         verification: None,
@@ -1781,28 +1625,6 @@ impl TransferPanel {
     /// The whole job finished: it flashes green (or red), fades, and moves to
     /// Completed (or Failed).
     fn job_finished(&mut self, id: u64, summary: JobSummary, sender: &ComponentSender<Self>) {
-        // The transfer limit: a job held back that stopped with work left keeps its place
-        // in line (and continues at once if it got room meanwhile); any other job gives
-        // up its place, which may start a waiting one.
-        let held = {
-            let mut shared = self.shared.borrow_mut();
-            let Some(job) = shared.jobs.get_mut(&id) else {
-                return;
-            };
-            let held = job.held && !summary.is_complete() && !job.user_cancelled;
-            if !held {
-                job.held = false;
-            }
-            held.then(|| std::mem::take(&mut job.resume_on_stop))
-        };
-        match held {
-            None => self.limit.release(self.job_ref(id)),
-            Some(true) => {
-                self.retry(id, true, sender);
-                return;
-            }
-            Some(false) => {}
-        }
         let (forget, flash_for) = {
             let mut shared = self.shared.borrow_mut();
             let Some(job) = shared.jobs.get_mut(&id) else {
@@ -2443,9 +2265,6 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         transfer::fraction(job.done, job.total)
     };
     let (info, error, status) = match &job.summary {
-        _ if job.waiting || (job.held && job.summary.is_some()) => {
-            (tr!("job-waiting-slot"), false, None)
-        }
         None if job.paused => (tr!("job-pausing"), false, None),
         Some(_) if job.paused && job.total == 0 => (tr!("job-paused"), false, None),
         Some(_) if job.paused => (
@@ -2531,12 +2350,10 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             tr!("job-cancel")
         },
         // Deletes are quick, and have nothing to continue.
-        can_pause: job.is_running() && !job.paused && !job.waiting && !deleting,
+        can_pause: job.is_running() && !job.paused && !deleting,
         pause_tooltip: tr!("job-pause"),
-        moving: job.is_running() && !job.paused && !job.waiting && job.planned && !deleting,
-        // A job held back by the limit continues by itself.
+        moving: job.is_running() && !job.paused && job.planned && !deleting,
         can_retry: !job.is_running()
-            && !job.held
             && job
                 .summary
                 .as_ref()
@@ -2553,7 +2370,17 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
         },
         // Finished jobs in the Queue are on their way out on their own.
         can_remove: !job.is_running() && job.list != ListKind::Queue,
-        can_start_now: job.waiting || (!job.is_running() && (job.held || job.paused)),
+        // A file waiting for a place within the limit (not started, or held back), or a
+        // paused job.
+        can_start_now: (job.is_running()
+            && !job.paused
+            && job.items.iter().any(|item| {
+                item.kind == ItemKind::File
+                    && item.outcome.is_none()
+                    && !item.paused
+                    && (item.meter.is_none() || item.held)
+            }))
+            || (!job.is_running() && job.paused),
     }
 }
 
@@ -2662,10 +2489,7 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         Some(ItemOutcome::Skipped) => (tr!("item-skipped"), false, Some(STOPPED_ICON)),
         Some(ItemOutcome::Failed(error)) => (error.clone(), true, Some(FAILED_ICON)),
         // Pausing stops the job's unfinished files the way cancelling does; they wait to
-        // be continued (held back by the transfer limit: until there is room).
-        Some(ItemOutcome::Cancelled) if job.held => {
-            (tr!("item-paused-slot"), false, Some(PAUSED_ICON))
-        }
+        // be continued.
         Some(ItemOutcome::Cancelled) if job.paused => {
             (tr!("item-paused"), false, Some(PAUSED_ICON))
         }
@@ -2675,6 +2499,7 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         }
         Some(ItemOutcome::Stopped) => (tr!("item-stopped"), false, Some(STOPPED_ICON)),
         None if item.asking => (tr!("item-asking"), false, None),
+        None if item.held => (tr!("item-paused-slot"), false, Some(PAUSED_ICON)),
         None if deleting => (String::new(), false, None),
         None if item.paused && item.kind == ItemKind::File && item.done > 0 => (
             tr!(
@@ -3107,9 +2932,6 @@ mod tests {
             cancel: CancelFlag::default(),
             user_cancelled: false,
             paused: false,
-            waiting: false,
-            held: false,
-            resume_on_stop: false,
             items: items
                 .iter()
                 .enumerate()
@@ -3127,6 +2949,7 @@ mod tests {
                     expanded: true,
                     asking: false,
                     paused: false,
+                    held: false,
                     verifying: false,
                     verify_done: None,
                     verification: None,

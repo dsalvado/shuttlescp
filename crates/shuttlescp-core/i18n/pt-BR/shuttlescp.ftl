@@ -14,8 +14,8 @@ preferences-title = Preferências
 preferences-language = _Idioma da interface:
 preferences-restart = Reinicie o { -app-name } para usar o novo idioma.
 
-status-transfers-unlimited = Transferências: sem limite
-status-transfers-limited = Transferências: { $running } de { $limit }
+status-transfers-unlimited = Arquivos: sem limite
+status-transfers-limited = Arquivos: { $running } de { $limit }
 status-transfers-waiting = { $count } aguardando
 dialog-cancel = Cancelar
 
@@ -127,7 +127,7 @@ this-computer-title = Este computador · { $name }
 this-computer = este computador
 status-connected = Conectado a { $name }
 status-connected-pair = Conectado a { $left } e { $right }
-status-transfers-tooltip = Transferências simultâneas, em todas as conexões. Clique para limitá-las.
+status-transfers-tooltip = Arquivos copiados ao mesmo tempo, em todas as conexões. Clique para limitá-los.
 status-log-level = Nível de registro: { $level }
 session-activity = Transferências em andamento
 session-close = Desconectar e fechar esta sessão
@@ -149,10 +149,10 @@ update-notice-waiting-tooltip = O { -app-name } vai reiniciar com a { $version }
 update-notice-restart-tooltip = O { -app-name } { $version } está pronto. Clique para reiniciar com ele.
 update-notice-hide = Ocultar este aviso
 
-limit-title = Transferências simultâneas
+limit-title = Arquivos copiados ao mesmo tempo
 limit-unlimited = Sem limite
 limit-at-most = No máximo
-limit-hint = Em todas as conexões. As demais aguardam na fila e começam à medida que outras terminam.
+limit-hint = Em todas as conexões. Os outros arquivos aguardam a vez, a transferência mais antiga primeiro.
 
 relay-tooltip = Os arquivos copiados entre os dois servidores passam por este computador
 relay-to-right = Copiando do servidor da esquerda para o da direita
@@ -253,7 +253,6 @@ progress-speed = { $size }/s
 progress-files = { $done } de { $total } arquivos
 progress-bytes = { $done } de { $total }
 
-job-waiting-slot = Aguardando uma vaga de transferência livre
 job-pausing = Pausando...
 job-paused = Pausada
 job-paused-copied = Pausada: { $done } de { $total } copiados
