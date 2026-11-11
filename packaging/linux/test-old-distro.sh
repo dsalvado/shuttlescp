@@ -26,7 +26,8 @@ WAIT_SECONDS=30
 echo "==> Preparing $IMAGE with a virtual X display${EXTRA:+ and $EXTRA}"
 docker build --quiet --tag "$TAG" - >/dev/null <<EOF
 FROM $IMAGE
-RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends \
+RUN printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\n' >/etc/apt/apt.conf.d/80-timeouts \
+    && apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends \
       xvfb x11-utils imagemagick $EXTRA >/dev/null && rm -rf /var/lib/apt/lists/*
 EOF
 

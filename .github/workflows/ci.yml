@@ -37,7 +37,7 @@ jobs:
       # The same packages everywhere (see the script): an AppImage only bundles what
       # the build machine has.
       - name: Install GTK 4 and its add-ons
-        run: sudo packaging/linux/install-build-deps.sh
+        run: sudo --preserve-env=GITHUB_ACTIONS packaging/linux/install-build-deps.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -77,7 +77,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install GTK 4 and its add-ons
-        run: sudo packaging/linux/install-build-deps.sh
+        run: sudo --preserve-env=GITHUB_ACTIONS packaging/linux/install-build-deps.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
