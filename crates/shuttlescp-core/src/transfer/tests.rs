@@ -1307,3 +1307,71 @@ fn each_site_can_only_make_checking_stricter() {
     // A site cannot turn on what the Preferences turned off.
     assert_eq!(off.for_sites(&[SameAsPreferences]), off);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jobs_sharing_a_limit_never_copy_more_files_at_once() {
+    // Arrange: two jobs of 5 files each, sharing a limit of 1 file at once.
+    let temp = tempfile::tempdir().expect("temp dir");
+    let places = FilePlaces::new(Some(1));
+    let mut jobs = Vec::new();
+    for name in ["a", "b"] {
+        let (src, dst) = (
+            temp.path().join(name),
+            temp.path().join(format!("{name}-copy")),
+        );
+        std::fs::create_dir_all(&src).expect("create");
+        std::fs::create_dir(&dst).expect("create");
+        for index in 0..5 {
+            std::fs::write(src.join(format!("{index}.bin")), big_content()).expect("write");
+        }
+        let sources = (0..5)
+            .map(|index| src.join(format!("{index}.bin")))
+            .collect();
+        jobs.push((job(JobKind::Copy, sources, &dst), dst));
+    }
+    let most = Arc::new(Mutex::new(0_usize));
+
+    // Act: both at the same time.
+    let runs = jobs.iter().map(|(job, _)| {
+        // Each job runs as a task of its own, which owns what it uses.
+        let job = job.clone();
+        let (counter, most) = (Arc::clone(&places), Arc::clone(&most));
+        let sink: Sink = Arc::new(move |event: TransferEvent| {
+            if let TransferEvent::Progress { .. } = event {
+                let (_, running, _) = counter.counts();
+                let mut most = most.lock().expect("lock");
+                *most = (*most).max(running);
+            }
+        });
+        let cancel = CancelFlag::default().with_places(Arc::clone(&places));
+        async move { execute(&job, Endpoint::Local, Some(Endpoint::Local), &cancel, &sink).await }
+    });
+    let summaries = futures_join_all(runs).await;
+
+    // Assert: every file copied whole, never two at once, nothing left in line.
+    for summary in &summaries {
+        assert!(summary.is_complete(), "{summary:?}");
+    }
+    for (_, dst) in &jobs {
+        for index in 0..5 {
+            let copy = std::fs::read(dst.join(format!("{index}.bin"))).expect("read");
+            assert_eq!(copy, big_content());
+        }
+    }
+    assert_eq!(*most.lock().expect("lock"), 1);
+    assert_eq!(places.counts(), (Some(1), 0, 0));
+}
+
+/// Run these futures at the same time; their results in order.
+async fn futures_join_all<F>(futures: impl Iterator<Item = F>) -> Vec<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let handles: Vec<_> = futures.map(tokio::spawn).collect();
+    let mut results = Vec::new();
+    for handle in handles {
+        results.push(handle.await.expect("task"));
+    }
+    results
+}

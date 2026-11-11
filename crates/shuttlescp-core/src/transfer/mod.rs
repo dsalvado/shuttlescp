@@ -646,9 +646,28 @@ pub struct CancelFlag {
     stopped: Arc<Mutex<HashSet<usize>>>,
     /// The files paused on their own, by id.
     paused_items: Arc<Mutex<HashSet<usize>>>,
+    /// The limit on files copied at once that the job shares with every other one;
+    /// `None` for no shared limit.
+    places: Option<Arc<FilePlaces>>,
 }
 
 impl CancelFlag {
+    /// Copy files within this shared limit: each file waits for a place in it.
+    ///
+    /// # Arguments
+    ///
+    /// * `places` - The limit, shared by every job
+    #[must_use]
+    pub fn with_places(mut self, places: Arc<FilePlaces>) -> Self {
+        self.places = Some(places);
+        self
+    }
+
+    /// The shared limit, if the job has one.
+    pub(super) fn places(&self) -> Option<&Arc<FilePlaces>> {
+        self.places.as_ref()
+    }
+
     /// Ask the job to pause: it stops like [`CancelFlag::cancel`], but files being
     /// copied keep their partial copies, so running the job again with `resume`
     /// continues them where they stopped.
