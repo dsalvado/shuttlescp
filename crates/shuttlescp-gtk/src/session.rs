@@ -16,6 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use relm4::gtk::glib;
 use relm4::gtk::prelude::*;
@@ -26,7 +27,7 @@ use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteVerify};
-use shuttlescp_core::transfer::{Job, JobKind, Side, Verify};
+use shuttlescp_core::transfer::{FilePlaces, Job, JobKind, Side, Verify};
 
 use crate::app::{App, AppMsg, not_connected};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
@@ -35,7 +36,6 @@ use crate::transfer_panel::{
     LeftConnection, PanelConnection, PendingStore, TransferPanel, TransferPanelInit,
     TransferPanelMsg, TransferPanelOutput,
 };
-use crate::transfer_slots::TransferLimit;
 use shuttlescp_core::tr;
 
 /// Identifies a session for its whole life (positions change as tabs close).
@@ -141,7 +141,7 @@ pub struct SessionInit<'a> {
     /// Unfinished transfers, shared by all sessions.
     pub pending: Rc<PendingStore>,
     /// The limit on transfers running at once, shared by every session.
-    pub transfer_limit: Rc<TransferLimit>,
+    pub transfer_limit: Arc<FilePlaces>,
     /// How the Preferences say copies are checked, shared by every session.
     pub verify: Rc<Cell<Verify>>,
     /// Initial position of the left/right divider, in pixels.
@@ -233,8 +233,7 @@ impl Session {
 
         let transfers = TransferPanel::builder()
             .launch(TransferPanelInit {
-                session: id,
-                limit: transfer_limit,
+                places: transfer_limit,
                 verify,
                 pending,
                 hide_finished,

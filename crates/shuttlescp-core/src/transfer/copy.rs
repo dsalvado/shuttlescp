@@ -232,6 +232,13 @@ pub(super) async fn copy_items(
         }
     };
     loop {
+        // Start now: the job goes first in the shared limit's line.
+        if cancel.take_start_now()
+            && let Some(ticket) = &ticket
+        {
+            tracing::info!("starting a file of this job now, ahead of the others");
+            ticket.start_now();
+        }
         // Paused files that were resumed queue up again; stopped or cancelled ones end.
         let mut still_paused = Vec::new();
         for (item, action) in paused.drain(..) {
@@ -346,6 +353,7 @@ pub(super) async fn copy_items(
                     "held back by the transfer limit at {at} bytes: {}",
                     item.dest
                 );
+                sink(TransferEvent::Held { id: item.id });
                 item.partial = at;
                 waiting.push_front((item, action));
             }

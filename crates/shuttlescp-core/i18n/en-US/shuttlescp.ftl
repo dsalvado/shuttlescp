@@ -26,8 +26,8 @@ preferences-restart = Restart { -app-name } to use the new language.
 ## The status bar (app.rs). Variables: $running and $limit are numbers of
 ## transfers, $count the transfers waiting.
 
-status-transfers-unlimited = Transfers: unlimited
-status-transfers-limited = Transfers: { $running } of { $limit }
+status-transfers-unlimited = Files: unlimited
+status-transfers-limited = Files: { $running } of { $limit }
 status-transfers-waiting = { $count } waiting
 dialog-cancel = Cancel
 
@@ -169,7 +169,7 @@ this-computer-title = This computer · { $name }
 this-computer = this computer
 status-connected = Connected to { $name }
 status-connected-pair = Connected to { $left } and { $right }
-status-transfers-tooltip = Transfers running at once, over all connections. Click to limit them.
+status-transfers-tooltip = Files copied at once, over all connections. Click to limit them.
 # $level: Error, Warn, Info, Debug or Trace (not translated).
 status-log-level = Log level: { $level }
 session-activity = Transfers running
@@ -196,10 +196,10 @@ update-notice-hide = Hide this notice
 
 ## The transfer limit's panel, from the status bar (app.rs).
 
-limit-title = Transfers running at once
+limit-title = Files copied at once
 limit-unlimited = Unlimited
 limit-at-most = At most
-limit-hint = Over all connections. More wait in the Queue and start as others finish.
+limit-hint = Over all connections. Other files wait their turn, oldest transfer first.
 
 ## Site to site: the picture between the two panes (session.rs).
 
@@ -331,7 +331,6 @@ progress-bytes = { $done } of { $total }
 
 ## A transfer's line.
 
-job-waiting-slot = Waiting for a free transfer slot
 job-pausing = Pausing...
 job-paused = Paused
 job-paused-copied = Paused: { $done } of { $total } copied

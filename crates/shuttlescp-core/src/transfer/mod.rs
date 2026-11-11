@@ -602,6 +602,12 @@ pub enum TransferEvent {
         /// Bytes copied so far.
         done: u64,
     },
+    /// A file was held back by the shared limit (lowered, or another job started now):
+    /// it waits for a place, to continue from its partial copy.
+    Held {
+        /// Item id.
+        id: usize,
+    },
     /// A copied file is being checked against its source (it can be skipped by
     /// stopping the item, see [`CancelFlag::stop_item`]).
     Verifying {
@@ -649,6 +655,8 @@ pub struct CancelFlag {
     /// The limit on files copied at once that the job shares with every other one;
     /// `None` for no shared limit.
     places: Option<Arc<FilePlaces>>,
+    /// Start now was asked for: the job goes first in the shared limit's line.
+    start_now: Arc<AtomicBool>,
 }
 
 impl CancelFlag {
@@ -666,6 +674,18 @@ impl CancelFlag {
     /// The shared limit, if the job has one.
     pub(super) fn places(&self) -> Option<&Arc<FilePlaces>> {
         self.places.as_ref()
+    }
+
+    /// Ask for the job to go first in the shared limit's line ("Start now"): its next
+    /// file starts as soon as possible, holding back another job's file if there is no
+    /// room.
+    pub fn start_now(&self) {
+        self.start_now.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether Start now was asked for since the last time; asking clears it.
+    pub(super) fn take_start_now(&self) -> bool {
+        self.start_now.swap(false, Ordering::Relaxed)
     }
 
     /// Ask the job to pause: it stops like [`CancelFlag::cancel`], but files being

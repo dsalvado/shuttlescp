@@ -6,6 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use relm4::actions::{ActionGroupName, ActionName, RelmAction, RelmActionGroup};
 use relm4::gtk::prelude::*;
@@ -21,7 +22,7 @@ use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::pending::PendingTransfers;
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteBook};
-use shuttlescp_core::transfer::{Job, JobKind, Side, Verify};
+use shuttlescp_core::transfer::{FilePlaces, Job, JobKind, Side, Verify};
 use shuttlescp_core::update::{self, Manifest};
 
 use crate::build_info::{build_info, show_about};
@@ -37,7 +38,6 @@ use crate::theme;
 use crate::theme_list::ThemeList;
 use crate::tooltip::TooltipExt;
 use crate::transfer_panel::{PendingStore, TransferPanelMsg};
-use crate::transfer_slots::TransferLimit;
 use crate::update_dialog::{self, RestartChoice};
 use shuttlescp_core::tr;
 
@@ -379,7 +379,7 @@ pub struct App {
     /// Unfinished transfers, shared by every session's transfer lists.
     pending: Rc<PendingStore>,
     /// The limit on transfers running at once, shared by every session's transfer lists.
-    transfer_limit: Rc<TransferLimit>,
+    transfer_limit: Arc<FilePlaces>,
     /// How the Preferences say copies are checked, shared by every session's transfer
     /// lists (which apply each site's choice on top).
     verify: Rc<Cell<Verify>>,
@@ -646,7 +646,7 @@ impl SimpleComponent for App {
         // Shared by the transfer panels, which record and resume unfinished transfers,
         // and the Login dialog, which lists them.
         let pending = PendingStore::load(PendingTransfers::default_path());
-        let transfer_limit = TransferLimit::new(config.transfer_limit());
+        let transfer_limit = FilePlaces::new(config.transfer_limit());
         let verify = Rc::new(Cell::new(config.verify()));
         let ui_language = config.language().to_owned();
         let mut model = Self {
@@ -710,12 +710,18 @@ impl SimpleComponent for App {
         new_tab.set_tooltip_text(Some(&tr!("new-connection-tooltip")));
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
         model.add_session(start_dir, window_size.width / 2, None, &sender);
+        // The status bar's counts change as files start and end, on the copy engine's
+        // threads: looked at once a second, and the bar redrawn when they changed.
         {
-            // Sessions free their places as the window closes, after the app has stopped
-            // taking messages: `input` would end the program there, `send` just fails.
-            let sender = sender.clone();
-            model.transfer_limit.set_on_change(move || {
-                let _ = sender.input_sender().send(AppMsg::TransferLimitChanged);
+            let (places, sender) = (Arc::clone(&model.transfer_limit), sender.clone());
+            let mut shown = places.counts();
+            glib::timeout_add_seconds_local(1, move || {
+                let now = places.counts();
+                if now != shown {
+                    shown = now;
+                    let _ = sender.input_sender().send(AppMsg::TransferLimitChanged);
+                }
+                glib::ControlFlow::Continue
             });
         }
         let limit_popover = transfer_limit_popover(
@@ -1265,7 +1271,7 @@ impl App {
             start_dir,
             last_dir_on_disk: self.config.last_dir_on_disk().clone(),
             pending: Rc::clone(&self.pending),
-            transfer_limit: Rc::clone(&self.transfer_limit),
+            transfer_limit: Arc::clone(&self.transfer_limit),
             verify: Rc::clone(&self.verify),
             split_position,
             hide_finished: self.config.hide_finished_files(),
