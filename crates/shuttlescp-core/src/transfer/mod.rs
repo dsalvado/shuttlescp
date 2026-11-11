@@ -21,6 +21,7 @@ mod copy;
 mod endpoint;
 mod meter;
 mod ops;
+mod places;
 mod plan;
 
 use std::collections::HashSet;
@@ -38,6 +39,7 @@ pub use ops::{
     check_name, check_same_side, create_folder, rename, windows_name_problem,
     windows_restored_name, windows_safe_name,
 };
+pub use places::{FilePlaces, Place, Ticket};
 
 use crate::checksum::Checksum;
 use crate::format::format_size;
