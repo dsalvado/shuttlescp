@@ -30,6 +30,8 @@ mod theme_list;
 mod tooltip;
 mod transfer_panel;
 #[cfg(debug_assertions)]
+mod ui_clips;
+#[cfg(debug_assertions)]
 mod ui_gallery;
 mod update_dialog;
 #[cfg(windows)]
@@ -73,11 +75,14 @@ fn main() {
     let _ = relm4::RELM_THREADS.set(threads);
     tracing::debug!("background worker threads: {threads}");
 
-    // The UI gallery registers under its own ID, so it runs even while ShuttleSCP is
-    // open (a second launch would otherwise hand over to the running app and exit).
+    // The UI gallery and the clip recorder register under their own IDs, so they run
+    // even while ShuttleSCP is open (a second launch would otherwise hand over to the
+    // running app and exit).
     #[cfg(debug_assertions)]
     let app_id = if std::env::var_os(ui_gallery::ENV_VAR).is_some() {
         ui_gallery::APP_ID
+    } else if std::env::var_os(ui_clips::ENV_VAR).is_some() {
+        ui_clips::APP_ID
     } else {
         APP_ID
     };

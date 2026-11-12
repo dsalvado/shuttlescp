@@ -90,7 +90,12 @@ th, td {
 }
 th { color: var(--muted); font-weight: 600; }
 figure { margin: 1rem 0; }
-figure img { max-width: 100%; border: 1px solid var(--hairline); border-radius: 8px; }
+figure img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
 figcaption {
   color: var(--muted);
   font: 12px/1.4 "JetBrains Mono", ui-monospace, Menlo, monospace;

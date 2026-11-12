@@ -33,6 +33,12 @@ pub const PAIR_VAR: &str = "SHUTTLESCP_UI_GALLERY_PAIR";
 /// Time for a window to open and draw before its picture is taken.
 const SETTLE: Duration = Duration::from_millis(800);
 
+/// Whether the app runs to be pictured (this gallery, or the clip recorder): then it
+/// shows no personal details and does not check for updates.
+pub fn staged() -> bool {
+    std::env::var_os(ENV_VAR).is_some() || std::env::var_os(crate::ui_clips::ENV_VAR).is_some()
+}
+
 /// Something to take a picture of: its file name, and how to open it.
 type Step = (&'static str, Box<dyn Fn(&gtk::Window)>);
 

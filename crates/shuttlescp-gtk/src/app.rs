@@ -25,7 +25,7 @@ use shuttlescp_core::sites::{Site, SiteBook};
 use shuttlescp_core::transfer::{FilePlaces, Job, JobKind, Side, Verify};
 use shuttlescp_core::update::{self, Manifest};
 
-use crate::build_info::{build_info, show_about};
+use crate::build_info::show_about;
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog;
 use crate::log_tail::log_tail;
@@ -557,7 +557,7 @@ impl SimpleComponent for App {
                         // Build info; full details on hover, the About dialog on click.
                         #[name = "build_label"]
                         gtk::Label {
-                            set_label: &build_info().summary(),
+                            set_label: &crate::build_info::summary(),
                             set_tooltip_text: Some(&crate::build_info::details(
                                 model.logger.file_path(),
                             )),
@@ -798,6 +798,11 @@ impl SimpleComponent for App {
                 move || demo_sender.input(AppMsg::GalleryDemo),
                 move || focus_sender.input(AppMsg::GalleryFocusFirst),
             );
+        }
+        // Development aid: record the user guide's clips (see `ui_clips`).
+        #[cfg(debug_assertions)]
+        if std::env::var_os(crate::ui_clips::ENV_VAR).is_some() {
+            crate::ui_clips::start(&root, sender.clone());
         }
         if model.update_check_due() {
             let sender = sender.clone();
@@ -1512,7 +1517,7 @@ impl App {
     /// was long enough ago.
     fn update_check_due(&self) -> bool {
         #[cfg(debug_assertions)]
-        if std::env::var_os(crate::ui_gallery::ENV_VAR).is_some() {
+        if crate::ui_gallery::staged() {
             return false;
         }
         let now = unix_now();
@@ -2077,10 +2082,10 @@ fn restart_after_exit(installer: &Path) {
 }
 
 /// This computer's name, for the titles of sessions that are not connected. The UI
-/// gallery uses a made-up one, so its pictures can be shared.
+/// gallery and the clip recorder use a made-up one, so their pictures can be shared.
 pub fn computer_name() -> String {
     #[cfg(debug_assertions)]
-    if std::env::var_os(crate::ui_gallery::ENV_VAR).is_some() {
+    if crate::ui_gallery::staged() {
         return String::from("my-computer");
     }
     glib::host_name().into()

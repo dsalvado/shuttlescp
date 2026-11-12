@@ -67,6 +67,21 @@ const CELL_CLASS: &str = "pane-cell";
 const DROP_COPY_ACTION: &str = "drop-copy";
 const DROP_MOVE_ACTION: &str = "drop-move";
 const DROP_CANCEL_ACTION: &str = "drop-cancel";
+
+/// Development aid for `ui_clips`: what it needs to drive a pane as a user would.
+#[cfg(debug_assertions)]
+pub mod clip {
+    pub(crate) use super::drag::{clip_drop as drop_variant, clip_position as position_of};
+
+    /// Drops files on the pane (with a [`drop_variant`]); its drop menu opens.
+    pub const DROP: &str = "pane.drop";
+    /// The drop menu's Copy Here.
+    pub const DROP_COPY: &str = "pane.drop-copy";
+    /// Opens the right-click menu, with (position, x, y) in the file list.
+    pub const CONTEXT_MENU: &str = "pane.context-menu";
+    /// The right-click menu's Upload, Download or Copy to.
+    pub const COPY: &str = "pane.copy";
+}
 /// CSS class of the text of an item a running transfer uses (see style.css).
 const IN_USE_CLASS: &str = "in-transfer";
 /// Name suggested for a new folder.
