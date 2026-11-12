@@ -7,6 +7,15 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-12
+
+### Added
+
+- A user guide, opened in your browser from Help › User Guide (or F1). It explains
+  SSH, SFTP, SCP and FTP, connecting to a server, copying files, copying between two
+  servers and what error messages mean, with short clips of copying files. It is
+  installed with the app, so it works offline; it is in English for now.
+
 ## [0.24.0] - 2026-11-11
 
 ### Changed
@@ -599,7 +608,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/dsalvado/shuttlescp/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/dsalvado/shuttlescp/compare/v0.23.4...v0.24.0
 [0.23.4]: https://github.com/dsalvado/shuttlescp/compare/v0.23.3...v0.23.4
 [0.23.3]: https://github.com/dsalvado/shuttlescp/compare/v0.23.2...v0.23.3
