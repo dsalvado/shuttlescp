@@ -92,6 +92,7 @@ relm4::new_stateless_action!(QuitAction, WindowActions, "quit");
 relm4::new_stateless_action!(LoginAction, WindowActions, "login");
 relm4::new_stateless_action!(DisconnectAction, WindowActions, "disconnect");
 relm4::new_stateless_action!(OpenLogAction, WindowActions, "open-log");
+relm4::new_stateless_action!(UserGuideAction, WindowActions, "user-guide");
 relm4::new_stateless_action!(AboutAction, WindowActions, "about");
 relm4::new_stateless_action!(PreferencesAction, WindowActions, "preferences");
 relm4::new_stateless_action!(CheckUpdatesAction, WindowActions, "check-updates");
@@ -1833,6 +1834,22 @@ fn register_actions(
     });
     open_log.set_enabled(log_path.is_some());
 
+    // The user guide's pages open in the browser (from the program's own files).
+    let guide = crate::help::guide_index();
+    let guide_uri = guide.as_ref().map(|index| gio::File::for_path(index).uri());
+    let user_guide = RelmAction::<UserGuideAction>::new_stateless(move |_| {
+        if let Some(uri) = &guide_uri
+            && let Err(error) =
+                gio::AppInfo::launch_default_for_uri(uri, None::<&gio::AppLaunchContext>)
+        {
+            tracing::error!("cannot open the user guide {uri}: {error}");
+        }
+    });
+    if guide.is_none() {
+        tracing::warn!("the user guide is not installed");
+    }
+    user_guide.set_enabled(guide.is_some());
+
     // A weak reference: the window owns this action, so a strong one would keep the
     // window alive forever.
     let about_window = window.downgrade();
@@ -1885,6 +1902,7 @@ fn register_actions(
     group.add_action(disconnect.clone());
     group.add_action(quit);
     group.add_action(open_log);
+    group.add_action(user_guide);
     group.add_action(about);
     group.add_action(preferences);
     group.add_action(check_updates);
@@ -1907,6 +1925,7 @@ fn register_actions(
     }
     let group = bar.group();
     app.set_accels_for_action(&format!("{group}.{}", LoginAction::NAME), &["<primary>l"]);
+    app.set_accels_for_action(&format!("{group}.{}", UserGuideAction::NAME), &["F1"]);
     app.set_accels_for_action(
         &format!("{group}.{}", PreferencesAction::NAME),
         &["<primary>comma"],
@@ -2313,7 +2332,10 @@ fn build_menu(bar: MenuBar) -> gio::Menu {
     let update_section = gio::Menu::new();
     update_section.append_item(&bar.item::<CheckUpdatesAction>(&tr!("menu-check-updates")));
     update_section.append_item(&bar.item::<AutoUpdateAction>(&tr!("menu-auto-updates")));
+    let guide_section = gio::Menu::new();
+    guide_section.append_item(&bar.item::<UserGuideAction>(&tr!("menu-user-guide")));
     let help_menu = gio::Menu::new();
+    help_menu.append_section(None, &guide_section);
     help_menu.append_section(None, &update_section);
     if in_window {
         help_menu.append_item(&bar.item::<AboutAction>(&tr!("menu-about")));

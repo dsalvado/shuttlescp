@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Copying files · ShuttleSCP User Guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+<nav>
+  <p class="title">ShuttleSCP User Guide</p>
+  <ul>
+    <li><a href="index.html">Welcome</a></li>
+    <li><a href="protocols.html">SSH, SFTP, SCP and FTP</a></li>
+    <li><a href="connecting.html">Connecting to a server</a></li>
+    <li><a href="transferring.html" aria-current="page">Copying files</a></li>
+    <li><a href="site-to-site.html">Between two servers</a></li>
+    <li><a href="troubleshooting.html">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+<h1>Copying files</h1>
+
+<p>Once connected, the left pane shows this computer and the right pane the server. Copying
+<em>to</em> the server is an <strong>upload</strong>; copying <em>from</em> it, a
+<strong>download</strong>.</p>
+
+<h2 id="browsing">Finding your files</h2>
+<ul>
+  <li>Double-click a folder to open it; double-click <span class="ui">..</span> to go back
+    up. The folder you came from stays selected.</li>
+  <li>The drop-down above each pane switches disks: this computer's, or the server's
+    drives and main folders.</li>
+  <li>On this computer, double-clicking a file opens it with its usual program.</li>
+  <li>Right-click for <span class="ui">New Folder…</span>, <span class="ui">Rename…</span>
+    (<kbd>F2</kbd>), <span class="ui">Delete</span> (<kbd>Delete</kbd>) and <span
+    class="ui">Refresh</span>.</li>
+</ul>
+
+<h2 id="copying">Uploading and downloading</h2>
+<p>Either way works:</p>
+<ul>
+  <li><strong>Drag</strong> files or folders from one pane and drop them on the other (or on
+    a folder in it). A small menu asks <span class="ui">Copy Here</span> or <span
+    class="ui">Move Here</span>. Moving deletes the originals once they are copied.</li>
+  <li><strong>Right-click</strong> them and choose <span class="ui">Upload</span> or
+    <span class="ui">Download</span> (or <span class="ui">Move to…</span>). They go to the
+    folder the other pane shows.</li>
+</ul>
+<!-- clip: upload-download.gif -->
+
+<p>While a file is copied it is called <code>name.filepart</code>; it gets its real name once
+complete, so a half-copied file is never mistaken for a finished one.</p>
+
+<h3 id="conflicts">When a file is already there</h3>
+<p>ShuttleSCP asks before replacing anything: <span class="ui">File Already Exists</span>
+shows both files' sizes and dates (the newer one is marked). Choose <span
+class="ui">Skip</span>, <span class="ui">Overwrite</span> or <span class="ui">Cancel
+Transfer</span>; tick <span class="ui">Do the same for the other existing files</span> to
+answer once for all of them.</p>
+
+<h2 id="transfers">Watching and controlling transfers</h2>
+<p>The <span class="ui">Transfers</span> area at the bottom has three tabs:
+<span class="ui">Queue</span> (running and waiting), <span class="ui">Completed</span> and
+<span class="ui">Failed</span>. Each transfer shows its files, progress and speed. The
+buttons on its line:</p>
+<table>
+  <tr><th>Button</th><th>On a transfer</th><th>On one file</th></tr>
+  <tr><td>Pause</td><td>Stops for now, keeping what is copied</td><td>Pauses that file;
+    the rest goes on</td></tr>
+  <tr><td>Resume</td><td>Continues where it was paused</td><td>Continues that file</td></tr>
+  <tr><td>Cancel / Stop</td><td>Cancels the whole transfer</td><td>Leaves that file out;
+    the rest goes on</td></tr>
+  <tr><td>Retry</td><td>Runs a failed transfer again, continuing where it stopped</td>
+    <td></td></tr>
+</table>
+<p><span class="ui">Hide finished files</span> keeps the files still being copied at the top
+of a long transfer.</p>
+
+<h2 id="interruptions">Interruptions</h2>
+<ul>
+  <li><strong>If the connection drops</strong>, ShuttleSCP logs in again by itself and
+    continues the file from where it stopped (up to three times).</li>
+  <li><strong>If ShuttleSCP is closed</strong> during a transfer, or the computer restarts,
+    the partial copies are kept. The next time you log in to that site, a banner offers to
+    <span class="ui">Resume</span> them; the Login dialog's <span
+    class="ui">Unfinished</span> tab lists them too.</li>
+</ul>
+
+<h2 id="limit">How many files at once</h2>
+<p>The status bar shows how many files are being copied, like <span class="ui">Files: 2 of
+4</span>. Click it to set a limit over all your connections, or <span
+class="ui">Unlimited</span>. With a limit, the other files wait their turn, the oldest
+transfer first. Lowering the limit pauses the files started last; they continue from their
+partial copies when there is room.</p>
+<p>To jump the queue, right-click a transfer that has files waiting and choose <span
+class="ui">Start now</span>. Each site also has its own <span class="ui">Files at
+once</span> (under <span class="ui">Advanced</span> in the Login dialog), for servers that
+refuse many connections.</p>
+
+<h2 id="verify">Checking copies</h2>
+<p>After each file is copied, ShuttleSCP checks that the copy is identical to the original,
+by comparing their <em>checksums</em>: a long number computed from a file's contents, which
+changes completely if a single byte differs. The server computes its side itself when it
+can (with <code>sha256sum</code> over SSH, or FTP's <code>HASH</code> command).</p>
+<ul>
+  <li>A file's line then says <span class="ui">verified</span> (its checksum is in the
+    tooltip), or <span class="ui">not verified</span> with the reason.</li>
+  <li>If the copy differs, the file counts as failed, and a move keeps its original.</li>
+  <li>When a server cannot compute checksums, ShuttleSCP reads the copy back to check it, up
+    to a size you choose; larger files show <span class="ui">not verified (large
+    file)</span>, with a button to check them anyway.</li>
+</ul>
+<p>Turn it off, or change the size, in <span class="ui">File › Preferences…</span> (<span
+class="ui">Verify file checksums after completion</span>). For a slow server, choose
+<span class="ui">Server checksums only</span> under the site's <span
+class="ui">Advanced</span>: nothing is then read back.</p>
+</main>
+</div>
+</body>
+</html>

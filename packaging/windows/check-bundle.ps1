@@ -64,6 +64,9 @@ foreach ($helper in 'gspawn-win64-helper.exe', 'gspawn-win64-helper-console.exe'
     $path = Join-Path $Folder "bin\$helper"
     if (-not (Test-Path $path)) { throw "no $helper in bin: GLib needs it to open files and links" }
 }
+if (-not (Test-Path (Join-Path $Folder 'share\shuttlescp\help\index.html'))) {
+    throw 'no user guide in share\shuttlescp\help'
+}
 
 # Only Windows on PATH, and none of the variables that point GTK elsewhere.
 $windows = $env:SystemRoot

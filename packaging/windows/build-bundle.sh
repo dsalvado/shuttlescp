@@ -77,6 +77,10 @@ cp "$PREFIX/bin/gspawn-win64-helper.exe" "$PREFIX/bin/gspawn-win64-helper-consol
 cp "$PREFIX/share/glib-2.0/schemas/"org.gtk.gtk4.Settings.*.gschema.xml "$OUT/share/glib-2.0/schemas/"
 glib-compile-schemas "$OUT/share/glib-2.0/schemas"
 
+# The user guide (Help › User Guide), beside GTK's shared files.
+mkdir -p "$OUT/share/shuttlescp"
+cp -R "$ROOT/docs/help" "$OUT/share/shuttlescp/help"
+
 # 6. The icon themes: GTK's symbolic icons (Adwaita), the full-colour ones the file
 #    lists fall back to (AdwaitaLegacy), and the base theme (hicolor).
 for theme in Adwaita AdwaitaLegacy hicolor; do

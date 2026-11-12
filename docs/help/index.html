@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShuttleSCP User Guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+<nav>
+  <p class="title">ShuttleSCP User Guide</p>
+  <ul>
+    <li><a href="index.html" aria-current="page">Welcome</a></li>
+    <li><a href="protocols.html">SSH, SFTP, SCP and FTP</a></li>
+    <li><a href="connecting.html">Connecting to a server</a></li>
+    <li><a href="transferring.html">Copying files</a></li>
+    <li><a href="site-to-site.html">Between two servers</a></li>
+    <li><a href="troubleshooting.html">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+<h1>Welcome to ShuttleSCP</h1>
+
+<p>ShuttleSCP copies files between your computer and other computers, called
+<em>servers</em>: a web host, a home server, a computer at work, a cloud machine. It can
+also copy files directly from one server to another.</p>
+
+<p>You do not need to know the command line. If words like <em>SSH</em>, <em>SFTP</em> or
+<em>host key</em> are new to you, start with
+<a href="protocols.html">SSH, SFTP, SCP and FTP</a>: it explains them in plain words.</p>
+
+<h2>The window at a glance</h2>
+
+<table>
+  <tr><th>Part</th><th>What it is</th></tr>
+  <tr><td>Left pane</td><td>The files on <strong>this computer</strong> (or, in a
+    site-to-site session, on the first server).</td></tr>
+  <tr><td>Right pane</td><td>The files on the <strong>server</strong> you are connected
+    to.</td></tr>
+  <tr><td>Tabs above the panes</td><td>Each tab is a <em>session</em>: one connection, with
+    its own panes and transfers. <span class="ui">New Connection</span> opens another.</td></tr>
+  <tr><td>Transfers, at the bottom</td><td>What is being copied (<span class="ui">Queue</span>),
+    and what has finished (<span class="ui">Completed</span>) or failed
+    (<span class="ui">Failed</span>).</td></tr>
+  <tr><td>Status bar</td><td>Where you are connected, and how many files are copied at once
+    (click it to set a limit).</td></tr>
+</table>
+
+<h2>The quick start</h2>
+
+<ol>
+  <li>Open <span class="ui">File › Login…</span> (<kbd>Ctrl</kbd>+<kbd>L</kbd>).</li>
+  <li>Click <span class="ui">New Site</span>, fill in the server's host name, your user
+    name and password, and click <span class="ui">Save</span>.</li>
+  <li>Click <span class="ui">Login</span>. The first time, ShuttleSCP asks whether you trust
+    the server: see <a href="connecting.html#host-keys">Host keys</a>.</li>
+  <li>Drag files from one pane to the other. That's it: the copy appears under
+    <span class="ui">Transfers</span>.</li>
+</ol>
+
+<p class="note">This guide is the one for the version you have installed, and works without
+an internet connection. Open it at any time with <span class="ui">Help › User Guide</span>
+or <kbd>F1</kbd>.</p>
+</main>
+</div>
+</body>
+</html>

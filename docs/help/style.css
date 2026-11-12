@@ -1,0 +1,66 @@
+/* The ShuttleSCP user guide: plain pages, readable offline in any browser. */
+:root {
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #1a73e8;
+  --line: #d8dee4;
+  --note: #f1f6fd;
+  --warn: #fff8e6;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e6edf3;
+    --muted: #9198a1;
+    --accent: #6cb6ff;
+    --line: #3d444d;
+    --note: #16263a;
+    --warn: #33290f;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Ubuntu, sans-serif;
+  color: var(--text);
+  background: Canvas;
+}
+.page { display: flex; min-height: 100vh; }
+nav {
+  flex: 0 0 15rem;
+  padding: 1.5rem 1rem;
+  border-right: 1px solid var(--line);
+}
+nav .title { font-weight: 700; margin: 0 0 1rem; }
+nav ul { list-style: none; padding: 0; margin: 0; }
+nav li { margin: 0.25rem 0; }
+nav a { color: var(--text); text-decoration: none; }
+nav a:hover, nav a[aria-current="page"] { color: var(--accent); }
+main { flex: 1; max-width: 48rem; padding: 1.5rem 2rem 4rem; }
+h1 { font-size: 1.8rem; margin-top: 0; }
+h2 { font-size: 1.3rem; margin-top: 2rem; border-bottom: 1px solid var(--line); }
+h3 { font-size: 1.05rem; margin-top: 1.5rem; }
+a { color: var(--accent); }
+code, kbd {
+  font: 0.9em ui-monospace, "Cascadia Mono", Menlo, monospace;
+  padding: 0.1em 0.3em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.ui { font-weight: 600; }
+.note, .warn {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin: 1rem 0;
+  background: var(--note);
+}
+.warn { background: var(--warn); }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+figure { margin: 1.5rem 0; }
+figure img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+figcaption { color: var(--muted); font-size: 0.9rem; }
+@media (max-width: 40rem) {
+  .page { display: block; }
+  nav { border-right: 0; border-bottom: 1px solid var(--line); }
+}

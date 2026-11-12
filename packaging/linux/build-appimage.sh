@@ -69,6 +69,9 @@ install -Dm644 "$PACKAGING/$APP_ID.desktop" "$APPDIR/usr/share/applications/$APP
 install -Dm644 "$PACKAGING/$APP_ID.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 install -Dm644 "$PACKAGING/$APP_ID.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APP_ID.png"
 install -Dm644 "$PACKAGING/$APP_ID.metainfo.xml" "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml"
+# The user guide (Help › User Guide), beside the program's other files.
+mkdir -p "$APPDIR/usr/share/shuttlescp"
+cp -R "$ROOT/docs/help" "$APPDIR/usr/share/shuttlescp/help"
 
 # The libraries for older systems (see the top of this file), and the launcher that
 # chooses. Called once linuxdeploy has gathered the usual ones into usr/lib.

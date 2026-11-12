@@ -95,6 +95,7 @@ menu-quit = 退出(_Q)
 menu-theme = 主题
 menu-log-level = 日志级别(_L)
 menu-open-log = 打开日志文件(_O)
+menu-user-guide = 用户指南（英文）(_U)
 menu-check-updates = 检查更新(_U)…
 menu-auto-updates = 启动时检查更新(_S)
 menu-about = 关于 { -app-name }(_A)
