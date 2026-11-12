@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connecting to a server · ShuttleSCP User Guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+<nav>
+  <p class="title">ShuttleSCP User Guide</p>
+  <ul>
+    <li><a href="index.html">Welcome</a></li>
+    <li><a href="protocols.html">SSH, SFTP, SCP and FTP</a></li>
+    <li><a href="connecting.html" aria-current="page">Connecting to a server</a></li>
+    <li><a href="transferring.html">Copying files</a></li>
+    <li><a href="site-to-site.html">Between two servers</a></li>
+    <li><a href="troubleshooting.html">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+<h1>Connecting to a server</h1>
+
+<p>Connections start in the <span class="ui">Login</span> dialog: <span class="ui">File ›
+Login…</span>, or <kbd>Ctrl</kbd>+<kbd>L</kbd> (<kbd>⌘</kbd>+<kbd>L</kbd> on a Mac). It
+keeps your servers as <em>sites</em>, so you only type their details once.</p>
+
+<h2 id="sites">Adding a site</h2>
+<ol>
+  <li>Click <span class="ui">New Site</span>.</li>
+  <li>Choose the <span class="ui">File protocol</span> (see
+    <a href="protocols.html">which one</a>), and fill in the <span class="ui">Host
+    name</span> (like <code>files.example.com</code>, or an address like
+    <code>192.0.2.10</code>), the <span class="ui">Port</span> if it is not the usual one,
+    and your <span class="ui">User name</span>.</li>
+  <li>Give it an <span class="ui">Alias</span> if you like (a name such as "Web server"),
+    and a <span class="ui">Description</span> for your own notes.</li>
+  <li>Click <span class="ui">Save</span>, then <span class="ui">Login</span>.</li>
+</ol>
+<p>To change a site later, select it and click <span class="ui">Edit</span>. Sites can be
+sorted into folders: create one with the folder button below the list, and drag sites into
+it.</p>
+
+<h2 id="keys">Passwords and keys</h2>
+
+<p>An SSH server can check who you are in two ways:</p>
+<ul>
+  <li><strong>A password.</strong> Tick <span class="ui">Save password</span> to keep it.
+    It is stored in your system's password store (the desktop keyring on Linux, the
+    Keychain on macOS, Credential Manager on Windows), never in a plain file.</li>
+  <li><strong>An SSH key</strong>: a pair of files made together. The <em>public</em> key is
+    placed on the server; the <em>private</em> key stays on your computer and proves it is
+    you, without a password crossing the network. Choose it under <span class="ui">Private
+    key file</span> (OpenSSH keys, and PuTTY <code>.ppk</code> keys, both work). If the key
+    has a passphrase, ShuttleSCP asks for it.</li>
+</ul>
+<p>With <span class="ui">Use SSH agent</span> ticked, ShuttleSCP also offers the keys your
+SSH agent holds (the program that keeps unlocked keys while you are logged in; on Windows,
+the OpenSSH agent or PuTTY's Pageant). It tries, in this order, the key file, the agent's
+keys, then the password: the same order as the <code>ssh</code> command.</p>
+
+<h2 id="host-keys">Host keys: "Do you trust this server?"</h2>
+
+<p>Every SSH server has a <strong>host key</strong>, a kind of digital fingerprint that
+identifies it. The first time you connect, ShuttleSCP has never seen it, so it asks:</p>
+<p class="note"><span class="ui">Unknown Server</span>. Trust the server
+<code>files.example.com</code>? Its host key fingerprint is
+<code>SHA256:…</code></p>
+<p>If you can, compare that fingerprint with the one your host or administrator gives you,
+then click <span class="ui">Trust and Connect</span>. ShuttleSCP remembers the key in
+<code>~/.ssh/known_hosts</code>, the same list the <code>ssh</code> command uses, and does
+not ask again.</p>
+
+<div class="warn"><strong>"The host key has changed."</strong> If a server you trusted shows a
+different key, ShuttleSCP refuses to connect. It can mean the server was reinstalled, or
+that someone is intercepting the connection. Ask the server's administrator before doing
+anything else. If the change is genuine, remove the server's old line from
+<code>~/.ssh/known_hosts</code> (the message says which line), then connect again.</div>
+
+<p>FTPS servers prove who they are with a <em>certificate</em> instead. If the certificate
+cannot be checked (many FTP servers make their own), ShuttleSCP shows <span
+class="ui">Untrusted Certificate</span> with its fingerprint, and remembers your answer.</p>
+
+<h2 id="import-export">Moving your sites to another computer</h2>
+<p><span class="ui">Export...</span>, at the bottom of the Login dialog, saves your sites to
+a file. Tick <span class="ui">Include saved passwords</span> to bring them along: they are
+encrypted with a passphrase you choose (at least 8 characters). On the other computer,
+<span class="ui">Import...</span> reads the file and asks for that passphrase.</p>
+</main>
+</div>
+</body>
+</html>

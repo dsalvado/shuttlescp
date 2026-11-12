@@ -143,6 +143,7 @@ menu-quit = _Quit
 menu-theme = Theme
 menu-log-level = _Log Level
 menu-open-log = _Open Log File
+menu-user-guide = _User Guide
 menu-check-updates = Check for _Updates…
 menu-auto-updates = Check for Updates at _Startup
 menu-about = _About { -app-name }

@@ -108,6 +108,7 @@ menu-quit = _Quitter
 menu-theme = Thème
 menu-log-level = _Niveau de journalisation
 menu-open-log = _Ouvrir le fichier journal
+menu-user-guide = _Guide de l'utilisateur (en anglais)
 menu-check-updates = _Rechercher des mises à jour…
 menu-auto-updates = Rechercher au _démarrage
 menu-about = À _propos de { -app-name }

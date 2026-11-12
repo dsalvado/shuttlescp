@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting · ShuttleSCP User Guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+<nav>
+  <p class="title">ShuttleSCP User Guide</p>
+  <ul>
+    <li><a href="index.html">Welcome</a></li>
+    <li><a href="protocols.html">SSH, SFTP, SCP and FTP</a></li>
+    <li><a href="connecting.html">Connecting to a server</a></li>
+    <li><a href="transferring.html">Copying files</a></li>
+    <li><a href="site-to-site.html">Between two servers</a></li>
+    <li><a href="troubleshooting.html" aria-current="page">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+<h1>Troubleshooting</h1>
+
+<h2>Connecting</h2>
+<table>
+  <tr><th>Message</th><th>What it means, and what to do</th></tr>
+  <tr><td>… did not respond (timed out)</td><td>Nothing answered at that address and port.
+    Check the host name and port, that the server is on, and that your network (or a
+    firewall) lets you reach it.</td></tr>
+  <tr><td>cannot connect to …</td><td>The server could not be reached; the reason follows
+    (for example "connection refused": nothing listens on that port; check the port and the
+    protocol).</td></tr>
+  <tr><td>login failed: wrong user name, key or password</td><td>The server refused who you
+    said you are. Check the user name (it is case-sensitive) and the password; on some
+    servers the account must also be allowed to use SSH or FTP.</td></tr>
+  <tr><td>the server did not accept the SSH key</td><td>Your key is not on the server's list
+    for that account, or the wrong key was offered. Enter the password instead, or ask for
+    your public key to be added.</td></tr>
+  <tr><td>the key file … needs its passphrase</td><td>The private key is protected; enter its
+    passphrase when asked.</td></tr>
+  <tr><td>WARNING: the host key of … has changed</td><td>See <a
+    href="connecting.html#host-keys">Host keys</a>. Do not ignore it: ask the server's
+    administrator first.</td></tr>
+  <tr><td>the server's certificate is not trusted</td><td>An FTPS server's certificate could
+    not be checked. If its fingerprint is the one your host gives, trust it.</td></tr>
+  <tr><td>the server does not offer TLS encryption</td><td>The FTP server cannot encrypt. Only
+    if you accept plain FTP (see <a href="protocols.html">FTP and FTPS</a>), choose the
+    encryption the message names.</td></tr>
+  <tr><td>the server's file transfer (SFTP) service failed</td><td>SSH works, but the server
+    does not offer SFTP for this account. Ask the administrator, or try FTP if it has
+    it.</td></tr>
+</table>
+
+<h2>Copying</h2>
+<table>
+  <tr><th>Message</th><th>What it means, and what to do</th></tr>
+  <tr><td>Permission denied</td><td>The server does not let your account read that file or
+    write in that folder. Pick another folder, or ask for access.</td></tr>
+  <tr><td>no such file or folder</td><td>It was moved or deleted since the list was shown.
+    Click <span class="ui">Refresh</span>.</td></tr>
+  <tr><td>… is already in …, or cannot go inside itself</td><td>A file or folder was dropped
+    where it already is, or a folder into one of its own folders.</td></tr>
+  <tr><td>the copy's checksum differs from the original's</td><td>The copy is not identical
+    (see <a href="transferring.html#verify">Checking copies</a>). Retry the transfer; if it
+    keeps happening, the disk or the server may have a problem.</td></tr>
+  <tr><td>not verified</td><td>The copy is complete, but could not be checked; its tooltip
+    says why (often: the server cannot compute checksums).</td></tr>
+  <tr><td>Not started: "…" is using the same files</td><td>Another unfinished transfer
+    writes the same files. Retry once it has finished.</td></tr>
+</table>
+
+<h2>Slow servers</h2>
+<ul>
+  <li>Folders open quickly even while files are copied: transfers use a second connection
+    of their own.</li>
+  <li>A slow server can make checking copies slow too, when they are read back: choose
+    <span class="ui">Server checksums only</span> under the site's <span
+    class="ui">Advanced</span>.</li>
+  <li>Some servers allow only a few connections at once: lower <span class="ui">Files at
+    once</span> for that site.</li>
+</ul>
+
+<h2 id="log">The log</h2>
+<p>ShuttleSCP writes what it does to a log file: <span class="ui">Tools › Open Log
+File</span> opens it. For more detail, raise <span class="ui">Tools › Log Level</span>,
+try again, and look at the newest lines. The log never contains your passwords.</p>
+<p>If something looks wrong in ShuttleSCP itself, please report it on <a
+href="https://github.com/dsalvado/shuttlescp/issues">GitHub</a>, with the version (<span
+class="ui">Help › About</span>) and the lines from the log around the problem.</p>
+</main>
+</div>
+</body>
+</html>

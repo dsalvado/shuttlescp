@@ -231,6 +231,33 @@ pub(super) fn dropped_from(parameter: &glib::Variant) -> Option<Dropped> {
     })
 }
 
+/// Development aid for `ui_clips`: the drop of `sources` (from the other pane) into
+/// `dest_dir`, at (`x`, `y`) in the file list, as [`DROP_ACTION`] takes it.
+#[cfg(debug_assertions)]
+pub(crate) fn clip_drop(
+    sources: &[SidePath],
+    dest_dir: &SidePath,
+    x: f64,
+    y: f64,
+) -> glib::Variant {
+    let sources: Vec<Vec<u8>> = sources.iter().map(side_path_bytes).collect();
+    let drop: DropVariant = (sources, false, side_path_bytes(dest_dir), x, y);
+    drop.to_variant()
+}
+
+/// Development aid for `ui_clips`: the position of the file or folder named `name` in
+/// the list, if it shows one.
+#[cfg(debug_assertions)]
+pub(crate) fn clip_position(view: &gtk::ColumnView, name: &str) -> Option<u32> {
+    let model = view.model()?;
+    (0..model.n_items()).find(|&position| {
+        model
+            .item(position)
+            .and_then(|object| entry_path(&object))
+            .is_some_and(|path| path.file_name().is_some_and(|own| own == name))
+    })
+}
+
 /// What a drag in progress carries, if it comes from a ShuttleSCP pane. Known before the
 /// drop, since the drag started in this app.
 fn dragged(drop: &gdk::Drop) -> Option<DragPayload> {

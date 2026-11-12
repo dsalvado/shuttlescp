@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Between two servers · ShuttleSCP User Guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+<nav>
+  <p class="title">ShuttleSCP User Guide</p>
+  <ul>
+    <li><a href="index.html">Welcome</a></li>
+    <li><a href="protocols.html">SSH, SFTP, SCP and FTP</a></li>
+    <li><a href="connecting.html">Connecting to a server</a></li>
+    <li><a href="transferring.html">Copying files</a></li>
+    <li><a href="site-to-site.html" aria-current="page">Between two servers</a></li>
+    <li><a href="troubleshooting.html">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+<h1>Copying between two servers</h1>
+
+<p>Sometimes the files are on one server and need to go to another: from a web host to a
+backup server, from an old machine to a new one. A <strong>site-to-site</strong> session
+shows one server in each pane, so you can copy between them directly, without downloading
+everything first and uploading it again.</p>
+
+<h2>Opening a site-to-site session</h2>
+<ol>
+  <li>Save both servers as sites first (see <a href="connecting.html#sites">Adding a
+    site</a>), with their passwords saved or SSH keys set up: the session logs in to both
+    at once, without asking.</li>
+  <li>In the Login dialog, open the <span class="ui">Site to site</span> tab.</li>
+  <li>Pick a site for the left pane and one for the right pane, then click <span
+    class="ui">Login</span>.</li>
+</ol>
+<p>The status bar then says <span class="ui">Connected to</span> both servers, and each
+pane's title names its server.</p>
+
+<h2>Copying</h2>
+<p>Exactly as between this computer and a server: drag files from one pane to the other and
+choose <span class="ui">Copy Here</span> or <span class="ui">Move Here</span>, or right-click
+them and choose <span class="ui">Copy to</span> the other server. Each transfer's line shows
+which way it goes, like <span class="ui">Copy images: web.example.com → backup.example.com</span>.</p>
+<figure>
+  <img src="clips/site-to-site.gif" width="960" height="586" alt="The images folder is
+  dragged from the web server to the backup server and copied through this computer; its
+  files show as verified.">
+  <figcaption>Copying a folder from one server to the other</figcaption>
+</figure>
+
+<h2>How it works</h2>
+<p>The two servers do not talk to each other: often they could not (firewalls, different
+logins, different protocols). Instead, the data flows <strong>through your computer</strong>:
+ShuttleSCP reads from one server and writes to the other at the same time, without storing
+the files on your disk. It is what the command <code>scp -3</code> does, and it works between
+any two kinds of server, even SFTP on one side and FTP on the other.</p>
+<p class="note">Because the data passes through your computer, the speed is limited by your
+own internet connection: both the server's download and the other server's upload use it.
+For very large copies between two servers in the same data centre, copying on one of the
+servers directly can be much faster.</p>
+
+<p>Everything else works as usual: pausing and resuming, the transfer limit, and <a
+href="transferring.html#verify">checking copies</a>, where each server computes the checksum
+of its own file.</p>
+</main>
+</div>
+</body>
+</html>

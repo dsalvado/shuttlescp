@@ -108,6 +108,7 @@ menu-quit = _Beenden
 menu-theme = Thema
 menu-log-level = _Protokollstufe
 menu-open-log = Protokoll_datei öffnen
+menu-user-guide = _Benutzerhandbuch (Englisch)
 menu-check-updates = Nach _Aktualisierungen suchen…
 menu-auto-updates = Beim _Start suchen
 menu-about = _Über { -app-name }

@@ -108,6 +108,7 @@ menu-quit = _Salir
 menu-theme = Tema
 menu-log-level = _Nivel de registro
 menu-open-log = _Abrir el archivo de registro
+menu-user-guide = _Guía del usuario (en inglés)
 menu-check-updates = _Buscar actualizaciones…
 menu-auto-updates = Buscar al _iniciar
 menu-about = _Acerca de { -app-name }

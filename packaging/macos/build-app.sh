@@ -85,6 +85,9 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Frameworks" "$RESOURCES/$PIXBUF_LOADERS" \
 cp "$BINARY" "$CONTENTS/MacOS/shuttlescp-bin"
 iconutil --convert icns "$ICONSET" --output "$RESOURCES/ShuttleSCP.icns"
 cp -RP "$WORK/icons" "$RESOURCES/icons"
+# The user guide (Help › User Guide).
+mkdir -p "$RESOURCES/share/shuttlescp"
+cp -R "$ROOT/docs/help" "$RESOURCES/share/shuttlescp/help"
 
 # 5. GTK's run-time files.
 #    The SVG loader draws the SVG icons; PNG, JPEG and TIFF are built into GTK.

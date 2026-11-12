@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSH, SFTP, SCP and FTP · ShuttleSCP User Guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+<nav>
+  <p class="title">ShuttleSCP User Guide</p>
+  <ul>
+    <li><a href="index.html">Welcome</a></li>
+    <li><a href="protocols.html" aria-current="page">SSH, SFTP, SCP and FTP</a></li>
+    <li><a href="connecting.html">Connecting to a server</a></li>
+    <li><a href="transferring.html">Copying files</a></li>
+    <li><a href="site-to-site.html">Between two servers</a></li>
+    <li><a href="troubleshooting.html">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+<h1>SSH, SFTP, SCP and FTP</h1>
+
+<p>To copy files to or from a server, both sides must speak the same <em>protocol</em>: an
+agreed way of talking. ShuttleSCP speaks the common ones. This page explains what they are
+and which one to choose. In the Login dialog this is the <span class="ui">File protocol</span>.</p>
+
+<h2>SSH: the secure connection underneath</h2>
+
+<p><strong>SSH</strong> (Secure Shell) is how most servers are reached today, mostly Linux
+and macOS ones, but Windows servers too. It does three things:</p>
+<ul>
+  <li><strong>It encrypts everything</strong> sent between you and the server, so nobody in
+    between can read your password or your files.</li>
+  <li><strong>It proves the server is the right one</strong>, with its <em>host key</em> (see
+    <a href="connecting.html#host-keys">Host keys</a>), so nobody can pretend to be it.</li>
+  <li><strong>It checks who you are</strong>, with a password or an <em>SSH key</em> (see
+    <a href="connecting.html#keys">Passwords and keys</a>).</li>
+</ul>
+<p>SSH usually listens on <strong>port 22</strong>. A port is like an apartment number at
+the server's address: the server can offer several services, each on its own port.</p>
+
+<h2>SFTP: copying files over SSH</h2>
+
+<p><strong>SFTP</strong> (SSH File Transfer Protocol) runs inside an SSH connection. It lists
+folders, copies, renames and deletes files, and can continue a copy that was interrupted.
+<strong>If your server has SSH, choose SFTP.</strong> It is safe and widely available, and it
+is what ShuttleSCP does best.</p>
+
+<p class="note">An <em>SFTP-only</em> account (common with web hosts) may copy files but not
+run commands. ShuttleSCP works with those too; only a few extras, such as having the server
+compute checksums, are then not available.</p>
+
+<h2>SCP: the older way over SSH</h2>
+
+<p><strong>SCP</strong> (Secure Copy) is the older way of copying files over SSH, known from
+the <code>scp</code> command. It is just as secure, but can do less (no folder listings, no
+resuming). For an SCP site, ShuttleSCP makes the same SSH connection and copies with SFTP,
+which nearly every SSH server offers alongside SCP. You do not need to choose between them:
+SFTP is the better choice whenever both work.</p>
+
+<h2>FTP and FTPS</h2>
+
+<p><strong>FTP</strong> (File Transfer Protocol) is much older than SSH, and still offered by
+many web hosts and storage boxes. It usually listens on <strong>port 21</strong>.</p>
+
+<div class="warn"><strong>Plain FTP is not encrypted.</strong> Your password and files cross
+the network as they are, readable by anyone in between. Use it only on a network you trust,
+or when the server offers nothing else.</div>
+
+<p><strong>FTPS</strong> is FTP with the same encryption your browser uses for websites
+(TLS). For an FTP site, choose its encryption under <span class="ui">File protocol</span>:</p>
+<table>
+  <tr><th>Choice</th><th>What it does</th></tr>
+  <tr><td>Use explicit FTP over TLS if available</td><td>Encrypts when the server can, and
+    falls back to plain FTP when it cannot. The default.</td></tr>
+  <tr><td>Require explicit FTP over TLS</td><td>Encrypts, or does not connect at all. The
+    safe choice when you know the server supports it.</td></tr>
+  <tr><td>Require implicit FTP over TLS</td><td>An older form of FTPS, usually on port
+    990.</td></tr>
+  <tr><td>Only use plain FTP (insecure)</td><td>Never encrypts.</td></tr>
+</table>
+<p><span class="ui">Passive mode</span> (on by default) lets FTP work through home routers and
+firewalls. Turn it off only if your server's instructions say so.</p>
+
+<h2>Which one should I choose?</h2>
+<ol>
+  <li><strong>SFTP</strong>, if the server has SSH. Most do.</li>
+  <li><strong>FTPS</strong> (explicit, required), if the server only offers FTP with
+    encryption.</li>
+  <li><strong>Plain FTP</strong> only as a last resort.</li>
+</ol>
+<p>Your host's control panel or welcome email usually says which one it offers, with the host
+name, port and user name to use.</p>
+</main>
+</div>
+</body>
+</html>

@@ -25,6 +25,22 @@ pub fn build_info() -> BuildInfo {
     }
 }
 
+/// The status bar's build text. The UI gallery and the clip recorder show a release
+/// build's, as users see it.
+pub fn summary() -> String {
+    let info = build_info();
+    #[cfg(debug_assertions)]
+    if crate::ui_gallery::staged() {
+        return BuildInfo {
+            dirty: false,
+            profile: "release",
+            ..info
+        }
+        .summary();
+    }
+    info.summary()
+}
+
 /// Full build and system details, as shown in the About dialog.
 ///
 /// # Arguments

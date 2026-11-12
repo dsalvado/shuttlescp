@@ -55,6 +55,7 @@ for needed in \
     Resources/share/icons/Adwaita/index.theme \
     Resources/share/icons/hicolor/index.theme \
     Resources/icons/ShuttleSCP-WhiteSur/index.theme \
+    Resources/share/shuttlescp/help/index.html \
     Resources/ShuttleSCP.icns; do
     [[ -e "$CONTENTS/$needed" ]] || problem "missing $needed"
 done

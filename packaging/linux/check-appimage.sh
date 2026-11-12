@@ -36,6 +36,8 @@ check "SVG image loader is bundled" \
     'compgen -G "$ROOT/usr/lib/gdk-pixbuf-2.0/*/loaders/libpixbufloader-svg.so" >/dev/null'
 check "the SVG loader is registered" \
     'grep -q "libpixbufloader-svg.so" "$ROOT"/usr/lib/gdk-pixbuf-2.0/*/loaders.cache'
+check "the user guide is bundled" \
+    '[ -f "$ROOT/usr/share/shuttlescp/help/index.html" ]'
 check "input-method module (ibus) is bundled" \
     'compgen -G "$ROOT/usr/lib/gtk-4.0/*/immodules/libim-ibus.so" >/dev/null'
 
