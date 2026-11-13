@@ -1,0 +1,20 @@
+# gitleaks settings (see .github/workflows/secrets.yml).
+title = "ShuttleSCP"
+
+# Keep gitleaks' own rules, and only add the exceptions below.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Accepted exceptions"
+# Regular expressions, matched against each file's path (from the top of the repository
+# when scanning history; "(^|/)" lets a scan of a folder match too).
+paths = [
+  # Throwaway SSH keys made for the tests in src/remote/sftp.rs. They are not used on any
+  # server (see the README in that folder).
+  '''(^|/)crates/shuttlescp-core/test-data/keys/''',
+  # Site exports made by old versions, which the tests in src/site_export.rs must still
+  # open. Their "password" is a made-up one ("s3cret ü€ password", for golden-a.example),
+  # encrypted with the test passphrase "golden passphrase for tests".
+  '''(^|/)crates/shuttlescp-core/testdata/site-export-[0-9.]+\.json$''',
+]
