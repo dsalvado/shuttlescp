@@ -214,6 +214,18 @@ pub fn run(
             }),
         ),
         (
+            "challenge",
+            Box::new(|window| {
+                let challenge = shuttlescp_core::remote::Challenge {
+                    server: String::from("me@files.example.com"),
+                    name: String::new(),
+                    instructions: String::new(),
+                    prompts: vec![(String::from("Verification code: "), false)],
+                };
+                crate::challenge_dialog::ask(window, &challenge, |_| {});
+            }),
+        ),
+        (
             "passphrase-import",
             Box::new(|window| {
                 passphrase_dialog::ask(window, PassphrasePurpose::Import, |_| {});

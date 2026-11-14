@@ -75,6 +75,13 @@ key-passphrase-explain = Enter its passphrase to log in with it.
 key-passphrase-save = Save passphrase in the keyring
 key-passphrase-unlock = Unlock
 
+## An SSH server's questions while logging in, such as a two-factor code
+## (challenge_dialog.rs). $server is "user@host".
+challenge-title = Log In
+challenge-question = { $server } asks for more to log in
+challenge-explain = For two-factor authentication, enter the code from your authenticator app.
+challenge-log-in = Log In
+
 ## A file being copied already exists (conflict_dialog.rs). $name is the file's name,
 ## $folder the folder it is copied to.
 
@@ -740,6 +747,7 @@ connect-keys-rejected = the server did not accept the SSH key; enter the passwor
 connect-key-passphrase-required = the key file { $path } needs its passphrase
 connect-key-unreadable = cannot use the key file { $path }: { $reason }
 connect-authentication-failed = login failed: wrong user name, key or password
+connect-cancelled = login cancelled
 connect-sftp = the server's file transfer (SFTP) service failed: { $reason }
 connect-ftp = FTP: { $reason }
 connect-host-certificates = host certificates are not supported

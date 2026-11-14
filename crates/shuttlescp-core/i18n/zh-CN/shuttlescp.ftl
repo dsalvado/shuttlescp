@@ -45,6 +45,13 @@ key-passphrase-explain = 输入它的密码短语以使用它登录。
 key-passphrase-save = 将密码短语保存到密钥环
 key-passphrase-unlock = 解锁
 
+## An SSH server's questions while logging in, such as a two-factor code
+## (challenge_dialog.rs). $server is "user@host".
+challenge-title = 登录
+challenge-question = { $server } 需要更多信息才能登录
+challenge-explain = 如需双重验证，请输入身份验证器应用中的验证码。
+challenge-log-in = 登录
+
 conflict-title = 文件已存在
 conflict-question = { $name } 已存在于 { $folder }
 conflict-existing = 现有：
@@ -539,6 +546,7 @@ connect-keys-rejected = 服务器不接受该 SSH 密钥；请输入密码，或
 connect-key-passphrase-required = 密钥文件 { $path } 需要其密码短语
 connect-key-unreadable = 无法使用密钥文件 { $path }：{ $reason }
 connect-authentication-failed = 登录失败：用户名、密钥或密码错误
+connect-cancelled = 登录已取消
 connect-sftp = 服务器的文件传输（SFTP）服务失败：{ $reason }
 connect-ftp = FTP：{ $reason }
 connect-host-certificates = 不支持主机证书

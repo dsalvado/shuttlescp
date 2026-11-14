@@ -290,6 +290,7 @@ async fn log_in(server: &Server) -> Result<Remote, String> {
         let credentials = || Credentials {
             password: Some(SecretString::from(password.as_str())),
             key_passphrase: None,
+            prompter: None,
         };
         let first = remote::connect(&site, credentials(), None).await;
         let logged_in = match first {

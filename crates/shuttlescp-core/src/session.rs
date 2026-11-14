@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use secrecy::SecretString;
 
-use crate::remote::{self, ConnectError, Credentials, HostKey, Remote};
+use crate::remote::{self, ConnectError, Credentials, HostKey, Prompter, Remote};
 use crate::secrets;
 use crate::site_export::{self, ExportFile};
 use crate::sites::Site;
@@ -80,6 +80,8 @@ pub fn passphrase_label(site: &Site) -> String {
 /// * `typed` - Password typed by the user, if any
 /// * `typed_passphrase` - Key file passphrase typed by the user, if any
 /// * `approved_key` - A host key the user has just agreed to trust
+/// * `prompter` - Asks the user the server's own questions (a one-time code), then
+///   and whenever the connection is lost and logged in to again
 ///
 /// # Errors
 ///
@@ -89,6 +91,7 @@ pub async fn login(
     typed: Option<SecretString>,
     typed_passphrase: Option<SecretString>,
     approved_key: Option<HostKey>,
+    prompter: Option<Prompter>,
 ) -> Result<Remote, ConnectError> {
     let password = match typed {
         Some(password) => Some(password),
@@ -112,6 +115,7 @@ pub async fn login(
     let credentials = Credentials {
         password,
         key_passphrase,
+        prompter,
     };
     remote::connect(site, credentials, approved_key).await
 }

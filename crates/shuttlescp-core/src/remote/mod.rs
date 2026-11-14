@@ -102,6 +102,8 @@ pub enum ConnectError {
     },
     /// The server rejected the user name, key or password.
     AuthenticationFailed,
+    /// The user cancelled the server's login questions (see [`Challenge`]).
+    Cancelled,
     /// The server does not offer SFTP, or it failed to start.
     Sftp(String),
     /// The FTP server refused something during login.
@@ -148,6 +150,7 @@ impl std::fmt::Display for ConnectError {
                 reason = reason.clone()
             ),
             Self::AuthenticationFailed => crate::tr!("connect-authentication-failed"),
+            Self::Cancelled => crate::tr!("connect-cancelled"),
             Self::Sftp(reason) => crate::tr!("connect-sftp", reason = reason.clone()),
             Self::Ftp(reason) => crate::tr!("connect-ftp", reason = reason.clone()),
         };
@@ -156,13 +159,52 @@ impl std::fmt::Display for ConnectError {
 }
 
 /// What to log in with, besides the site's key file and the SSH agent.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Credentials {
     /// The password, typed or saved; tried after any keys.
     pub password: Option<SecretString>,
     /// The passphrase of the site's key file, typed or saved.
     pub key_passphrase: Option<SecretString>,
+    /// Asks the user what an SSH server asks while logging in (a one-time code, ...);
+    /// without it, such questions cannot be answered and the login fails.
+    pub prompter: Option<Prompter>,
 }
+
+// Written by hand: a prompter cannot be printed. Secrets print as "[REDACTED]".
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credentials")
+            .field("password", &self.password)
+            .field("key_passphrase", &self.key_passphrase)
+            .field("prompter", &self.prompter.is_some())
+            .finish()
+    }
+}
+
+/// Questions an SSH server asks while logging in, to put to the user: its
+/// "keyboard-interactive" login, used for two-factor authentication (a one-time code
+/// after the key or password) and by servers that ask for the password their own way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Challenge {
+    /// The server, as "user@host".
+    pub server: String,
+    /// The server's title for the questions; often empty.
+    pub name: String,
+    /// The server's explanation; often empty.
+    pub instructions: String,
+    /// The questions, as the server words them ("Verification code: "), each with
+    /// whether its answer may show as it is typed (`false` for secrets).
+    pub prompts: Vec<(String, bool)>,
+}
+
+/// Puts a [`Challenge`] to the user: the answers, one per prompt in order, or `None`
+/// if the user cancels. Called from background tasks, when logging in and when logging
+/// in again after a lost connection.
+pub type Prompter = Arc<
+    dyn Fn(Challenge) -> Pin<Box<dyn Future<Output = Option<Vec<SecretString>>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// What a listing or a lookup says about a file or folder on the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

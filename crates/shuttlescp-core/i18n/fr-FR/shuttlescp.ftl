@@ -54,6 +54,13 @@ key-passphrase-explain = Saisissez sa phrase secrète pour vous connecter avec e
 key-passphrase-save = Enregistrer la phrase secrète dans le trousseau
 key-passphrase-unlock = Déverrouiller
 
+## An SSH server's questions while logging in, such as a two-factor code
+## (challenge_dialog.rs). $server is "user@host".
+challenge-title = Connexion
+challenge-question = { $server } demande plus d'informations pour se connecter
+challenge-explain = Pour l'authentification à deux facteurs, saisissez le code de votre application d'authentification.
+challenge-log-in = Se connecter
+
 conflict-title = Le fichier existe déjà
 conflict-question = { $name } existe déjà dans { $folder }
 conflict-existing = Existant :
@@ -598,6 +605,7 @@ connect-keys-rejected = le serveur n'a pas accepté la clé SSH ; saisissez le m
 connect-key-passphrase-required = le fichier de clé { $path } a besoin de sa phrase secrète
 connect-key-unreadable = impossible d'utiliser le fichier de clé { $path } : { $reason }
 connect-authentication-failed = échec de la connexion : nom d'utilisateur, clé ou mot de passe incorrect
+connect-cancelled = connexion annulée
 connect-sftp = le service de transfert de fichiers (SFTP) du serveur a échoué : { $reason }
 connect-ftp = FTP : { $reason }
 connect-host-certificates = les certificats d'hôte ne sont pas pris en charge
