@@ -710,6 +710,25 @@ impl SimpleComponent for App {
         new_tab.append(&gtk::Label::new(Some(&tr!("new-connection"))));
         new_tab.set_tooltip_text(Some(&tr!("new-connection-tooltip")));
         session_notebook.append_page(&gtk::Box::default(), Some(&new_tab));
+        // A click on it is taken here, before the notebook sees it. Left to the notebook,
+        // a click marks the tab as its keyboard focus before trying to switch to it, and
+        // the switch is cancelled (see the switch-page handler below): it would then take
+        // a second click on an already focused tab as nothing to do, so the tab would
+        // open the Login dialog only once.
+        {
+            let click = gtk::GestureClick::new();
+            click.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let sender = sender.clone();
+            click.connect_pressed(move |gesture, _, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                sender.input(AppMsg::ShowLogin);
+            });
+            // The tab widget GTK puts around the label, so its padding counts too.
+            new_tab
+                .parent()
+                .unwrap_or_else(|| new_tab.clone().upcast())
+                .add_controller(click);
+        }
         model.add_session(start_dir, window_size.width / 2, None, &sender);
         // The status bar's counts change as files start and end, on the copy engine's
         // threads: looked at once a second, and the bar redrawn when they changed.
@@ -762,9 +781,10 @@ impl SimpleComponent for App {
             let _ = WidgetExt::activate_action(&about_window, "win.about", None);
         });
         widgets.build_label.add_controller(about_click);
-        // Choosing the "New Connection" tab (by click or keyboard) opens the Login dialog
-        // instead of showing its empty page. Our handler runs before GTK's default one,
-        // which performs the switch, so stopping the emission here cancels it.
+        // Choosing the "New Connection" tab with the keyboard (clicks are taken above)
+        // opens the Login dialog instead of showing its empty page. Our handler runs
+        // before GTK's default one, which performs the switch, so stopping the emission
+        // here cancels it.
         {
             let sender = sender.clone();
             session_notebook.connect_switch_page(move |notebook, _page, page_num| {

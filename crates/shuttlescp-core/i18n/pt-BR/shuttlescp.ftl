@@ -54,6 +54,13 @@ key-passphrase-explain = Digite a frase secreta dela para entrar com ela.
 key-passphrase-save = Salvar a frase secreta no chaveiro
 key-passphrase-unlock = Desbloquear
 
+## An SSH server's questions while logging in, such as a two-factor code
+## (challenge_dialog.rs). $server is "user@host".
+challenge-title = Entrar
+challenge-question = { $server } pede mais informações para entrar
+challenge-explain = Para a autenticação de dois fatores, digite o código do seu aplicativo autenticador.
+challenge-log-in = Entrar
+
 conflict-title = O arquivo já existe
 conflict-question = { $name } já existe em { $folder }
 conflict-existing = Existente:
@@ -598,6 +605,7 @@ connect-keys-rejected = o servidor não aceitou a chave SSH; digite a senha ou v
 connect-key-passphrase-required = o arquivo de chave { $path } precisa da frase secreta
 connect-key-unreadable = não é possível usar o arquivo de chave { $path }: { $reason }
 connect-authentication-failed = falha no login: nome de usuário, chave ou senha incorretos
+connect-cancelled = login cancelado
 connect-sftp = o serviço de transferência de arquivos (SFTP) do servidor falhou: { $reason }
 connect-ftp = FTP: { $reason }
 connect-host-certificates = certificados de host não são suportados

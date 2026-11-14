@@ -83,6 +83,7 @@ impl Server {
             password: (!self.password.is_empty())
                 .then(|| SecretString::from(self.password.clone())),
             key_passphrase: None,
+            prompter: None,
         };
         match connect(&self.site, credentials(), None).await {
             Ok(remote) => remote,

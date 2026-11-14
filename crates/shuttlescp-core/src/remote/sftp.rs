@@ -3,20 +3,23 @@
 //!
 //! Logging in tries, in the order OpenSSH's `ssh` does: the site's private key file
 //! (OpenSSH or PuTTY `.ppk`), then the keys held by the desktop's SSH agent, then the
-//! password. The first one the server accepts wins.
+//! password, then the server's own questions (keyboard-interactive: a one-time code for
+//! two-factor authentication), as long as the server accepts each. A server may want
+//! more than one of them (a key, then a code).
 
 use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use russh::client;
+use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse, Prompt};
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::known_hosts::learn_known_hosts;
 use russh::keys::{
     HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, check_known_hosts,
 };
+use russh::{MethodKind, MethodSet};
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::fs::Metadata;
@@ -25,8 +28,8 @@ use secrecy::{ExposeSecret, SecretString};
 use tokio::io::AsyncSeekExt;
 
 use super::{
-    CONNECT_TIMEOUT, ConnectError, Credentials, HostKey, RemoteMeta, RemoteReader, RemoteWriter,
-    path_text,
+    CONNECT_TIMEOUT, Challenge, ConnectError, Credentials, HostKey, RemoteMeta, RemoteReader,
+    RemoteWriter, path_text,
 };
 use crate::checksum::{Checksum, first_checksum_in};
 use crate::path::RemotePath;
@@ -100,16 +103,28 @@ pub(super) struct Sftp {
     /// with the session's [`Sftp::twin`]).
     site: Site,
     credentials: Arc<Credentials>,
-    /// The connection in use, replaced by a new one once it is lost.
-    link: tokio::sync::Mutex<Arc<Link>>,
+    /// The connection in use, replaced by a new one once it is lost. Shared with a
+    /// twin that runs on its connection.
+    link: Arc<tokio::sync::Mutex<Arc<Link>>>,
+    /// For a twin on the same connection as another session (see [`Sftp::twin`]): that
+    /// session's link, which logs in again when the connection is lost.
+    host: Option<Arc<tokio::sync::Mutex<Arc<Link>>>>,
 }
 
-/// One SSH connection with SFTP running on it.
+/// One SSH connection, which SFTP sessions run on.
+struct Connection {
+    /// Keeps the connection open for as long as a session is in use (and opens other
+    /// channels on it, see [`Sftp::server_name`]).
+    ssh: client::Handle<HostKeyCheck>,
+    /// The login needed the user's answers (a one-time code): logging in again would
+    /// ask them again.
+    interactive: bool,
+}
+
+/// An SFTP session, on its connection.
 struct Link {
     session: SftpSession,
-    /// Keeps the SSH connection open for as long as the session is in use (and opens
-    /// other channels on it, see [`Sftp::server_name`]).
-    ssh: client::Handle<HostKeyCheck>,
+    connection: Arc<Connection>,
 }
 
 /// Why an operation failed: the server's answer, or the new login after a lost
@@ -187,10 +202,30 @@ impl Sftp {
                 "the connection to {} was lost; logging in again",
                 self.site.host
             );
-            let (link, _) = open_link(&self.site, &self.credentials, None).await?;
+            let link = match &self.host {
+                Some(host) => self.session_on(host).await?,
+                None => open_link(&self.site, &self.credentials, None).await?.0,
+            };
             *current = Arc::new(link);
         }
         Ok(Arc::clone(&current))
+    }
+
+    /// A new session on the connection of `host` (the session this twin shares a
+    /// connection with): the one it uses if still open, otherwise a new one `host` logs
+    /// in to, so that both use it and the user answers the login's questions once.
+    async fn session_on(&self, host: &tokio::sync::Mutex<Arc<Link>>) -> Result<Link, ConnectError> {
+        let mut hosting = host.lock().await;
+        if hosting.connection.ssh.is_closed() {
+            let (link, _) = open_link(&self.site, &self.credentials, None).await?;
+            *hosting = Arc::new(link);
+        }
+        let connection = Arc::clone(&hosting.connection);
+        let (session, _) = start_sftp(&connection, &self.site).await?;
+        Ok(Link {
+            session,
+            connection,
+        })
     }
 
     /// Run `operation` on the connection in use. If that connection was lost, log in
@@ -216,7 +251,7 @@ impl Sftp {
     pub(super) async fn server_name(&self) -> Option<String> {
         let link = self.link().await;
         let ask = async {
-            let mut channel = link.ssh.channel_open_session().await.ok()?;
+            let mut channel = link.connection.ssh.channel_open_session().await.ok()?;
             channel.exec(true, "uname -n").await.ok()?;
             let (mut output, mut status) = (Vec::new(), None);
             while let Some(message) = channel.wait().await {
@@ -253,6 +288,7 @@ impl Sftp {
         let link = self.link().await;
         let ask = async {
             let mut channel = link
+                .connection
                 .ssh
                 .channel_open_session()
                 .await
@@ -501,24 +537,42 @@ pub(super) async fn connect(
     let sftp = Sftp {
         site: site.clone(),
         credentials: Arc::new(credentials),
-        link: tokio::sync::Mutex::new(Arc::new(link)),
+        link: Arc::new(tokio::sync::Mutex::new(Arc::new(link))),
+        host: None,
     };
     Ok((sftp, home))
 }
 
 impl Sftp {
-    /// A second session to the same server with the same login, on a connection of its
-    /// own (its host key is known by now).
+    /// A second session to the same server with the same login. Usually on a
+    /// connection of its own (its host key is known by now); when logging in needed the
+    /// user's answers (a one-time code), on a second channel of this session's
+    /// connection instead, so that they are not asked again.
     ///
     /// # Errors
     ///
-    /// Returns the [`ConnectError`] of the login
+    /// Returns the [`ConnectError`] of the login, or of starting SFTP
     pub(super) async fn twin(&self) -> Result<Sftp, ConnectError> {
-        let (link, _) = open_link(&self.site, &self.credentials, None).await?;
+        let current = self.link().await;
+        let (link, host) = if current.connection.interactive {
+            let connection = Arc::clone(&current.connection);
+            let (session, _) = start_sftp(&connection, &self.site).await?;
+            let link = Link {
+                session,
+                connection,
+            };
+            (link, Some(Arc::clone(&self.link)))
+        } else {
+            (
+                open_link(&self.site, &self.credentials, None).await?.0,
+                None,
+            )
+        };
         Ok(Sftp {
             site: self.site.clone(),
             credentials: Arc::clone(&self.credentials),
-            link: tokio::sync::Mutex::new(Arc::new(link)),
+            link: Arc::new(tokio::sync::Mutex::new(Arc::new(link))),
+            host,
         })
     }
 }
@@ -570,12 +624,33 @@ async fn open_link(
         Ok(Ok(ssh)) => ssh,
     };
 
-    authenticate(&mut ssh, site, credentials).await?;
+    let interactive = authenticate(&mut ssh, site, credentials).await?;
+    let connection = Arc::new(Connection { ssh, interactive });
+    let (session, home) = start_sftp(&connection, site).await?;
+    Ok((
+        Link {
+            session,
+            connection,
+        },
+        home,
+    ))
+}
+
+/// Start an SFTP session on a new channel of `connection`: the session and the user's
+/// home folder.
+async fn start_sftp(
+    connection: &Connection,
+    site: &Site,
+) -> Result<(SftpSession, RemotePath), ConnectError> {
     let network = |error: russh::Error| ConnectError::Network {
         host: site.host.clone(),
         reason: error.to_string(),
     };
-    let channel = ssh.channel_open_session().await.map_err(network)?;
+    let channel = connection
+        .ssh
+        .channel_open_session()
+        .await
+        .map_err(network)?;
     channel
         .request_subsystem(true, "sftp")
         .await
@@ -588,22 +663,81 @@ async fn open_link(
         .canonicalize(".")
         .await
         .map_err(|error| ConnectError::Sftp(error.to_string()))?;
-    Ok((Link { session: sftp, ssh }, RemotePath::new(home)))
+    Ok((sftp, RemotePath::new(home)))
 }
 
-/// Log in: with the site's key file, then the agent's keys, then the password.
+/// What came of one login step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The login is complete.
+    Done,
+    /// Accepted, but the server asks for more (two-factor: a key, then a code).
+    More,
+    /// Not accepted.
+    Refused,
+}
+
+/// The login methods the server still accepts, as it last said (all, until it has).
+struct Allowed(Option<MethodSet>);
+
+impl Allowed {
+    fn accepts(&self, method: MethodKind) -> bool {
+        self.0
+            .as_ref()
+            .is_none_or(|methods| methods.contains(&method))
+    }
+
+    /// Take in the server's answer to a login step (`what`, for the log).
+    fn after(&mut self, result: AuthResult, what: &str) -> Step {
+        match result {
+            AuthResult::Success => {
+                tracing::info!("logged in with {what}");
+                Step::Done
+            }
+            AuthResult::Failure {
+                remaining_methods,
+                partial_success,
+            } => self.failure(remaining_methods, partial_success, what),
+        }
+    }
+
+    /// Take in a "not yet": what the server accepts now, and whether `what` counted.
+    fn failure(&mut self, remaining: MethodSet, partial_success: bool, what: &str) -> Step {
+        let names: Vec<&str> = remaining.iter().map(<&str>::from).collect();
+        let step = if partial_success {
+            tracing::info!("the server accepted {what} and asks for more ({names:?})");
+            Step::More
+        } else {
+            tracing::info!("the server did not accept {what} (it accepts {names:?})");
+            Step::Refused
+        };
+        self.0 = Some(remaining);
+        step
+    }
+}
+
+/// Log in, as OpenSSH's `ssh` does: with the site's key file, the SSH agent's keys, the
+/// password, then the server's questions ("keyboard-interactive"), each only while the
+/// server still accepts that method. A server may want more than one: after a key it
+/// may ask for a one-time code ("partial success"); the login is done when it says so.
+///
+/// # Returns
+///
+/// Whether the user answered questions (a one-time code): logging in again would ask
+/// again
 ///
 /// # Errors
 ///
 /// Returns [`ConnectError::KeyPassphraseRequired`] or [`ConnectError::KeyUnreadable`]
-/// when the key file cannot be used, [`ConnectError::AuthenticationFailed`] when the
-/// password is refused, [`ConnectError::KeysRejected`] when only keys were tried and
+/// when the key file cannot be used, [`ConnectError::Cancelled`] when the user cancels
+/// the questions, [`ConnectError::AuthenticationFailed`] when the password or the
+/// answers are refused, [`ConnectError::KeysRejected`] when only keys were tried and
 /// all refused, and [`ConnectError::PasswordRequired`] when there was nothing to try
-async fn authenticate(
-    ssh: &mut client::Handle<HostKeyCheck>,
+async fn authenticate<H: client::Handler>(
+    ssh: &mut client::Handle<H>,
     site: &Site,
     credentials: &Credentials,
-) -> Result<(), ConnectError> {
+) -> Result<bool, ConnectError> {
     let user = site.user.as_str();
     let failed = |reason: String| ConnectError::Network {
         host: site.host.clone(),
@@ -615,7 +749,10 @@ async fn authenticate(
         .await
         .map_err(|error| failed(error.to_string()))?
         .flatten();
+    let mut allowed = Allowed(None);
     let mut keys_tried = 0;
+    // A step was accepted, but the server wants more.
+    let mut accepted_some = false;
 
     // 1. The site's key file.
     if let Some(path) = &site.ssh.key_file {
@@ -625,15 +762,15 @@ async fn authenticate(
             .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash))
             .await
             .map_err(|error| failed(error.to_string()))?;
-        if auth.success() {
-            tracing::info!("logged in with the key file {}", path.display());
-            return Ok(());
+        match allowed.after(auth, &format!("the key file {}", path.display())) {
+            Step::Done => return Ok(false),
+            Step::More => accepted_some = true,
+            Step::Refused => {}
         }
-        tracing::info!("the server did not accept the key file {}", path.display());
     }
 
     // 2. The SSH agent's keys (GNOME Keyring, ssh-agent, ...). No agent is fine.
-    if site.ssh.use_agent {
+    if site.ssh.use_agent && allowed.accepts(MethodKind::PublicKey) {
         match connect_agent().await {
             Ok(mut agent) => {
                 let identities = agent.request_identities().await.unwrap_or_else(|error| {
@@ -647,15 +784,20 @@ async fn authenticate(
                         AgentIdentity::Certificate { .. } => None,
                     });
                 for key in public_keys.take(MAX_AGENT_KEYS) {
+                    // Once one is accepted, the server may want something else.
+                    if !allowed.accepts(MethodKind::PublicKey) {
+                        break;
+                    }
                     keys_tried += 1;
                     let fingerprint = key.fingerprint(HashAlg::Sha256);
                     let auth = ssh
                         .authenticate_publickey_with(user, key, rsa_hash, &mut agent)
                         .await
                         .map_err(|error| failed(error.to_string()))?;
-                    if auth.success() {
-                        tracing::info!("logged in with the SSH agent's key {fingerprint}");
-                        return Ok(());
+                    match allowed.after(auth, &format!("the SSH agent's key {fingerprint}")) {
+                        Step::Done => return Ok(false),
+                        Step::More => accepted_some = true,
+                        Step::Refused => {}
                     }
                 }
             }
@@ -663,23 +805,165 @@ async fn authenticate(
         }
     }
 
-    // 3. The password.
-    let Some(password) = &credentials.password else {
-        return Err(if keys_tried > 0 {
-            ConnectError::KeysRejected
-        } else {
-            ConnectError::PasswordRequired
-        });
-    };
-    let auth = ssh
-        .authenticate_password(user, password.expose_secret())
-        .await
-        .map_err(|error| failed(error.to_string()))?;
-    if auth.success() {
-        Ok(())
-    } else {
-        Err(ConnectError::AuthenticationFailed)
+    // 3. The password, where the server takes it as such.
+    let mut password_refused = false;
+    let mut secrets_tried = false;
+    if let Some(password) = &credentials.password
+        && allowed.accepts(MethodKind::Password)
+    {
+        secrets_tried = true;
+        let auth = ssh
+            .authenticate_password(user, password.expose_secret())
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+        match allowed.after(auth, "the password") {
+            Step::Done => return Ok(false),
+            Step::More => accepted_some = true,
+            Step::Refused => password_refused = true,
+        }
     }
+
+    // 4. The server's questions: a one-time code, or the password asked its own way.
+    // The password answers a question asking for it, unless it was just refused.
+    let password = credentials.password.as_ref().filter(|_| !password_refused);
+    if allowed.accepts(MethodKind::KeyboardInteractive)
+        && (credentials.prompter.is_some() || password.is_some())
+    {
+        secrets_tried = true;
+        let (step, asked) =
+            keyboard_interactive(ssh, site, credentials, password, &mut allowed).await?;
+        if step == Step::Done {
+            return Ok(asked);
+        }
+    }
+
+    Err(if secrets_tried || accepted_some {
+        ConnectError::AuthenticationFailed
+    } else if keys_tried > 0 {
+        ConnectError::KeysRejected
+    } else {
+        ConnectError::PasswordRequired
+    })
+}
+
+/// Log in by answering the server's questions ("keyboard-interactive"), in as many
+/// rounds as it asks.
+///
+/// # Arguments
+///
+/// * `password` - Answers the first question asking for a password (asked again, it
+///   was wrong: then the user answers)
+///
+/// # Returns
+///
+/// How the step ended, and whether the user answered questions
+async fn keyboard_interactive<H: client::Handler>(
+    ssh: &mut client::Handle<H>,
+    site: &Site,
+    credentials: &Credentials,
+    mut password: Option<&SecretString>,
+    allowed: &mut Allowed,
+) -> Result<(Step, bool), ConnectError> {
+    let failed = |error: russh::Error| ConnectError::Network {
+        host: site.host.clone(),
+        reason: error.to_string(),
+    };
+    let what = "the answers to the server's questions";
+    let mut asked = false;
+    let mut reply = ssh
+        .authenticate_keyboard_interactive_start(site.user.as_str(), None)
+        .await
+        .map_err(failed)?;
+    loop {
+        reply = match reply {
+            KeyboardInteractiveAuthResponse::Success => {
+                tracing::info!("logged in with {what}");
+                return Ok((Step::Done, asked));
+            }
+            KeyboardInteractiveAuthResponse::Failure {
+                remaining_methods,
+                partial_success,
+            } => {
+                let step = allowed.failure(remaining_methods, partial_success, what);
+                return Ok((step, asked));
+            }
+            KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                let questions = Challenge {
+                    server: format!("{}@{}", site.user, site.host),
+                    name,
+                    instructions,
+                    prompts: prompts
+                        .into_iter()
+                        .map(|Prompt { prompt, echo }| (prompt, echo))
+                        .collect(),
+                };
+                let answers = answers(questions, &mut password, credentials, &mut asked).await?;
+                ssh.authenticate_keyboard_interactive_respond(answers)
+                    .await
+                    .map_err(failed)?
+            }
+        };
+    }
+}
+
+/// The answers to one round of the server's questions: `password` for the first one
+/// asking for a password (it is used up), the user's for the others (none asked if
+/// none are left; servers sometimes send a round without questions).
+///
+/// # Errors
+///
+/// Returns [`ConnectError::Cancelled`] if the user cancels, and
+/// [`ConnectError::AuthenticationFailed`] if there are questions nobody can answer
+async fn answers(
+    questions: Challenge,
+    password: &mut Option<&SecretString>,
+    credentials: &Credentials,
+    asked: &mut bool,
+) -> Result<Vec<String>, ConnectError> {
+    let mut answers: Vec<Option<String>> = questions
+        .prompts
+        .iter()
+        .map(|(prompt, echo)| {
+            let asks_password = !echo && prompt.to_lowercase().contains("password");
+            asks_password
+                .then(|| password.take())
+                .flatten()
+                .map(|password| password.expose_secret().to_owned())
+        })
+        .collect();
+    let open: Vec<usize> = (0..answers.len())
+        .filter(|&index| answers[index].is_none())
+        .collect();
+    if !open.is_empty() {
+        let Some(prompter) = &credentials.prompter else {
+            tracing::info!("the server asks questions, and there is nobody to answer them");
+            return Err(ConnectError::AuthenticationFailed);
+        };
+        let for_user = Challenge {
+            prompts: open
+                .iter()
+                .map(|&index| questions.prompts[index].clone())
+                .collect(),
+            ..questions
+        };
+        tracing::info!(
+            "the server asks {} question(s); asking the user",
+            for_user.prompts.len()
+        );
+        let given = prompter(for_user).await.ok_or(ConnectError::Cancelled)?;
+        if given.len() != open.len() {
+            return Err(ConnectError::AuthenticationFailed);
+        }
+        *asked = true;
+        for (index, answer) in open.into_iter().zip(given) {
+            answers[index] = Some(answer.expose_secret().to_owned());
+        }
+    }
+    Ok(answers.into_iter().map(Option::unwrap_or_default).collect())
 }
 
 /// A connection to the SSH agent, whatever kind of stream reaches it.
@@ -782,6 +1066,8 @@ mod tests {
     use std::path::PathBuf;
 
     use secrecy::SecretString;
+
+    use crate::remote::Prompter;
 
     use super::*;
 
@@ -953,5 +1239,251 @@ mod tests {
             "{:?}",
             nothing.err()
         );
+    }
+
+    /// The password and code the test server wants.
+    const PASSWORD: &str = "pass word";
+    const CODE: &str = "123456";
+
+    /// A test SSH server wanting two factors, as OpenSSH set up for two-factor
+    /// authentication ("AuthenticationMethods publickey,keyboard-interactive", and PAM
+    /// asking the password and a code): the test key, then its questions. Without
+    /// `code`, it takes no key and asks only the password, as some servers do.
+    struct TwoFactor {
+        key: HostKey,
+        code: Option<&'static str>,
+        key_accepted: bool,
+    }
+
+    impl russh::server::Handler for TwoFactor {
+        type Error = russh::Error;
+
+        async fn auth_publickey(
+            &mut self,
+            _user: &str,
+            key: russh::server::VerifiedPublicKey<'_>,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            if self.code.is_none() || key.public_key.key_data() != self.key.key_data() {
+                return Ok(russh::server::Auth::reject());
+            }
+            self.key_accepted = true;
+            Ok(russh::server::Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::KeyboardInteractive][..])),
+                partial_success: true,
+            })
+        }
+
+        async fn auth_keyboard_interactive<'a>(
+            &'a mut self,
+            _user: &str,
+            _submethods: &str,
+            response: Option<russh::server::Response<'a>>,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            use std::borrow::Cow;
+            if self.code.is_some() && !self.key_accepted {
+                return Ok(russh::server::Auth::reject());
+            }
+            let mut expected = vec![PASSWORD.to_owned()];
+            expected.extend(self.code.map(str::to_owned));
+            let Some(response) = response else {
+                let mut prompts = vec![(Cow::from("Password: "), false)];
+                if self.code.is_some() {
+                    prompts.push((Cow::from("Verification code: "), false));
+                }
+                return Ok(russh::server::Auth::Partial {
+                    name: Cow::from(""),
+                    instructions: Cow::from(""),
+                    prompts: Cow::from(prompts),
+                });
+            };
+            let answers: Vec<String> = response
+                .map(|answer| String::from_utf8_lossy(&answer).into_owned())
+                .collect();
+            Ok(if answers == expected {
+                russh::server::Auth::Accept
+            } else {
+                russh::server::Auth::reject()
+            })
+        }
+    }
+
+    /// Trusts any server: the test server's key is made up.
+    struct TrustAll;
+
+    impl client::Handler for TrustAll {
+        type Error = russh::Error;
+
+        async fn check_server_key(
+            &mut self,
+            _server_key: &PublicKeyOrCertificate,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    /// The questions put to the user.
+    type Asked = Arc<Mutex<Vec<Challenge>>>;
+
+    /// A prompter giving `answers` (`None`: the user cancels), recording the questions.
+    fn prompter(answers: Option<&'static [&'static str]>, asked: &Asked) -> Prompter {
+        let asked = Arc::clone(asked);
+        Arc::new(move |challenge| {
+            asked.lock().expect("asked").push(challenge);
+            Box::pin(async move {
+                answers.map(|answers| answers.iter().map(|&answer| answer.into()).collect())
+            })
+        })
+    }
+
+    /// Log in to a [`TwoFactor`] server (code `code`) with the test key file.
+    async fn log_in(
+        code: Option<&'static str>,
+        credentials: Credentials,
+    ) -> Result<bool, ConnectError> {
+        let host_key = load_key(&fixture("rsa"), None).expect("host key");
+        let user_key = load_key(&fixture("ed25519"), None).expect("user key");
+        let config = russh::server::Config {
+            keys: vec![host_key],
+            methods: MethodSet::from(&[MethodKind::PublicKey, MethodKind::KeyboardInteractive][..]),
+            auth_rejection_time: Duration::ZERO,
+            auth_rejection_time_initial: Some(Duration::ZERO),
+            ..Default::default()
+        };
+        let server = TwoFactor {
+            key: user_key.public_key().clone(),
+            code,
+            key_accepted: false,
+        };
+        let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            if let Ok(running) =
+                russh::server::run_stream(Arc::new(config), server_end, server).await
+            {
+                let _ = running.await;
+            }
+        });
+        let mut ssh =
+            client::connect_stream(Arc::new(client::Config::default()), client_end, TrustAll)
+                .await
+                .expect("handshake");
+        let site = Site {
+            id: String::from("two-factor-test"),
+            protocol: Protocol::Sftp,
+            host: String::from("test.example"),
+            port: 22,
+            user: String::from("tester"),
+            password_saved: false,
+            ftp: FtpOptions::default(),
+            ssh: SshAuth {
+                key_file: Some(fixture("ed25519")),
+                use_agent: false,
+                passphrase_saved: false,
+            },
+            files_at_once: crate::sites::DEFAULT_FILES_AT_ONCE,
+            alias: String::new(),
+            description: String::new(),
+            folder: String::new(),
+            verify: crate::sites::SiteVerify::default(),
+        };
+        authenticate(&mut ssh, &site, &credentials).await
+    }
+
+    fn with(password: Option<&str>, prompter: Option<Prompter>) -> Credentials {
+        Credentials {
+            password: password.map(SecretString::from),
+            key_passphrase: None,
+            prompter,
+        }
+    }
+
+    #[tokio::test]
+    async fn after_the_key_only_the_code_is_asked_and_the_password_answers_itself() {
+        // Arrange
+        let asked = Asked::default();
+        let credentials = with(Some(PASSWORD), Some(prompter(Some(&[CODE]), &asked)));
+
+        // Act
+        let result = log_in(Some(CODE), credentials).await;
+
+        // Assert
+        assert!(result.expect("logged in"), "the user was asked");
+        let asked = asked.lock().expect("asked");
+        let [question] = asked.as_slice() else {
+            panic!("expected one round of questions: {asked:?}");
+        };
+        assert_eq!(question.server, "tester@test.example");
+        assert_eq!(
+            question.prompts,
+            vec![(String::from("Verification code: "), false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_password_the_user_answers_both_questions() {
+        let asked = Asked::default();
+        let credentials = with(None, Some(prompter(Some(&[PASSWORD, CODE]), &asked)));
+
+        let result = log_in(Some(CODE), credentials).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(asked.lock().expect("asked")[0].prompts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_code_fails_the_login() {
+        let asked = Asked::default();
+        let credentials = with(Some(PASSWORD), Some(prompter(Some(&["000000"]), &asked)));
+
+        let result = log_in(Some(CODE), credentials).await;
+
+        assert!(
+            matches!(result, Err(ConnectError::AuthenticationFailed)),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_questions_cancels_the_login() {
+        let asked = Asked::default();
+        let credentials = with(Some(PASSWORD), Some(prompter(None, &asked)));
+
+        let result = log_in(Some(CODE), credentials).await;
+
+        assert!(matches!(result, Err(ConnectError::Cancelled)), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn without_a_prompter_a_code_cannot_be_given() {
+        let result = log_in(Some(CODE), with(Some(PASSWORD), None)).await;
+
+        assert!(
+            matches!(result, Err(ConnectError::AuthenticationFailed)),
+            "{result:?}"
+        );
+    }
+
+    /// A server asking only the password, its own way: answered without the user, so
+    /// a second connection can log in by itself.
+    #[tokio::test]
+    async fn a_password_question_is_answered_without_asking_the_user() {
+        let asked = Asked::default();
+        let credentials = with(Some(PASSWORD), Some(prompter(Some(&[]), &asked)));
+
+        let result = log_in(None, credentials).await;
+
+        assert!(!result.expect("logged in"), "the user was not asked");
+        assert!(asked.lock().expect("asked").is_empty());
+    }
+
+    /// Asked again, the password was wrong: the user is asked, not sent it twice.
+    #[tokio::test]
+    async fn a_wrong_password_is_not_sent_twice() {
+        let asked = Asked::default();
+        let credentials = with(Some("wrong"), Some(prompter(None, &asked)));
+
+        let result = log_in(None, credentials).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(asked.lock().expect("asked").len() <= 1);
     }
 }

@@ -7,6 +7,7 @@
 
 mod app;
 mod build_info;
+mod challenge_dialog;
 mod confirm_dialog;
 mod conflict_dialog;
 mod desktop_entry;

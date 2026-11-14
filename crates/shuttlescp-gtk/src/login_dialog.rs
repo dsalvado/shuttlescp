@@ -957,7 +957,10 @@ impl LoginDialog {
         self.busy = true;
         self.status = tr!("login-connecting", name = site.label());
         sender.oneshot_command(async move {
-            let result = session::login(&site, typed, passphrase, approved_key).await;
+            // The server's own questions (a two-factor code) are asked in a dialog,
+            // now and whenever the connection is lost and logged in to again.
+            let prompter = Some(crate::challenge_dialog::prompter());
+            let result = session::login(&site, typed, passphrase, approved_key, prompter).await;
             LoginCmd::Connected(result.map(|remote| (site, remote)))
         });
     }
