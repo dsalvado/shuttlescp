@@ -51,6 +51,7 @@ challenge-title = 登录
 challenge-question = { $server } 需要更多信息才能登录
 challenge-explain = 如需双重验证，请输入身份验证器应用中的验证码。
 challenge-log-in = 登录
+challenge-show-codes = 显示验证码
 
 conflict-title = 文件已存在
 conflict-question = { $name } 已存在于 { $folder }

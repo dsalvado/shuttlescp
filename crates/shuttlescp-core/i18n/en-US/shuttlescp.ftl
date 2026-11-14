@@ -81,6 +81,7 @@ challenge-title = Log In
 challenge-question = { $server } asks for more to log in
 challenge-explain = For two-factor authentication, enter the code from your authenticator app.
 challenge-log-in = Log In
+challenge-show-codes = Show codes
 
 ## A file being copied already exists (conflict_dialog.rs). $name is the file's name,
 ## $folder the folder it is copied to.

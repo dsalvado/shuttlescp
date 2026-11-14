@@ -43,6 +43,13 @@ fn front_window() -> Option<gtk::Window> {
         .or_else(|| application.windows().into_iter().next())
 }
 
+/// Whether the server's question asks for a password rather than a code.
+/// A "one-time password" is a code.
+fn is_password(prompt: &str) -> bool {
+    let prompt = prompt.to_lowercase();
+    prompt.contains("password") && !prompt.contains("one-time")
+}
+
 /// Ask `challenge`'s questions over `parent`. `on_answer` is called exactly once, with
 /// the answers in order, or `None` if the user cancelled.
 ///
@@ -74,8 +81,10 @@ pub fn ask(
     };
     dialog.content.append(&dialog::text(&explanation, &[]));
 
-    // One entry per question, under the question as the server words it. Answers that
-    // must stay secret are hidden as they are typed.
+    // One entry per question, under the question as the server words it. Answers the
+    // server wants hidden are codes, shown while Show codes is ticked so a mistyped
+    // digit can be seen, or passwords, always hidden.
+    let mut codes = Vec::new();
     let entries: Vec<gtk::Entry> = challenge
         .prompts
         .iter()
@@ -88,12 +97,26 @@ pub fn ask(
                 .activates_default(true)
                 .width_request(320)
                 .build();
+            if !*echo && !is_password(prompt) {
+                codes.push(entry.clone());
+            }
             label.set_mnemonic_widget(Some(&entry));
             dialog.content.append(&label);
             dialog.content.append(&entry);
             entry
         })
         .collect();
+    if !codes.is_empty() {
+        let show = gtk::CheckButton::with_label(&tr!("challenge-show-codes"));
+        show.connect_toggled(move |show| {
+            for code in &codes {
+                code.set_visibility(show.is_active());
+            }
+        });
+        // Shown by default: a one-time code is no use to anyone once it is used.
+        show.set_active(true);
+        dialog.content.append(&show);
+    }
 
     // Set by Log In, handed over when the window closes, so `on_answer` runs exactly
     // once however the dialog is dismissed.
@@ -124,5 +147,18 @@ pub fn ask(
     window.present();
     if let Some(first) = entries.first() {
         first.grab_focus();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_password;
+
+    #[test]
+    fn tells_passwords_from_codes() {
+        assert!(is_password("Password: "));
+        assert!(is_password("dsalvado@vm's password:"));
+        assert!(!is_password("Verification code: "));
+        assert!(!is_password("One-time password (OATH) for `alex':"));
     }
 }

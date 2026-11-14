@@ -60,6 +60,7 @@ challenge-title = Anmelden
 challenge-question = { $server } verlangt weitere Angaben zur Anmeldung
 challenge-explain = Geben Sie für die Zwei-Faktor-Authentifizierung den Code aus Ihrer Authenticator-App ein.
 challenge-log-in = Anmelden
+challenge-show-codes = Codes anzeigen
 
 conflict-title = Datei existiert bereits
 conflict-question = { $name } existiert bereits in { $folder }
