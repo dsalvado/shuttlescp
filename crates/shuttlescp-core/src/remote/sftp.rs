@@ -928,8 +928,7 @@ async fn answers(
         .prompts
         .iter()
         .map(|(prompt, echo)| {
-            let asks_password = !echo && prompt.to_lowercase().contains("password");
-            asks_password
+            super::asks_for_password(prompt, *echo)
                 .then(|| password.take())
                 .flatten()
                 .map(|password| password.expose_secret().to_owned())

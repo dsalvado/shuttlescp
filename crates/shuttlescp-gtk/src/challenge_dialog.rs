@@ -9,7 +9,7 @@ use relm4::gtk::glib;
 use relm4::gtk::prelude::*;
 use secrecy::SecretString;
 
-use shuttlescp_core::remote::{Challenge, Prompter};
+use shuttlescp_core::remote::{Challenge, Prompter, asks_for_password};
 use shuttlescp_core::tr;
 
 use crate::dialog::{self, ButtonKind, Dialog};
@@ -41,13 +41,6 @@ fn front_window() -> Option<gtk::Window> {
     application
         .active_window()
         .or_else(|| application.windows().into_iter().next())
-}
-
-/// Whether the server's question asks for a password rather than a code.
-/// A "one-time password" is a code.
-fn is_password(prompt: &str) -> bool {
-    let prompt = prompt.to_lowercase();
-    prompt.contains("password") && !prompt.contains("one-time")
 }
 
 /// Ask `challenge`'s questions over `parent`. `on_answer` is called exactly once, with
@@ -97,7 +90,7 @@ pub fn ask(
                 .activates_default(true)
                 .width_request(320)
                 .build();
-            if !*echo && !is_password(prompt) {
+            if !*echo && !asks_for_password(prompt, *echo) {
                 codes.push(entry.clone());
             }
             label.set_mnemonic_widget(Some(&entry));
@@ -147,18 +140,5 @@ pub fn ask(
     window.present();
     if let Some(first) = entries.first() {
         first.grab_focus();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_password;
-
-    #[test]
-    fn tells_passwords_from_codes() {
-        assert!(is_password("Password: "));
-        assert!(is_password("dsalvado@vm's password:"));
-        assert!(!is_password("Verification code: "));
-        assert!(!is_password("One-time password (OATH) for `alex':"));
     }
 }
