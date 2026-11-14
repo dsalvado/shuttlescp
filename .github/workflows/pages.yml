@@ -2,7 +2,8 @@
 # https://shuttlescp.dsalvado.ca/ (a custom domain; see docs/RELEASING.md)
 #
 # The page reads the latest release from GitHub when someone opens it, so it does not
-# need publishing again for each release, only when site/ itself changes.
+# need publishing again for each release, only when site/ itself (or the screenshots, or
+# the user guide published with it under /help/) changes.
 name: Web page
 
 on:
@@ -11,6 +12,7 @@ on:
     paths:
       - "site/**"
       - "docs/screenshot*.png"
+      - "docs/help/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -45,6 +47,10 @@ jobs:
       # screenshot-windows.png Windows').
       - name: Add the screenshots
         run: cp docs/screenshot*.png site/
+
+      # The same pages as the app's Help › User Guide, at /help/.
+      - name: Add the user guide
+        run: cp -R docs/help site/help
 
       - name: Package the page
         uses: actions/upload-pages-artifact@v5

@@ -167,6 +167,10 @@
     filter: var(--lift);
   }
   .shot.is-shown { opacity: 1; transform: none; }
+  /* The app at work: the user guide's clip, floating on the grid like the screenshots. */
+  .clip { margin: 0 0 80px; }
+  .clip img { display: block; width: 100%; height: auto; border-radius: 8px; filter: var(--lift); }
+  .clip figcaption { color: var(--muted); font-size: 0.92rem; text-align: center; margin-top: 22px; }
   .shot.is-leaving { opacity: 0; transform: translateX(-105%); }
   .shot-tabs { display: flex; justify-content: center; gap: 8px; margin-bottom: 20px; }
   .shot-tabs button {
@@ -231,6 +235,7 @@
       <a class="button secondary" id="download-macos" data-umami-event="download-macos" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for macOS</a>
       <a class="button secondary" id="download-windows" data-umami-event="download-windows" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>Download for Windows</a>
       <a id="all-releases" data-umami-event="all-releases" href="https://github.com/dsalvado/shuttlescp/releases">All releases</a>
+      <a id="user-guide" data-umami-event="user-guide" href="help/">User guide</a>
       <a id="checksums" data-umami-event="checksums" href="https://github.com/dsalvado/shuttlescp/releases/latest" hidden>SHA-256 checksums</a>
       <a id="signing-policy" href="#code-signing-policy">Code signing policy</a>
     </div>
@@ -249,7 +254,7 @@
         click "Open Anyway". <a href="#install-macos">Install steps</a></p>
     </div>
     <div class="notes" id="release-notes" hidden></div>
-    <p class="meta" id="coming-soon">A Windows version is coming soon.</p>
+    <p class="meta" id="coming-soon" hidden>A Windows version is coming soon.</p>
   </section>
  </div>
 
@@ -263,6 +268,16 @@
       <img class="shot" data-system="Windows" src="screenshot-windows.png" width="1200" height="876"
            alt="ShuttleSCP on Windows, with a server connected and Explorer's file icons" loading="lazy">
     </div>
+  </figure>
+
+  <!-- The user guide's clip (docs/help/clips, made by scripts/record-help-clips.sh); the
+       guide is published with the page, under help/. Loaded only when scrolled to. -->
+  <figure class="clip">
+    <img src="help/clips/upload-download.gif" width="960" height="586" loading="lazy"
+         alt="report.pdf is dragged from this computer to a server and copied; then logo.png is
+         downloaded with a right-click. The finished transfers show their files as verified.">
+    <figcaption>Upload by dragging, download with a right-click; every copy is checked.
+      <a href="help/transferring.html">More in the user guide</a></figcaption>
   </figure>
 
  <div class="panel">
@@ -310,13 +325,17 @@
   <div class="features">
     <div class="feature"><h3>SFTP, SCP and FTP</h3><p>SSH, plain FTP and FTPS (explicit or implicit TLS), passive or active.</p></div>
     <div class="feature"><h3>SSH keys</h3><p>Log in with a key file (OpenSSH or PuTTY .ppk) or your SSH agent, as well as passwords.</p></div>
+    <div class="feature"><h3>Two-factor logins</h3><p>Servers that want a key or password and then a one-time code: the code is asked once per session, in the server's own words.</p></div>
     <div class="feature"><h3>Two panes</h3><p>This computer on the left, the server on the right; drag and drop between them.</p></div>
     <div class="feature"><h3>Site to site</h3><p>Copy or move files between two servers, through this computer (like <code>scp -3</code>), in any mix of SFTP, SCP and FTP.</p></div>
     <div class="feature"><h3>Several connections</h3><p>Each in its own tab and colour, with its own transfer lists.</p></div>
-    <div class="feature"><h3>Safe transfers</h3><p>Asks before replacing files; interrupted transfers continue where they stopped.</p></div>
+    <div class="feature"><h3>Safe transfers</h3><p>Asks before replacing files. After a dropped connection it logs in again by itself, and files continue where they stopped, even after the app was closed.</p></div>
+    <div class="feature"><h3>Checked copies</h3><p>Each copy is compared with its original by SHA-256 checksum, worked out by the server itself where it can.</p></div>
+    <div class="feature"><h3>Files at once</h3><p>Choose how many files copy at the same time across all connections; the rest wait their turn, unless you start one now.</p></div>
     <div class="feature"><h3>Passwords kept safe</h3><p>Saved in GNOME Keyring or KWallet on Linux, the Keychain on macOS and the Credential Manager on Windows, never in a plain file.</p></div>
     <div class="feature"><h3>Signed updates</h3><p>Updates are only offered when signed with the ShuttleSCP release key.</p></div>
     <div class="feature"><h3>Six languages</h3><p>English, French, Spanish, German, Brazilian Portuguese and Simplified Chinese. The translations were made with AI and are marked as such until reviewed; <a href="https://github.com/dsalvado/shuttlescp/blob/master/CONTRIBUTING.md#translations">corrections welcome</a>.</p></div>
+    <div class="feature"><h3>User guide</h3><p>From first steps with SSH to troubleshooting, built into the app (Help › User Guide, F1) and <a href="help/">online</a>.</p></div>
   </div>
 
   <h2>Build from source</h2>
