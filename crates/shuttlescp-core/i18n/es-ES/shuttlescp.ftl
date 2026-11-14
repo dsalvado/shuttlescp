@@ -60,6 +60,7 @@ challenge-title = Iniciar sesión
 challenge-question = { $server } pide más datos para iniciar sesión
 challenge-explain = Para la autenticación en dos pasos, introduzca el código de su aplicación de autenticación.
 challenge-log-in = Iniciar sesión
+challenge-show-codes = Mostrar códigos
 
 conflict-title = El archivo ya existe
 conflict-question = { $name } ya existe en { $folder }

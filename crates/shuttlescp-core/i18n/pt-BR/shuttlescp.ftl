@@ -60,6 +60,7 @@ challenge-title = Entrar
 challenge-question = { $server } pede mais informações para entrar
 challenge-explain = Para a autenticação de dois fatores, digite o código do seu aplicativo autenticador.
 challenge-log-in = Entrar
+challenge-show-codes = Mostrar códigos
 
 conflict-title = O arquivo já existe
 conflict-question = { $name } já existe em { $folder }

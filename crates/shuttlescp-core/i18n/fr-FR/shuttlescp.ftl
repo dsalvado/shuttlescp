@@ -60,6 +60,7 @@ challenge-title = Connexion
 challenge-question = { $server } demande plus d'informations pour se connecter
 challenge-explain = Pour l'authentification à deux facteurs, saisissez le code de votre application d'authentification.
 challenge-log-in = Se connecter
+challenge-show-codes = Afficher les codes
 
 conflict-title = Le fichier existe déjà
 conflict-question = { $name } existe déjà dans { $folder }

@@ -7,6 +7,11 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- Show codes in the two-factor dialog, ticked by default, so a mistyped digit can be
+  seen before logging in. Password questions stay hidden either way.
+
 ## [0.26.0] - 2026-11-14
 
 ### Added
