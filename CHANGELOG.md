@@ -7,6 +7,23 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-14
+
+### Added
+
+- Two-factor logins over SSH. A server that wants a key or password and then a code
+  (OpenSSH with Google Authenticator and the like) is now logged in to: after your key,
+  ShuttleSCP answers the server's questions. Its password question gets the password
+  you typed or saved; the rest, such as the code from your authenticator app, is asked
+  in a dialog, in the server's own words. The code is asked once per session: transfers
+  share the connection instead of logging in again, and after a lost connection one
+  login serves both.
+
+### Fixed
+
+- The New Connection tab stopped responding after the Login dialog it opened was
+  cancelled.
+
 ## [0.25.0] - 2026-11-12
 
 ### Added
@@ -608,7 +625,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/dsalvado/shuttlescp/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/dsalvado/shuttlescp/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/dsalvado/shuttlescp/compare/v0.23.4...v0.24.0
 [0.23.4]: https://github.com/dsalvado/shuttlescp/compare/v0.23.3...v0.23.4
