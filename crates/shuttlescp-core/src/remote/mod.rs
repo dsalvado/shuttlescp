@@ -197,6 +197,19 @@ pub struct Challenge {
     pub prompts: Vec<(String, bool)>,
 }
 
+/// Whether a server's question (one of [`Challenge::prompts`]) asks for the account's
+/// password rather than a code: it is hidden and says "password", but not "one-time
+/// password", which is a code (pam_oath asks "One-time password (OATH) for ...").
+///
+/// # Arguments
+///
+/// * `prompt` - The question, as the server words it
+/// * `echo` - Whether its answer may show as it is typed
+pub fn asks_for_password(prompt: &str, echo: bool) -> bool {
+    let prompt = prompt.to_lowercase();
+    !echo && prompt.contains("password") && !prompt.contains("one-time")
+}
+
 /// Puts a [`Challenge`] to the user: the answers, one per prompt in order, or `None`
 /// if the user cancels. Called from background tasks, when logging in and when logging
 /// in again after a lost connection.
@@ -559,4 +572,22 @@ pub async fn connect(
         files_at_once: site.files_at_once(),
         transfers: tokio::sync::OnceCell::new(),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::asks_for_password;
+
+    #[test]
+    fn tells_passwords_from_codes() {
+        assert!(asks_for_password("Password: ", false));
+        assert!(asks_for_password("dsalvado@vm's password:", false));
+        assert!(!asks_for_password("Verification code: ", false));
+        assert!(!asks_for_password(
+            "One-time password (OATH) for `alex':",
+            false
+        ));
+        // A question whose answer may show is never the password.
+        assert!(!asks_for_password("Password hint: ", true));
+    }
 }

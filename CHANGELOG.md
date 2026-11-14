@@ -12,6 +12,11 @@ becomes its release notes on GitHub.
 - Show codes in the two-factor dialog, ticked by default, so a mistyped digit can be
   seen before logging in. Password questions stay hidden either way.
 
+### Fixed
+
+- Two-factor servers that ask for a "one-time password" (pam_oath) no longer get your
+  saved password as the code; the code is asked for instead.
+
 ## [0.26.0] - 2026-11-14
 
 ### Added
