@@ -2,10 +2,14 @@
 //!
 //! Free of any GUI code, so it can be unit tested and called from a background thread.
 
+#[cfg(unix)]
+use std::collections::HashMap;
 use std::fs::{self, DirEntry, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use nix::unistd::{Gid, Group, Uid, User};
 use thiserror::Error;
 
 use crate::entry::{EntryKind, FileEntry};
@@ -20,7 +24,7 @@ use crate::entry::{EntryKind, FileEntry};
 /// # Returns
 ///
 /// The entry; metadata fields fall back to empty values when they cannot be read
-fn entry_from_dir_entry(entry: &DirEntry) -> FileEntry {
+fn entry_from_dir_entry(entry: &DirEntry, names: &mut Names) -> FileEntry {
     // `fs::metadata` follows symlinks; if the target is missing (broken link) fall back
     // to the metadata of the link itself. `.ok()` turns a `Result` into an `Option`.
     let metadata: Option<Metadata> = fs::metadata(entry.path())
@@ -30,12 +34,75 @@ fn entry_from_dir_entry(entry: &DirEntry) -> FileEntry {
         Some(true) => EntryKind::Directory,
         Some(false) | None => EntryKind::File,
     };
-    FileEntry::new(
+    let plain = FileEntry::new(
         entry.file_name(),
         kind,
         metadata.as_ref().map_or(0, Metadata::len),
-        metadata.and_then(|meta| meta.modified().ok()),
-    )
+        metadata.as_ref().and_then(|meta| meta.modified().ok()),
+    );
+    names.add_unix_details(plain, metadata.as_ref())
+}
+
+/// User and group names by number, each looked up once per listing: a lookup asks the
+/// system's user database, which can be slow (or on the network, with LDAP).
+#[cfg(unix)]
+#[derive(Default)]
+struct Names {
+    users: HashMap<u32, String>,
+    groups: HashMap<u32, String>,
+}
+
+#[cfg(unix)]
+impl Names {
+    /// `entry` with its permission bits, owner and group from `metadata`.
+    fn add_unix_details(&mut self, entry: FileEntry, metadata: Option<&Metadata>) -> FileEntry {
+        use std::os::unix::fs::MetadataExt;
+        let Some(meta) = metadata else {
+            return entry;
+        };
+        let owner = self.user(meta.uid());
+        let group = self.group(meta.gid());
+        entry.with_unix(Some(meta.mode()), Some(owner), Some(group))
+    }
+
+    /// The user's name, or the number as text for a user the system doesn't know
+    /// (files from another computer, or a deleted account).
+    fn user(&mut self, uid: u32) -> String {
+        self.users
+            .entry(uid)
+            .or_insert_with(|| {
+                User::from_uid(Uid::from_raw(uid))
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| uid.to_string(), |user| user.name)
+            })
+            .clone()
+    }
+
+    /// The group's name, or the number as text.
+    fn group(&mut self, gid: u32) -> String {
+        self.groups
+            .entry(gid)
+            .or_insert_with(|| {
+                Group::from_gid(Gid::from_raw(gid))
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| gid.to_string(), |group| group.name)
+            })
+            .clone()
+    }
+}
+
+/// Windows has no Unix permissions: entries stay without them.
+#[cfg(not(unix))]
+#[derive(Default)]
+struct Names;
+
+#[cfg(not(unix))]
+impl Names {
+    fn add_unix_details(&mut self, entry: FileEntry, _metadata: Option<&Metadata>) -> FileEntry {
+        entry
+    }
 }
 
 /// Error returned when a directory cannot be listed.
@@ -77,9 +144,10 @@ pub fn list_dir(dir: &Path) -> Result<Vec<FileEntry>, ListError> {
         path: dir.to_path_buf(),
         source,
     })?;
+    let mut names = Names::default();
     let mut entries: Vec<FileEntry> = reader
         .filter_map(|result| match result {
-            Ok(entry) => Some(entry_from_dir_entry(&entry)),
+            Ok(entry) => Some(entry_from_dir_entry(&entry, &mut names)),
             Err(error) => {
                 tracing::warn!("skipping entry in {}: {error}", dir.display());
                 None
@@ -121,6 +189,26 @@ mod tests {
             .iter()
             .map(|e| e.display_name().into_owned())
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn entries_carry_permissions_and_owner_names() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let file = temp.path().join("secret.txt");
+        fs::write(&file, b"").expect("write file");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).expect("chmod");
+
+        let entries = list_dir(temp.path()).expect("list temp dir");
+
+        assert_eq!(entries[0].mode(), Some(0o640));
+        // The file is ours, so the owner is our own user's name.
+        let me = User::from_uid(Uid::current())
+            .expect("lookup")
+            .expect("known user");
+        assert_eq!(entries[0].owner(), Some(me.name.as_str()));
+        assert!(entries[0].group().is_some());
     }
 
     #[test]

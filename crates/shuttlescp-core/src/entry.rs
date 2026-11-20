@@ -27,6 +27,12 @@ pub struct FileEntry {
     kind: EntryKind,
     size: u64,
     modified: Option<SystemTime>,
+    /// Unix permission bits (such as `0o644`), when the listing gives them.
+    mode: Option<u32>,
+    /// Owner's user name (or number, as text, when no name is known).
+    owner: Option<String>,
+    /// Group name (or number, as text, when no name is known).
+    group: Option<String>,
 }
 
 impl FileEntry {
@@ -45,7 +51,32 @@ impl FileEntry {
             kind,
             size,
             modified,
+            mode: None,
+            owner: None,
+            group: None,
         }
+    }
+
+    /// The same entry with its Unix permissions and owner added. Listings that know
+    /// them call this after [`FileEntry::new`]; the others leave them unknown.
+    ///
+    /// # Arguments
+    ///
+    /// * `mode` - Permission bits; only the lowest 12 (rwx for all three, plus setuid,
+    ///   setgid and sticky) are kept, the file-type bits above them are dropped
+    /// * `owner` - Owner's name, if known
+    /// * `group` - Group's name, if known
+    #[must_use]
+    pub fn with_unix(
+        mut self,
+        mode: Option<u32>,
+        owner: Option<String>,
+        group: Option<String>,
+    ) -> Self {
+        self.mode = mode.map(|bits| bits & 0o7777);
+        self.owner = owner;
+        self.group = group;
+        self
     }
 
     /// Raw file name, suitable for joining onto the parent directory path.
@@ -76,6 +107,21 @@ impl FileEntry {
     /// Last modification time, if the filesystem reports one.
     pub fn modified(&self) -> Option<SystemTime> {
         self.modified
+    }
+
+    /// Unix permission bits (such as `0o644`), if known.
+    pub fn mode(&self) -> Option<u32> {
+        self.mode
+    }
+
+    /// Owner's name, if known.
+    pub fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
+    }
+
+    /// Group's name, if known.
+    pub fn group(&self) -> Option<&str> {
+        self.group.as_deref()
     }
 
     /// Name order used by file explorers: directories first, then case-insensitive name,
@@ -155,5 +201,18 @@ mod tests {
         assert_eq!(big.modified_order(&small), Ordering::Less);
         let dir = entry("z", EntryKind::Directory, 999, 0);
         assert_eq!(dir.size_order(&small), Ordering::Less);
+    }
+
+    #[test]
+    fn unix_details_are_optional_and_keep_only_permission_bits() {
+        let plain = entry("a", EntryKind::File, 0, 0);
+        assert_eq!(
+            (plain.mode(), plain.owner(), plain.group()),
+            (None, None, None)
+        );
+        // 0o100644 is how SFTP reports a regular file with rw-r--r--.
+        let full = plain.with_unix(Some(0o100_644), Some("alex".into()), Some("staff".into()));
+        assert_eq!(full.mode(), Some(0o644));
+        assert_eq!((full.owner(), full.group()), (Some("alex"), Some("staff")));
     }
 }

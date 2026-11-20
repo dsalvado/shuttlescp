@@ -220,7 +220,7 @@ pub type Prompter = Arc<
 >;
 
 /// What a listing or a lookup says about a file or folder on the server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RemoteMeta {
     /// A folder (or, when following links, a link to one).
     pub(crate) is_dir: bool,
@@ -230,6 +230,12 @@ pub(crate) struct RemoteMeta {
     pub(crate) size: u64,
     /// Last modification, if known.
     pub(crate) modified: Option<SystemTime>,
+    /// Unix permission bits, if the server gives them.
+    pub(crate) mode: Option<u32>,
+    /// Owner's name, or number as text, if the server gives it.
+    pub(crate) owner: Option<String>,
+    /// Group's name, or number as text, if the server gives it.
+    pub(crate) group: Option<String>,
 }
 
 /// A server file being read.
@@ -360,16 +366,19 @@ impl Remote {
             } else {
                 meta.is_dir
             };
-            entries.push(FileEntry::new(
-                OsString::from(name),
-                if is_dir {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::File
-                },
-                meta.size,
-                meta.modified,
-            ));
+            entries.push(
+                FileEntry::new(
+                    OsString::from(name),
+                    if is_dir {
+                        EntryKind::Directory
+                    } else {
+                        EntryKind::File
+                    },
+                    meta.size,
+                    meta.modified,
+                )
+                .with_unix(meta.mode, meta.owner, meta.group),
+            );
         }
         entries.sort_unstable_by(FileEntry::listing_order);
         tracing::trace!("read {} remote entries from {}", entries.len(), dir);

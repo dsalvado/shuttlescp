@@ -500,6 +500,17 @@ fn meta(metadata: &Metadata) -> RemoteMeta {
         modified: metadata
             .mtime
             .map(|seconds| UNIX_EPOCH + Duration::from_secs(u64::from(seconds))),
+        mode: metadata.permissions,
+        // SFTP version 3 sends only the numbers; a name, if the library ever has one,
+        // is better.
+        owner: metadata
+            .user
+            .clone()
+            .or_else(|| metadata.uid.map(|uid| uid.to_string())),
+        group: metadata
+            .group
+            .clone()
+            .or_else(|| metadata.gid.map(|gid| gid.to_string())),
     }
 }
 
