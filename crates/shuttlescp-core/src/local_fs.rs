@@ -159,6 +159,51 @@ pub fn list_dir(dir: &Path) -> Result<Vec<FileEntry>, ListError> {
     Ok(entries)
 }
 
+/// Change a local file's or folder's permission bits (Linux and macOS). A link is
+/// followed: the file it points to changes.
+///
+/// # Arguments
+///
+/// * `path` - File or folder
+/// * `mode` - New permission bits; only the lowest 12 are used
+///
+/// # Errors
+///
+/// Returns a readable message if the system refuses (usually: not the owner)
+#[cfg(unix)]
+pub fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    tracing::info!(
+        "setting permissions of {} to {:04o}",
+        path.display(),
+        mode & 0o7777
+    );
+    fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777))
+        .map_err(|error| crate::i18n::cannot("set-permissions", path.display(), error))
+}
+
+/// Change a local file's or folder's owner and/or group, by number; `None` keeps that
+/// one (Linux and macOS). Giving a file to someone else needs root.
+///
+/// # Arguments
+///
+/// * `path` - File or folder
+/// * `uid` - New owner, or `None` to keep it
+/// * `gid` - New group, or `None` to keep it
+///
+/// # Errors
+///
+/// Returns a readable message if the system refuses
+#[cfg(unix)]
+pub fn set_owner(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), String> {
+    tracing::info!(
+        "setting owner of {} to uid {uid:?}, gid {gid:?}",
+        path.display()
+    );
+    std::os::unix::fs::chown(path, uid, gid)
+        .map_err(|error| crate::i18n::cannot("set-owner", path.display(), error))
+}
+
 /// Find the closest directory at or above `path` that can be opened for listing.
 ///
 /// # Arguments
@@ -209,6 +254,34 @@ mod tests {
             .expect("known user");
         assert_eq!(entries[0].owner(), Some(me.name.as_str()));
         assert!(entries[0].group().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changes_mode_and_keeps_the_owner_when_asked_to() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let file = temp.path().join("script.sh");
+        fs::write(&file, b"").expect("write file");
+
+        set_mode(&file, 0o750).expect("chmod");
+        let meta = fs::metadata(&file).expect("metadata");
+        assert_eq!(meta.mode() & 0o7777, 0o750);
+
+        // "Change" the group to the one it already has: allowed without root, and the
+        // owner (None) must stay as it was.
+        set_owner(&file, None, Some(meta.gid())).expect("chgrp to own group");
+        let after = fs::metadata(&file).expect("metadata");
+        assert_eq!((after.uid(), after.gid()), (meta.uid(), meta.gid()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refusals_name_the_file() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let gone = temp.path().join("gone.txt");
+        let error = set_mode(&gone, 0o644).expect_err("no such file");
+        assert!(error.contains("gone.txt"), "{error}");
     }
 
     #[test]

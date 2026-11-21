@@ -561,6 +561,8 @@ error-cannot =
         [delete] impossible de supprimer { $path } : { $reason }
         [delete-folder] impossible de supprimer le dossier { $path } : { $reason }
         [set-time] impossible de régler l'heure de { $path } : { $reason }
+        [set-permissions] impossible de modifier les droits de { $path } : { $reason }
+        [set-owner] impossible de changer le propriétaire de { $path } : { $reason }
         [finish] impossible de terminer { $path } : { $reason }
         [download] impossible de télécharger { $path } : { $reason }
         [replace] impossible de remplacer { $path } : { $reason }
@@ -577,6 +579,8 @@ error-cannot-bare =
         [delete] impossible de supprimer { $path }
         [delete-folder] impossible de supprimer le dossier { $path }
         [set-time] impossible de régler l'heure de { $path }
+        [set-permissions] impossible de modifier les droits de { $path }
+        [set-owner] impossible de changer le propriétaire de { $path }
         [finish] impossible de terminer { $path }
         [download] impossible de télécharger { $path }
         [replace] impossible de remplacer { $path }
@@ -587,6 +591,8 @@ error-cannot-rename = impossible de renommer { $from } en { $to } : { $reason }
 error-cannot-rename-bare = impossible de renommer { $from } en { $to }
 error-no-such-item = aucun fichier ou dossier de ce nom
 error-sftp-date = { $path } a une date que SFTP ne peut pas enregistrer
+error-ftp-no-owner = FTP ne permet pas de changer le propriétaire d'un fichier
+error-owner-unknown = le serveur n'a pas indiqué son propriétaire actuel
 checksum-unsupported = le serveur ne peut pas calculer de sommes de contrôle
 checksum-no-answer = la réponse du serveur ne contenait aucune somme de contrôle
 verify-mismatch = la somme de contrôle de la copie diffère de celle de l'original : la copie n'est pas ce qui a été copié

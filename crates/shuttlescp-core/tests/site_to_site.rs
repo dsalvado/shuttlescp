@@ -398,6 +398,56 @@ async fn links_list_as_what_they_lead_to() {
     }
 }
 
+/// Permissions and owner: listings show them, `set_mode` changes them, and `set_owner`
+/// with only the group keeps the owner (SFTP sends both, so the missing one must be
+/// read first, not sent as 0 = root). Uses the script's `links/own-file`, which the
+/// test user owns.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn permissions_are_listed_and_changed() {
+    for var in ["SHUTTLESCP_TEST_SFTP", "SHUTTLESCP_TEST_FTP"] {
+        let server = Server::from_env(var);
+        let remote = server.connect().await;
+        let dir = server.dir.join("links");
+        let file = dir.join("own-file");
+        let listed = || async {
+            remote
+                .list_dir(&dir)
+                .await
+                .expect("list")
+                .into_iter()
+                .find(|entry| entry.name() == "own-file")
+                .expect("own-file listed")
+        };
+        let before = listed().await;
+        let original = before
+            .mode()
+            .unwrap_or_else(|| panic!("{var}: no mode listed"));
+        assert!(before.owner().is_some(), "{var}: no owner listed");
+
+        remote.set_mode(&file, 0o640).await.expect("chmod");
+        assert_eq!(listed().await.mode(), Some(0o640), "{var}");
+        remote.set_mode(&file, original).await.expect("chmod back");
+
+        if remote.can_set_owner() {
+            // SFTP lists numbers; "changing" the group to its own needs no root.
+            let gid = before.group().and_then(|gid| gid.parse().ok());
+            remote.set_owner(&file, None, gid).await.expect("chgrp");
+            let after = listed().await;
+            assert_eq!(
+                (after.owner(), after.group()),
+                (before.owner(), before.group())
+            );
+        } else {
+            let error = remote
+                .set_owner(&file, Some(0), None)
+                .await
+                .expect_err("FTP");
+            assert!(error.contains("own-file"), "{error}");
+        }
+    }
+}
+
 /// A site set to more files at once than its FTP server allows connections: the server
 /// refuses the extra ones, and every file still arrives over those it allowed. The
 /// script's `SHUTTLESCP_TEST_FTP_LIMITED` server takes 3 connections per client.

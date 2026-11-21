@@ -65,8 +65,11 @@ done
 for target in "$NAME-sftp:/home/test/upload" "$NAME-ftp:/ftp/test/files"; do
     docker exec "${target%%:*}" sh -c "cd ${target#*:} && mkdir -p links/real-folder &&
         echo hello > links/real-file && ln -s real-folder links/to-folder &&
-        ln -s real-file links/to-file"
+        ln -s real-file links/to-file &&
+        echo hello > links/own-file && chown test links/own-file"
 done
+# (links/real-file is root's, like most files a user did not make: only links/own-file,
+# the test user's, can have its permissions changed without sudo.)
 
 # Wait until each server greets (an open port alone is not enough: Docker can accept
 # connections before the server inside is listening).

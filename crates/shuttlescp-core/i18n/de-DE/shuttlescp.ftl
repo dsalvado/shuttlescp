@@ -561,6 +561,8 @@ error-cannot =
         [delete] { $path } kann nicht gelöscht werden: { $reason }
         [delete-folder] Ordner { $path } kann nicht gelöscht werden: { $reason }
         [set-time] Die Zeit von { $path } kann nicht gesetzt werden: { $reason }
+        [set-permissions] Die Rechte von { $path } können nicht geändert werden: { $reason }
+        [set-owner] Der Besitzer von { $path } kann nicht geändert werden: { $reason }
         [finish] { $path } kann nicht abgeschlossen werden: { $reason }
         [download] { $path } kann nicht heruntergeladen werden: { $reason }
         [replace] { $path } kann nicht ersetzt werden: { $reason }
@@ -577,6 +579,8 @@ error-cannot-bare =
         [delete] { $path } kann nicht gelöscht werden
         [delete-folder] Ordner { $path } kann nicht gelöscht werden
         [set-time] Die Zeit von { $path } kann nicht gesetzt werden
+        [set-permissions] Die Rechte von { $path } können nicht geändert werden
+        [set-owner] Der Besitzer von { $path } kann nicht geändert werden
         [finish] { $path } kann nicht abgeschlossen werden
         [download] { $path } kann nicht heruntergeladen werden
         [replace] { $path } kann nicht ersetzt werden
@@ -587,6 +591,8 @@ error-cannot-rename = { $from } kann nicht in { $to } umbenannt werden: { $reaso
 error-cannot-rename-bare = { $from } kann nicht in { $to } umbenannt werden
 error-no-such-item = keine solche Datei und kein solcher Ordner
 error-sftp-date = { $path } hat ein Datum, das SFTP nicht speichern kann
+error-ftp-no-owner = FTP kann den Besitzer einer Datei nicht ändern
+error-owner-unknown = Der Server hat den aktuellen Besitzer nicht genannt
 checksum-unsupported = der Server kann keine Prüfsummen berechnen
 checksum-no-answer = die Antwort des Servers enthielt keine Prüfsumme
 verify-mismatch = die Prüfsumme der Kopie weicht von der des Originals ab: die Kopie entspricht nicht dem Kopierten

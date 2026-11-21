@@ -561,6 +561,8 @@ error-cannot =
         [delete] não é possível excluir { $path }: { $reason }
         [delete-folder] não é possível excluir a pasta { $path }: { $reason }
         [set-time] não é possível ajustar a hora de { $path }: { $reason }
+        [set-permissions] não é possível alterar as permissões de { $path }: { $reason }
+        [set-owner] não é possível alterar o proprietário de { $path }: { $reason }
         [finish] não é possível concluir { $path }: { $reason }
         [download] não é possível baixar { $path }: { $reason }
         [replace] não é possível substituir { $path }: { $reason }
@@ -577,6 +579,8 @@ error-cannot-bare =
         [delete] não é possível excluir { $path }
         [delete-folder] não é possível excluir a pasta { $path }
         [set-time] não é possível ajustar a hora de { $path }
+        [set-permissions] não é possível alterar as permissões de { $path }
+        [set-owner] não é possível alterar o proprietário de { $path }
         [finish] não é possível concluir { $path }
         [download] não é possível baixar { $path }
         [replace] não é possível substituir { $path }
@@ -587,6 +591,8 @@ error-cannot-rename = não é possível renomear { $from } para { $to }: { $reas
 error-cannot-rename-bare = não é possível renomear { $from } para { $to }
 error-no-such-item = arquivo ou pasta inexistente
 error-sftp-date = { $path } tem uma data que o SFTP não consegue gravar
+error-ftp-no-owner = o FTP não permite alterar o proprietário de um arquivo
+error-owner-unknown = o servidor não informou o proprietário atual
 checksum-unsupported = o servidor não consegue calcular somas de verificação
 checksum-no-answer = a resposta do servidor não continha nenhuma soma de verificação
 verify-mismatch = a soma de verificação da cópia difere da do original: a cópia não é o que foi copiado

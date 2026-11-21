@@ -696,6 +696,8 @@ error-cannot =
         [delete] cannot delete { $path }: { $reason }
         [delete-folder] cannot delete folder { $path }: { $reason }
         [set-time] cannot set the time of { $path }: { $reason }
+        [set-permissions] cannot change the permissions of { $path }: { $reason }
+        [set-owner] cannot change the owner of { $path }: { $reason }
         [finish] cannot finish { $path }: { $reason }
         [download] cannot download { $path }: { $reason }
         [replace] cannot replace { $path }: { $reason }
@@ -712,6 +714,8 @@ error-cannot-bare =
         [delete] cannot delete { $path }
         [delete-folder] cannot delete folder { $path }
         [set-time] cannot set the time of { $path }
+        [set-permissions] cannot change the permissions of { $path }
+        [set-owner] cannot change the owner of { $path }
         [finish] cannot finish { $path }
         [download] cannot download { $path }
         [replace] cannot replace { $path }
@@ -723,6 +727,8 @@ error-cannot-rename-bare = cannot rename { $from } to { $to }
 error-no-such-item = no such file or folder
 # $path: a file whose date is before 1970 or after 2106.
 error-sftp-date = { $path } has a date SFTP cannot store
+error-ftp-no-owner = FTP cannot change who owns a file
+error-owner-unknown = the server did not say who owns it now
 checksum-unsupported = the server cannot compute checksums
 checksum-no-answer = the server's answer held no checksum
 verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied

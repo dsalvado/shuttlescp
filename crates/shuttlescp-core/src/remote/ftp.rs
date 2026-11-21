@@ -647,6 +647,23 @@ impl Ftp {
         .await
     }
 
+    /// Change permission bits with `SITE CHMOD`, which most Unix servers accept (it is
+    /// not part of the FTP standard, so some refuse it).
+    pub(super) async fn set_mode(&self, path: &RemotePath, mode: u32) -> Result<(), String> {
+        let text = path_text(path);
+        let what = crate::i18n::cannot_bare("set-permissions", &text);
+        self.run(&what, &move |connection| {
+            let command = format!("SITE CHMOD {:o} {text}", mode & 0o7777);
+            Box::pin(async move {
+                connection
+                    .custom_command(command, &[Status::CommandOk])
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await
+    }
+
     /// The SHA-256 of a file, computed by the server: with HASH after choosing SHA-256
     /// (FileZilla Server, ProFTPD), else XSHA256 (older servers). Many servers have
     /// neither (vsftpd); once one says so, later files do not ask again.

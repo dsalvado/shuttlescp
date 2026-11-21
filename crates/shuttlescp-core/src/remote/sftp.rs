@@ -489,6 +489,64 @@ impl Sftp {
         .await
         .map_err(|error| crate::i18n::cannot("set-time", &text, &error))
     }
+
+    /// Change permission bits (SFTP "setstat" with only the permissions set). A link
+    /// is followed: the server changes the file it points to.
+    pub(super) async fn set_mode(&self, path: &RemotePath, mode: u32) -> Result<(), String> {
+        let text = path_text(path);
+        let attributes = FileAttributes {
+            permissions: Some(mode & 0o7777),
+            ..FileAttributes::empty()
+        };
+        self.run(|link| {
+            let (text, attributes) = (text.clone(), attributes.clone());
+            async move { link.session.set_metadata(text, attributes).await }
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("set-permissions", &text, &error))
+    }
+
+    /// Change the owner and/or group, by number. SFTP always sends the two together, so
+    /// one left out is first read from the file and sent back unchanged (otherwise the
+    /// library would send 0, making root its owner or group).
+    pub(super) async fn set_owner(
+        &self,
+        path: &RemotePath,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<(), String> {
+        let text = path_text(path);
+        let cannot = |error: &dyn std::fmt::Display| crate::i18n::cannot("set-owner", &text, error);
+        let (uid, gid) = match (uid, gid) {
+            (None, None) => return Ok(()),
+            (Some(uid), Some(gid)) => (uid, gid),
+            (uid, gid) => {
+                let current = self
+                    .run(|link| {
+                        let text = text.clone();
+                        async move { link.session.metadata(text).await }
+                    })
+                    .await
+                    .map_err(|error| cannot(&error))?;
+                match (uid.or(current.uid), gid.or(current.gid)) {
+                    (Some(uid), Some(gid)) => (uid, gid),
+                    // The server didn't say: better to change nothing than to guess.
+                    _ => return Err(cannot(&crate::tr!("error-owner-unknown"))),
+                }
+            }
+        };
+        let attributes = FileAttributes {
+            uid: Some(uid),
+            gid: Some(gid),
+            ..FileAttributes::empty()
+        };
+        self.run(|link| {
+            let (text, attributes) = (text.clone(), attributes.clone());
+            async move { link.session.set_metadata(text, attributes).await }
+        })
+        .await
+        .map_err(|error| cannot(&error))
+    }
 }
 
 /// [`RemoteMeta`] from SFTP file attributes.

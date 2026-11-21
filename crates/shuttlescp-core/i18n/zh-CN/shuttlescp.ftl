@@ -502,6 +502,8 @@ error-cannot =
         [delete] 无法删除 { $path }：{ $reason }
         [delete-folder] 无法删除文件夹 { $path }：{ $reason }
         [set-time] 无法设置 { $path } 的时间：{ $reason }
+        [set-permissions] 无法更改 { $path } 的权限：{ $reason }
+        [set-owner] 无法更改 { $path } 的所有者：{ $reason }
         [finish] 无法完成 { $path }：{ $reason }
         [download] 无法下载 { $path }：{ $reason }
         [replace] 无法替换 { $path }：{ $reason }
@@ -518,6 +520,8 @@ error-cannot-bare =
         [delete] 无法删除 { $path }
         [delete-folder] 无法删除文件夹 { $path }
         [set-time] 无法设置 { $path } 的时间
+        [set-permissions] 无法更改 { $path } 的权限
+        [set-owner] 无法更改 { $path } 的所有者
         [finish] 无法完成 { $path }
         [download] 无法下载 { $path }
         [replace] 无法替换 { $path }
@@ -528,6 +532,8 @@ error-cannot-rename = 无法将 { $from } 重命名为 { $to }：{ $reason }
 error-cannot-rename-bare = 无法将 { $from } 重命名为 { $to }
 error-no-such-item = 没有这个文件或文件夹
 error-sftp-date = { $path } 的日期无法用 SFTP 保存
+error-ftp-no-owner = FTP 无法更改文件的所有者
+error-owner-unknown = 服务器未告知其当前所有者
 checksum-unsupported = 服务器无法计算校验和
 checksum-no-answer = 服务器的回复中没有校验和
 verify-mismatch = 副本的校验和与原文件不同：副本与所复制的内容不一致

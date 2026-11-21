@@ -533,6 +533,49 @@ impl Remote {
             Backend::Ftp(ftp) => ftp.set_modified(path, time).await,
         }
     }
+
+    /// Change a file's or folder's permission bits (only the lowest 12 are used).
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses (not the owner, or an FTP
+    /// server without `SITE CHMOD`)
+    pub async fn set_mode(&self, path: &RemotePath, mode: u32) -> Result<(), String> {
+        tracing::info!("setting permissions of {path} to {:04o}", mode & 0o7777);
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.set_mode(path, mode).await,
+            Backend::Ftp(ftp) => ftp.set_mode(path, mode).await,
+        }
+    }
+
+    /// Change a file's or folder's owner and/or group, by number; `None` keeps that one.
+    /// SFTP only (FTP has no command for it).
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses (usually: only root may give
+    /// files away) or the site is FTP
+    pub async fn set_owner(
+        &self,
+        path: &RemotePath,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<(), String> {
+        tracing::info!("setting owner of {path} to uid {uid:?}, gid {gid:?}");
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.set_owner(path, uid, gid).await,
+            Backend::Ftp(_) => Err(crate::i18n::cannot(
+                "set-owner",
+                path,
+                crate::tr!("error-ftp-no-owner"),
+            )),
+        }
+    }
+
+    /// Whether this site can change owners at all (SFTP yes, FTP no).
+    pub fn can_set_owner(&self) -> bool {
+        matches!(self.0.backend, Backend::Sftp(_))
+    }
 }
 
 /// A server path as the text the protocols expect.
