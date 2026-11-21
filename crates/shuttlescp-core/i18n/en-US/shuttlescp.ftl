@@ -279,6 +279,8 @@ pane-open-error = { $error }.
 pane-column-name = Name
 pane-column-size = Size
 pane-column-modified = Modified
+pane-column-permissions = Permissions
+pane-column-owner = Owner
 
 ## The file panes' right-click menu. The underscore marks the keyboard letter.
 ## $kind is upload, download or copy: the item copies files to the other pane,

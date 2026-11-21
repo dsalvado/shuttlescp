@@ -195,6 +195,8 @@ pane-open-error = { $error }。
 pane-column-name = 名称
 pane-column-size = 大小
 pane-column-modified = 修改时间
+pane-column-permissions = 权限
+pane-column-owner = 所有者
 
 pane-transfer =
     { $kind ->

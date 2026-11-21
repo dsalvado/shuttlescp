@@ -70,6 +70,64 @@ pub fn format_duration(duration: std::time::Duration) -> String {
     }
 }
 
+/// Format permission bits as `ls -l` shows them, without the type letter: "rwxr-x---".
+///
+/// In each execute place, `s` (owner, group) or `t` (others) means execute plus the
+/// setuid / setgid / sticky bit, and a capital `S` / `T` the special bit alone.
+///
+/// # Arguments
+///
+/// * `mode` - Permission bits, such as `0o4755`
+///
+/// # Returns
+///
+/// Nine letters, owner first
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(shuttlescp_core::format::format_rights(0o4755), "rwsr-xr-x");
+/// ```
+pub fn format_rights(mode: u32) -> String {
+    // (shift of the rwx group, its special bit, letter for that special bit)
+    [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')]
+        .iter()
+        .flat_map(|&(shift, special, letter)| {
+            let bits = (mode >> shift) & 0o7;
+            let execute = match (bits & 1 == 1, mode & special != 0) {
+                (true, true) => letter,
+                (false, true) => letter.to_ascii_uppercase(),
+                (true, false) => 'x',
+                (false, false) => '-',
+            };
+            [
+                if bits & 4 != 0 { 'r' } else { '-' },
+                if bits & 2 != 0 { 'w' } else { '-' },
+                execute,
+            ]
+        })
+        .collect()
+}
+
+/// Format an owner and group the way `chown` writes them: "alex:staff".
+///
+/// # Arguments
+///
+/// * `owner` - Owner's name, if known
+/// * `group` - Group's name, if known
+///
+/// # Returns
+///
+/// "owner:group", just one of them when the other is unknown, or "" when both are
+pub fn format_owner(owner: Option<&str>, group: Option<&str>) -> String {
+    match (owner, group) {
+        (Some(owner), Some(group)) => format!("{owner}:{group}"),
+        (Some(owner), None) => owner.to_owned(),
+        (None, Some(group)) => format!(":{group}"),
+        (None, None) => String::new(),
+    }
+}
+
 /// Shorten `text` to at most `max_chars` characters by replacing its middle with "...".
 ///
 /// # Arguments
@@ -118,6 +176,24 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::*;
+
+    #[test]
+    fn rights_read_like_ls() {
+        assert_eq!(format_rights(0o644), "rw-r--r--");
+        assert_eq!(format_rights(0o755), "rwxr-xr-x");
+        assert_eq!(format_rights(0o2775), "rwxrwsr-x");
+        assert_eq!(format_rights(0o1777), "rwxrwxrwt");
+        assert_eq!(format_rights(0o5644), "rwSr--r-T");
+        assert_eq!(format_rights(0), "---------");
+    }
+
+    #[test]
+    fn owner_and_group_join_like_chown() {
+        assert_eq!(format_owner(Some("alex"), Some("staff")), "alex:staff");
+        assert_eq!(format_owner(Some("1000"), None), "1000");
+        assert_eq!(format_owner(None, Some("staff")), ":staff");
+        assert_eq!(format_owner(None, None), "");
+    }
 
     #[test]
     fn format_size_uses_bytes_below_one_kibibyte() {

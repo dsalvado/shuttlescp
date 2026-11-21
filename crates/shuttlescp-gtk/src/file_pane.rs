@@ -23,7 +23,7 @@ use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 
 use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::entry::{EntryKind, FileEntry};
-use shuttlescp_core::format::{format_modified, format_size};
+use shuttlescp_core::format::{format_modified, format_owner, format_rights, format_size};
 use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::local_fs;
 use shuttlescp_core::path::SidePath;
@@ -862,12 +862,16 @@ impl Component for FilePane {
         entries.append_column::<NameColumn>();
         entries.append_column::<SizeColumn>();
         entries.append_column::<ModifiedColumn>();
+        entries.append_column::<PermissionsColumn>();
+        entries.append_column::<OwnerColumn>();
         // Their titles in the interface language (relm4 takes a fixed name).
         let columns = entries.view.columns();
         for (index, title) in [
             tr!("pane-column-name"),
             tr!("pane-column-size"),
             tr!("pane-column-modified"),
+            tr!("pane-column-permissions"),
+            tr!("pane-column-owner"),
         ]
         .iter()
         .enumerate()
@@ -2203,6 +2207,72 @@ impl RelmColumn for ModifiedColumn {
         Some(Box::new(|a, b| {
             compare_rows(a, b, FileEntry::modified_order)
         }))
+    }
+}
+
+/// Permissions column: "rwxr-xr-x", blank when the listing doesn't say (Windows,
+/// some FTP servers) and on "..".
+struct PermissionsColumn;
+
+impl RelmColumn for PermissionsColumn {
+    type Root = gtk::Label;
+    type Widgets = ();
+    type Item = Row;
+
+    const COLUMN_NAME: &'static str = "Permissions";
+    const ENABLE_RESIZE: bool = true;
+
+    fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        let cell = text_cell(0.0);
+        // Same-width letters, so the r/w/x line up from row to row.
+        cell.add_css_class("monospace");
+        attach_cell_handlers(&cell, item, false);
+        (cell, ())
+    }
+
+    fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
+        bind_in_use(item, label);
+        let text = match item {
+            Row::Parent { .. } => String::new(),
+            Row::Entry { entry, .. } => entry.mode().map(format_rights).unwrap_or_default(),
+        };
+        label.set_label(&text);
+    }
+
+    fn sort_fn() -> OrdFn<Self::Item> {
+        Some(Box::new(|a, b| compare_rows(a, b, FileEntry::mode_order)))
+    }
+}
+
+/// Owner column: "owner:group", blank when unknown and on "..".
+struct OwnerColumn;
+
+impl RelmColumn for OwnerColumn {
+    type Root = gtk::Label;
+    type Widgets = ();
+    type Item = Row;
+
+    const COLUMN_NAME: &'static str = "Owner";
+    const ENABLE_RESIZE: bool = true;
+
+    fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        let cell = text_cell(0.0);
+        cell.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        attach_cell_handlers(&cell, item, false);
+        (cell, ())
+    }
+
+    fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
+        bind_in_use(item, label);
+        let text = match item {
+            Row::Parent { .. } => String::new(),
+            Row::Entry { entry, .. } => format_owner(entry.owner(), entry.group()),
+        };
+        label.set_label(&text);
+    }
+
+    fn sort_fn() -> OrdFn<Self::Item> {
+        Some(Box::new(|a, b| compare_rows(a, b, FileEntry::owner_order)))
     }
 }
 

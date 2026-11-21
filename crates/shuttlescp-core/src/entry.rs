@@ -163,6 +163,28 @@ impl FileEntry {
             .cmp(&other.modified)
             .then_with(|| self.listing_order(other))
     }
+
+    /// Permissions order: by the mode's number (unknown first), then by name.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The entry to compare against
+    pub fn mode_order(&self, other: &Self) -> Ordering {
+        self.mode
+            .cmp(&other.mode)
+            .then_with(|| self.listing_order(other))
+    }
+
+    /// Owner order: by owner, then group (unknown first), then by name.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The entry to compare against
+    pub fn owner_order(&self, other: &Self) -> Ordering {
+        (&self.owner, &self.group)
+            .cmp(&(&other.owner, &other.group))
+            .then_with(|| self.listing_order(other))
+    }
 }
 
 #[cfg(test)]

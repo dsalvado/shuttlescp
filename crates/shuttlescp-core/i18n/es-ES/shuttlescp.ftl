@@ -216,6 +216,8 @@ pane-open-error = { $error }.
 pane-column-name = Nombre
 pane-column-size = Tamaño
 pane-column-modified = Modificado
+pane-column-permissions = Permisos
+pane-column-owner = Propietario
 
 pane-transfer =
     { $kind ->
