@@ -468,6 +468,17 @@ impl Session {
         });
     }
 
+    /// Show the file panes' columns except `hidden` (the same in every pane).
+    pub fn show_columns(&self, hidden: &[String]) {
+        self.local_pane
+            .emit(FilePaneMsg::ShowColumns(hidden.to_vec()));
+        if let Some(connection) = &self.connection {
+            connection
+                .pane
+                .emit(FilePaneMsg::ShowColumns(hidden.to_vec()));
+        }
+    }
+
     /// Close the connection, if any, and show "Not connected" again. Its running
     /// transfers stop; they can be resumed on the next connection to the site.
     pub fn disconnect(&mut self) {
@@ -865,6 +876,7 @@ fn pane_message(session: SessionId, side: Side, output: FilePaneOutput) -> AppMs
             kind,
             paths,
         },
+        FilePaneOutput::ColumnsChanged(hidden) => AppMsg::ColumnsChanged(hidden),
         FilePaneOutput::PermissionsJob { paths, change } => AppMsg::PermissionsJob {
             session,
             side,

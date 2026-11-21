@@ -168,6 +168,8 @@ pub struct Config {
     /// Largest file read back to check it when a server cannot compute checksums;
     /// `None`: never.
     read_back_up_to: Option<u64>,
+    /// File pane columns the user hid ("size", "modified", "permissions", "owner").
+    hidden_columns: Vec<String>,
 }
 
 // Written out by hand (not derived) because the Login dialog should show at startup
@@ -190,6 +192,7 @@ impl Default for Config {
             last_update_check: None,
             verify_copies: true,
             read_back_up_to: Some(DEFAULT_READ_BACK_UP_TO),
+            hidden_columns: Vec::new(),
         }
     }
 }
@@ -437,6 +440,20 @@ impl Config {
         self.show_login_at_startup = show;
     }
 
+    /// The file pane columns the user hid, by name ("size", "owner", ...).
+    pub fn hidden_columns(&self) -> &[String] {
+        &self.hidden_columns
+    }
+
+    /// Change which file pane columns are hidden (call [`Config::save`] to persist).
+    ///
+    /// # Arguments
+    ///
+    /// * `hidden` - The hidden columns' names
+    pub fn set_hidden_columns(&mut self, hidden: Vec<String>) {
+        self.hidden_columns = hidden;
+    }
+
     /// Whether transfer lists leave finished files out.
     pub fn hide_finished_files(&self) -> bool {
         self.hide_finished_files
@@ -651,6 +668,7 @@ mod tests {
             enabled: false,
             read_back_up_to: None,
         });
+        config.set_hidden_columns(vec![String::from("owner")]);
 
         // Act
         config.save(&path).expect("save config");
@@ -677,6 +695,8 @@ mod tests {
         assert_eq!(loaded.transfer_limit_number(), DEFAULT_TRANSFER_LIMIT);
         // English until the user picks another language.
         assert_eq!(loaded.language(), DEFAULT_LANGUAGE);
+        // Every file pane column shows until the user hides one.
+        assert!(loaded.hidden_columns().is_empty());
         // Copies are checked, reading back files up to 1 GB.
         assert_eq!(
             loaded.verify(),

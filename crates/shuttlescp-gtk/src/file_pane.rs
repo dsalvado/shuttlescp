@@ -109,7 +109,15 @@ const AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// The most it scrolls per step, in pixels (the further past the edge, the faster).
 const AUTOSCROLL_MAX_STEP: f64 = 40.0;
 
+/// The columns that can be hidden, by the name the settings keep them under, in order
+/// after Name (which always shows).
+const OPTIONAL_COLUMNS: [&str; 4] = ["size", "modified", "permissions", "owner"];
+/// Name of the column menu's actions: "columns.size" and so on.
+const COLUMNS_GROUP: &str = "columns";
+
 thread_local! {
+    // The columns hidden in every pane (see `set_hidden_columns`).
+    static HIDDEN_COLUMNS: RefCell<Vec<String>> = RefCell::default();
     // The list item of each cell, by the cell's address, so a point in the list can be
     // traced to its row (GTK does not say which row a widget shows).
     static CELL_ITEMS: RefCell<HashMap<usize, glib::WeakRef<gtk::ListItem>>> =
@@ -180,6 +188,10 @@ pub enum FilePaneMsg {
     /// These files and folders (and everything inside them) are used by running
     /// transfers: show them as busy until the next update.
     InUse(Vec<SidePath>),
+    /// The user showed or hid a column in this pane.
+    ColumnToggled,
+    /// Show the columns except these (the same in every pane).
+    ShowColumns(Vec<String>),
     /// Open the Permissions dialog for the selected items.
     Permissions,
     /// The Permissions dialog's answer for these items (each with its permissions now).
@@ -285,6 +297,8 @@ pub enum FilePaneOutput {
         /// The folder of this pane they go into.
         dest_dir: SidePath,
     },
+    /// The user showed or hid a column: these are hidden now (for every pane).
+    ColumnsChanged(Vec<String>),
     /// Change these items' permissions and everything inside them, as a job.
     PermissionsJob {
         /// The selected files and folders.
@@ -437,6 +451,8 @@ pub struct FilePane {
     context_menu: gtk::PopoverMenu,
     /// Menu shown after a drop: copy or move?
     drop_menu: gtk::PopoverMenu,
+    /// The columns that can be hidden, by name, each with its menu item's action.
+    optional_columns: Vec<(&'static str, gtk::ColumnViewColumn, gio::SimpleAction)>,
     /// The drop the drop menu is about.
     pending_drop: Option<PendingDrop>,
     /// The menu's actions, enabled to suit the selection before it opens.
@@ -1175,6 +1191,7 @@ impl Component for FilePane {
             }
         }
         pin_parent_row(&entries);
+        let optional_columns = columns_menu(&root, &entries.view, &sender);
 
         // Each callback owns its own sender clone, since both outlive this function.
         let select_sender = sender.clone();
@@ -1248,6 +1265,7 @@ impl Component for FilePane {
             remote,
             context_menu,
             drop_menu,
+            optional_columns,
             pending_drop: None,
             in_use: Rc::default(),
             actions,
@@ -1484,6 +1502,17 @@ impl Component for FilePane {
                     )
                 });
             }
+            FilePaneMsg::ColumnToggled => {
+                let hidden: Vec<String> = self
+                    .optional_columns
+                    .iter()
+                    .filter(|(_, column, _)| !column.is_visible())
+                    .map(|(name, _, _)| (*name).to_owned())
+                    .collect();
+                set_hidden_columns(hidden.clone());
+                let _ = sender.output(FilePaneOutput::ColumnsChanged(hidden));
+            }
+            FilePaneMsg::ShowColumns(hidden) => show_columns(&self.optional_columns, &hidden),
             FilePaneMsg::Permissions => self.ask_permissions(root, &sender),
             FilePaneMsg::PermissionsAnswered { items, answer } if answer.sudo => {
                 sender.input(FilePaneMsg::CheckSudo {
@@ -1868,10 +1897,14 @@ fn attach_empty_space_click(view: &gtk::ColumnView, sender: &ComponentSender<Fil
             return;
         };
         // Walk up from the widget under the pointer: a cell means a row was clicked
-        // (its own handler opens the menu); a column title means the header was.
+        // (its own handler opens the menu). Column titles never get here: GTK opens
+        // their header menu (the columns menu) itself.
         let mut widget = view.pick(x, y, gtk::PickFlags::DEFAULT);
         while let Some(current) = widget {
-            if current.has_css_class(CELL_CLASS) || current.type_().name().contains("Title") {
+            if current.type_().name().contains("Title") {
+                return;
+            }
+            if current.has_css_class(CELL_CLASS) {
                 return;
             }
             if current == view {
@@ -2648,6 +2681,91 @@ fn child_towards(ancestor: &SidePath, dir: &SidePath) -> Option<SidePath> {
         child = parent;
     }
     None
+}
+
+/// Set the columns hidden in every pane: panes made from now on start that way (the app
+/// tells the open ones with [`FilePaneMsg::ShowColumns`]).
+///
+/// # Arguments
+///
+/// * `hidden` - Names from [`OPTIONAL_COLUMNS`]
+pub fn set_hidden_columns(hidden: Vec<String>) {
+    HIDDEN_COLUMNS.with(|columns| *columns.borrow_mut() = hidden);
+}
+
+/// Show each optional column unless `hidden` names it, ticking its menu item to match.
+fn show_columns(
+    columns: &[(&'static str, gtk::ColumnViewColumn, gio::SimpleAction)],
+    hidden: &[String],
+) {
+    for (name, column, action) in columns {
+        let visible = !hidden.iter().any(|hidden| hidden == name);
+        column.set_visible(visible);
+        // Setting the state does not activate the action, so this tells no one.
+        action.set_state(&visible.to_variant());
+    }
+}
+
+/// Give every column title a right-click menu with a tick for each column that can be
+/// hidden (Name always shows). GTK opens it itself: a column title takes its own
+/// right-clicks and shows the column's "header menu".
+///
+/// # Arguments
+///
+/// * `root` - The pane, which holds the menu items' actions
+/// * `view` - The file list, whose columns follow [`OPTIONAL_COLUMNS`] after Name
+/// * `sender` - Told when the user shows or hides one
+///
+/// # Returns
+///
+/// The columns that can be hidden, by name, each with its menu item's action
+fn columns_menu(
+    root: &gtk::Box,
+    view: &gtk::ColumnView,
+    sender: &ComponentSender<FilePane>,
+) -> Vec<(&'static str, gtk::ColumnViewColumn, gio::SimpleAction)> {
+    let group = gio::SimpleActionGroup::new();
+    let menu = gio::Menu::new();
+    let titles = [
+        tr!("pane-column-size"),
+        tr!("pane-column-modified"),
+        tr!("pane-column-permissions"),
+        tr!("pane-column-owner"),
+    ];
+    let all = view.columns();
+    let mut columns = Vec::new();
+    for (index, (name, title)) in OPTIONAL_COLUMNS.into_iter().zip(titles).enumerate() {
+        // Name is column 0.
+        let Some(column) = all
+            .item(index as u32 + 1)
+            .and_downcast::<gtk::ColumnViewColumn>()
+        else {
+            continue;
+        };
+        // A boolean state makes the menu draw the item with a tick.
+        let action = gio::SimpleAction::new_stateful(name, None, &true.to_variant());
+        {
+            let (column, sender) = (column.clone(), sender.clone());
+            action.connect_activate(move |action, _| {
+                let visible = !action
+                    .state()
+                    .and_then(|state| state.get::<bool>())
+                    .unwrap_or(true);
+                action.set_state(&visible.to_variant());
+                column.set_visible(visible);
+                sender.input(FilePaneMsg::ColumnToggled);
+            });
+        }
+        group.add_action(&action);
+        menu.append(Some(&title), Some(&format!("{COLUMNS_GROUP}.{name}")));
+        columns.push((name, column, action));
+    }
+    root.insert_action_group(COLUMNS_GROUP, Some(&group));
+    for column in all.iter::<gtk::ColumnViewColumn>().flatten() {
+        column.set_header_menu(Some(&menu));
+    }
+    HIDDEN_COLUMNS.with(|hidden| show_columns(&columns, &hidden.borrow()));
+    columns
 }
 
 #[cfg(test)]

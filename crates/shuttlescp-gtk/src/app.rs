@@ -257,6 +257,8 @@ pub enum AppMsg {
         /// The selected items.
         paths: Vec<SidePath>,
     },
+    /// The user showed or hid a file pane column: these are hidden now, in every pane.
+    ColumnsChanged(Vec<String>),
     /// A file pane asks to change permissions of folders and everything inside them.
     PermissionsJob {
         session: SessionId,
@@ -609,6 +611,8 @@ impl SimpleComponent for App {
             theme::apply(config.theme());
         }
         theme::ensure_cursor_theme();
+        // Before any pane is made: they start with these columns hidden.
+        crate::file_pane::set_hidden_columns(config.hidden_columns().to_vec());
 
         let disconnect_action = register_actions(&root, &config, logger.file_path(), &sender);
         let running_transfers = Rc::new(Cell::new(0));
@@ -1152,6 +1156,13 @@ impl SimpleComponent for App {
                 paths,
             } => {
                 self.request_job(session, side, kind, paths, &sender);
+            }
+            AppMsg::ColumnsChanged(hidden) => {
+                for session in &self.sessions {
+                    session.show_columns(&hidden);
+                }
+                self.config.set_hidden_columns(hidden);
+                self.save_config();
             }
             AppMsg::PermissionsJob {
                 session,
