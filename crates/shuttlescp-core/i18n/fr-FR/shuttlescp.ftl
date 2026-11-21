@@ -238,6 +238,15 @@ permissions-group = Groupe :
 permissions-keep = mixte : laisser vide pour conserver
 permissions-no-owners = FTP ne peut pas changer les propriétaires
 permissions-change = Modifier
+permissions-inside = Appliquer à tout le contenu
+permissions-scope-all = Fichiers et dossiers
+permissions-scope-files = Fichiers seulement
+permissions-scope-folders = Dossiers seulement
+permissions-x-folders = Exécution sur les dossiers seulement
+permissions-x-folders-hint = Les fichiers n'obtiennent l'exécution que s'ils l'ont déjà : les dossiers s'ouvrent sans rendre chaque fichier exécutable
+permissions-use-sudo = Modifier en tant que root (sudo)
+permissions-use-sudo-hint = Pour les fichiers qui ne vous appartiennent pas : demande le mot de passe sudo si le serveur l'exige
+permissions-no-sudo = sudo ne peut pas être utilisé : { $reason }
 permissions-password-title = Mot de passe sudo
 permissions-password-prompt = Mot de passe sudo sur { $server } :
 permissions-password-wrong = sudo n'a pas accepté ce mot de passe. Réessayez :
@@ -304,6 +313,7 @@ job-paused = En pause
 job-paused-copied = En pause : { $done } sur { $total } copiés
 job-preparing = Préparation...
 job-deleting = { $done } sur { $total } supprimés
+job-changing = { $done } sur { $total } modifiés
 job-relay-right =
     { $kind ->
         [move] Déplacer { $subject } : { $from } → { $to }
@@ -341,6 +351,8 @@ summary-skipped = { $count } ignorés
 summary-stopped = { $count } arrêtés
 
 item-deleted = Supprimé
+item-changed = Modifié
+item-not-changed = Non modifié (lien ou non choisi)
 item-skipped = Ignoré : le fichier existant a été conservé
 item-paused = En pause
 item-paused-slot = En pause : en attente d'une place de transfert libre
@@ -396,6 +408,7 @@ login-unfinished-what =
     { $kind ->
         [move] Déplacer { $subject }
         [delete] Supprimer { $subject }
+        [permissions] Droits { $subject }
        *[copy] Copier { $subject }
     }
 login-unfinished-saved-unknown = Inconnu (enregistré par une ancienne version)
@@ -578,6 +591,8 @@ job-title =
         [copy-other-server] Copier { $what } vers { $dest } sur l'autre serveur
         [move-other-server] { $dest }éplacer { $what } vers { $dest } sur l'autre serveur
         [delete-here] Supprimer { $what } de cet ordinateur
+        [permissions-here] Modifier les droits de { $what } sur cet ordinateur
+        [permissions-on-server] Modifier les droits de { $what } sur le serveur
        *[delete-on-server] Supprimer { $what } du serveur
     }
 job-items =

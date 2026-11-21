@@ -304,6 +304,15 @@ permissions-group = Group:
 permissions-keep = mixed: leave empty to keep
 permissions-no-owners = FTP cannot change owners
 permissions-change = Change
+permissions-inside = Apply to everything inside
+permissions-scope-all = Files and folders
+permissions-scope-files = Files only
+permissions-scope-folders = Folders only
+permissions-x-folders = Execute only on folders
+permissions-x-folders-hint = Files get execute only if they have it already, so folders open without making every file runnable
+permissions-use-sudo = Change as root (sudo)
+permissions-use-sudo-hint = For files you don't own: asks for the sudo password if the server needs it
+permissions-no-sudo = Sudo cannot be used: { $reason }
 permissions-password-title = Sudo Password
 permissions-password-prompt = Password for sudo on { $server }:
 permissions-password-wrong = Sudo did not accept that password. Try again:
@@ -385,6 +394,7 @@ job-paused = Paused
 job-paused-copied = Paused: { $done } of { $total } copied
 job-preparing = Preparing...
 job-deleting = { $done } of { $total } deleted
+job-changing = { $done } of { $total } changed
 # Site to site: $subject is what is copied (a name, or "3 items"); $from and $to the
 # two servers, the left pane's first with an arrow showing the way: → or ←.
 job-relay-right =
@@ -431,6 +441,8 @@ summary-stopped = { $count } stopped
 ## A file or folder's line inside a transfer.
 
 item-deleted = Deleted
+item-changed = Changed
+item-not-changed = Not changed (link or not chosen)
 item-skipped = Skipped: the existing file was kept
 item-paused = Paused
 item-paused-slot = Paused: waiting for a free transfer slot
@@ -501,6 +513,7 @@ login-unfinished-what =
     { $kind ->
         [move] Move { $subject }
         [delete] Delete { $subject }
+        [permissions] Permissions { $subject }
        *[copy] Copy { $subject }
     }
 login-unfinished-saved-unknown = Unknown (saved by an older version)
@@ -711,6 +724,8 @@ job-title =
         [copy-other-server] Copy { $what } to { $dest } on the other server
         [move-other-server] Move { $what } to { $dest } on the other server
         [delete-here] Delete { $what } from this computer
+        [permissions-here] Change permissions of { $what } on this computer
+        [permissions-on-server] Change permissions of { $what } on the server
        *[delete-on-server] Delete { $what } from the server
     }
 job-items =

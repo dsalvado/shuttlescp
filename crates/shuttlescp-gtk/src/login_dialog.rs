@@ -679,6 +679,8 @@ impl LoginDialog {
                     JobKind::Copy => "copy",
                     JobKind::Move => "move",
                     JobKind::Delete => "delete",
+                    // Never saved, so never listed here.
+                    JobKind::Permissions => "permissions",
                 };
                 tr!(
                     "login-unfinished-what",

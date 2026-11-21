@@ -238,6 +238,15 @@ permissions-group = Grupo:
 permissions-keep = mixto: dejar vacío para conservar
 permissions-no-owners = FTP no puede cambiar propietarios
 permissions-change = Cambiar
+permissions-inside = Aplicar a todo el contenido
+permissions-scope-all = Archivos y carpetas
+permissions-scope-files = Solo archivos
+permissions-scope-folders = Solo carpetas
+permissions-x-folders = Ejecución solo en carpetas
+permissions-x-folders-hint = Los archivos solo reciben ejecución si ya la tienen: las carpetas se abren sin hacer ejecutable cada archivo
+permissions-use-sudo = Cambiar como root (sudo)
+permissions-use-sudo-hint = Para archivos que no son suyos: pide la contraseña de sudo si el servidor la necesita
+permissions-no-sudo = No se puede usar sudo: { $reason }
 permissions-password-title = Contraseña de sudo
 permissions-password-prompt = Contraseña de sudo en { $server }:
 permissions-password-wrong = sudo no aceptó esa contraseña. Inténtelo de nuevo:
@@ -304,6 +313,7 @@ job-paused = En pausa
 job-paused-copied = En pausa: { $done } de { $total } copiados
 job-preparing = Preparando...
 job-deleting = { $done } de { $total } eliminados
+job-changing = { $done } de { $total } cambiados
 job-relay-right =
     { $kind ->
         [move] Mover { $subject }: { $from } → { $to }
@@ -341,6 +351,8 @@ summary-skipped = { $count } omitidos
 summary-stopped = { $count } detenidos
 
 item-deleted = Eliminado
+item-changed = Cambiado
+item-not-changed = Sin cambiar (enlace o no elegido)
 item-skipped = Omitido: se conservó el archivo existente
 item-paused = En pausa
 item-paused-slot = En pausa: esperando un hueco de transferencia libre
@@ -396,6 +408,7 @@ login-unfinished-what =
     { $kind ->
         [move] Mover { $subject }
         [delete] Eliminar { $subject }
+        [permissions] Permisos { $subject }
        *[copy] Copiar { $subject }
     }
 login-unfinished-saved-unknown = Desconocido (guardado por una versión anterior)
@@ -578,6 +591,8 @@ job-title =
         [copy-other-server] Copiar { $what } a { $dest } en el otro servidor
         [move-other-server] Mover { $what } a { $dest } en el otro servidor
         [delete-here] Eliminar { $what } de este equipo
+        [permissions-here] Cambiar los permisos de { $what } en este equipo
+        [permissions-on-server] Cambiar los permisos de { $what } en el servidor
        *[delete-on-server] Eliminar { $what } del servidor
     }
 job-items =

@@ -12,7 +12,7 @@ use relm4::gtk::glib;
 use relm4::gtk::prelude::*;
 use secrecy::SecretString;
 
-use shuttlescp_core::permissions::PermissionEdit;
+use shuttlescp_core::permissions::{PermissionEdit, Scope};
 use shuttlescp_core::tr;
 
 use crate::dialog::{self, ButtonKind, Dialog};
@@ -28,6 +28,29 @@ pub struct Item {
     pub owner: Option<String>,
     /// Its group, if known.
     pub group: Option<String>,
+    /// It is a folder (then the dialog offers to change what is inside too).
+    pub is_dir: bool,
+}
+
+/// What the dialog may offer, besides the permissions.
+#[derive(Debug, Clone, Copy)]
+pub struct Offers {
+    /// Owner and group can be changed (not over FTP).
+    pub owners: bool,
+    /// Sudo can be used (SSH servers).
+    pub sudo: bool,
+}
+
+/// The dialog's answer.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    /// What to change.
+    pub edit: PermissionEdit,
+    /// Change everything inside the folders too: which items, and whether execute goes
+    /// only on folders (and files that have it already).
+    pub inside: Option<(Scope, bool)>,
+    /// Make the changes as root, through sudo.
+    pub sudo: bool,
 }
 
 /// The rwx boxes, row by row (owner, group, others), with the bit each one stands for.
@@ -39,20 +62,21 @@ const RWX: [[u32; 3]; 3] = [
 /// Setuid, setgid and sticky.
 const SPECIAL: [u32; 3] = [0o4000, 0o2000, 0o1000];
 
-/// Ask how to change `items`. `on_answer` gets the edit, or `None` for Cancel.
+/// Ask how to change `items`. `on_answer` gets the answer, or `None` for Cancel.
 ///
 /// # Arguments
 ///
 /// * `parent` - Window the dialog belongs to
 /// * `items` - What is being changed (at least one)
-/// * `owners` - Whether owner and group can be changed here (not over FTP)
+/// * `offers` - What else can be changed, and how
 /// * `on_answer` - Receives the answer, exactly once
 pub fn ask(
     parent: &gtk::Window,
     items: &[Item],
-    owners: bool,
-    on_answer: impl FnOnce(Option<PermissionEdit>) + 'static,
+    offers: Offers,
+    on_answer: impl FnOnce(Option<Answer>) + 'static,
 ) {
+    let owners = offers.owners;
     let dialog = Dialog::new(parent, &tr!("permissions-title"));
     let heading = match items {
         [item] => item.name.clone(),
@@ -207,9 +231,39 @@ pub fn ask(
     }
     dialog.content.append(&owner_grid);
 
+    // Folders: also everything inside them, as one job.
+    let inside = gtk::CheckButton::with_label(&tr!("permissions-inside"));
+    let scope = gtk::DropDown::from_strings(&[
+        &tr!("permissions-scope-all"),
+        &tr!("permissions-scope-files"),
+        &tr!("permissions-scope-folders"),
+    ]);
+    let execute_on_folders = gtk::CheckButton::with_label(&tr!("permissions-x-folders"));
+    execute_on_folders.set_active(true);
+    execute_on_folders.set_tooltip_text(Some(&tr!("permissions-x-folders-hint")));
+    let inside_options = gtk::Box::new(gtk::Orientation::Horizontal, dialog::SPACING * 2);
+    inside_options.set_margin_start(dialog::SPACING * 4);
+    inside_options.append(&scope);
+    inside_options.append(&execute_on_folders);
+    inside_options.set_sensitive(false);
+    {
+        let options = inside_options.clone();
+        inside.connect_toggled(move |inside| options.set_sensitive(inside.is_active()));
+    }
+    if items.iter().any(|item| item.is_dir) {
+        inside.set_margin_top(dialog::SPACING);
+        dialog.content.append(&inside);
+        dialog.content.append(&inside_options);
+    }
+    let sudo = gtk::CheckButton::with_label(&tr!("permissions-use-sudo"));
+    sudo.set_tooltip_text(Some(&tr!("permissions-use-sudo-hint")));
+    if offers.sudo {
+        dialog.content.append(&sudo);
+    }
+
     // Set by Change, handed over when the window closes, so `on_answer` runs once
     // however the dialog is dismissed.
-    let answer: Rc<RefCell<Option<PermissionEdit>>> = Rc::default();
+    let answer: Rc<RefCell<Option<Answer>>> = Rc::default();
     dialog.add_close_button(&tr!("dialog-cancel"));
     let change = {
         let (answer, checks, window) = (
@@ -218,6 +272,12 @@ pub fn ask(
             dialog.window.clone(),
         );
         let (owner, group) = (fields[0].clone(), fields[1].clone());
+        let (inside, scope, execute_on_folders, sudo) = (
+            inside.clone(),
+            scope.clone(),
+            execute_on_folders.clone(),
+            sudo.clone(),
+        );
         dialog.add_button(
             &tr!("permissions-change"),
             ButtonKind::Suggested,
@@ -235,7 +295,17 @@ pub fn ask(
                 }
                 edit.owner = changed_name(&owner.text(), common_owner.as_deref());
                 edit.group = changed_name(&group.text(), common_group.as_deref());
-                *answer.borrow_mut() = Some(edit);
+                let chosen_scope = match scope.selected() {
+                    1 => Scope::Files,
+                    2 => Scope::Folders,
+                    _ => Scope::All,
+                };
+                *answer.borrow_mut() = Some(Answer {
+                    edit,
+                    inside: (inside.is_active() && inside.parent().is_some())
+                        .then(|| (chosen_scope, execute_on_folders.is_active())),
+                    sudo: sudo.is_active() && sudo.parent().is_some(),
+                });
                 window.close();
             },
         )

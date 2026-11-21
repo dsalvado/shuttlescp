@@ -605,6 +605,19 @@ impl Remote {
         result
     }
 
+    /// Check that sudo works on the server as `run_as` says (without a password, or
+    /// with the one given), changing nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns what sudo answered: [`CommandError::NeedsPassword`] means ask for one
+    pub async fn check_sudo(&self, run_as: &RunAs) -> Result<(), CommandError> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.check_sudo(run_as).await,
+            Backend::Ftp(_) => Err(CommandError::NoShell),
+        }
+    }
+
     /// Whether this site can change owners at all (SFTP yes, FTP no).
     pub fn can_set_owner(&self) -> bool {
         matches!(self.0.backend, Backend::Sftp(_))

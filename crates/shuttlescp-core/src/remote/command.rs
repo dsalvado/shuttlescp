@@ -119,6 +119,16 @@ pub(crate) fn command_line(change: &Change, path: &str, run_as: &RunAs) -> Optio
     Some(format!("LC_ALL=C {sudo}{action} && echo {DONE_MARKER}"))
 }
 
+/// The command that only checks that sudo works (with that password, or without one),
+/// changing nothing: run before a long job, so it does not fail item after item.
+pub(crate) fn sudo_check_line(run_as: &RunAs) -> String {
+    let sudo = match run_as {
+        RunAs::Sudo { password: Some(_) } => "sudo -S -p '' -- ",
+        RunAs::User | RunAs::Sudo { password: None } => "sudo -n -- ",
+    };
+    format!("LC_ALL=C {sudo}true && echo {DONE_MARKER}")
+}
+
 /// What a command's output says happened.
 ///
 /// # Arguments

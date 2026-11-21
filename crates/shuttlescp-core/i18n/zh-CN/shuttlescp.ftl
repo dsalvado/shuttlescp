@@ -217,6 +217,15 @@ permissions-group = 组：
 permissions-keep = 混合：留空则保持不变
 permissions-no-owners = FTP 无法更改所有者
 permissions-change = 更改
+permissions-inside = 应用于其中的所有内容
+permissions-scope-all = 文件和文件夹
+permissions-scope-files = 仅文件
+permissions-scope-folders = 仅文件夹
+permissions-x-folders = 仅对文件夹设置执行
+permissions-x-folders-hint = 文件只有在已具有执行权限时才会获得执行权限：文件夹可以打开，而不会让每个文件都可执行
+permissions-use-sudo = 以 root 身份更改（sudo）
+permissions-use-sudo-hint = 适用于不属于您的文件：如服务器需要，会询问 sudo 密码
+permissions-no-sudo = 无法使用 sudo：{ $reason }
 permissions-password-title = sudo 密码
 permissions-password-prompt = { $server } 上的 sudo 密码：
 permissions-password-wrong = sudo 未接受该密码。请重试：
@@ -276,6 +285,7 @@ job-paused = 已暂停
 job-paused-copied = 已暂停：已复制 { $done }/{ $total }
 job-preparing = 正在准备……
 job-deleting = 已删除 { $done }/{ $total }
+job-changing = 已更改 { $done }/{ $total }
 job-relay-right =
     { $kind ->
         [move] 移动 { $subject }：{ $from } → { $to }
@@ -305,6 +315,8 @@ summary-skipped = { $count } 个已跳过
 summary-stopped = { $count } 个已停止
 
 item-deleted = 已删除
+item-changed = 已更改
+item-not-changed = 未更改（链接或未选中）
 item-skipped = 已跳过：保留了现有文件
 item-paused = 已暂停
 item-paused-slot = 已暂停：正在等待空闲的传输位置
@@ -360,6 +372,7 @@ login-unfinished-what =
     { $kind ->
         [move] 移动 { $subject }
         [delete] 删除 { $subject }
+        [permissions] 权限 { $subject }
        *[copy] 复制 { $subject }
     }
 login-unfinished-saved-unknown = 未知（由旧版本保存）
@@ -520,6 +533,8 @@ job-title =
         [copy-other-server] 复制 { $what } 到另一台服务器的 { $dest }
         [move-other-server] 移动 { $what } 到另一台服务器的 { $dest }
         [delete-here] 从本机删除 { $what }
+        [permissions-here] 更改此计算机上 { $what } 的权限
+        [permissions-on-server] 更改服务器上 { $what } 的权限
        *[delete-on-server] 从服务器删除 { $what }
     }
 job-items = { $count } 项

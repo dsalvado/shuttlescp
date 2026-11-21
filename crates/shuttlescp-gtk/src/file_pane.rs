@@ -21,13 +21,16 @@ use relm4::prelude::*;
 use relm4::typed_view::OrdFn;
 use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 
+use secrecy::SecretString;
 use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::entry::{EntryKind, FileEntry};
 use shuttlescp_core::format::{format_modified, format_owner, format_rights, format_size};
 use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::local_fs;
 use shuttlescp_core::path::SidePath;
-use shuttlescp_core::permissions::{self, ApplyError, PermissionEdit};
+use shuttlescp_core::permissions::{
+    self, ApplyError, PermissionEdit, PermissionsJob, SudoPassword,
+};
 use shuttlescp_core::remote::{CommandError, Remote, RunAs};
 use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
@@ -179,6 +182,18 @@ pub enum FilePaneMsg {
     InUse(Vec<SidePath>),
     /// Open the Permissions dialog for the selected items.
     Permissions,
+    /// The Permissions dialog's answer for these items (each with its permissions now).
+    PermissionsAnswered {
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+    },
+    /// Check that sudo works (with this password, or without one), then go on with
+    /// the answer.
+    CheckSudo {
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        password: Option<SecretString>,
+    },
     /// Change these items' permissions and owner (each with its permissions now).
     ApplyPermissions {
         /// The items, each with its permission bits now, if known.
@@ -270,6 +285,13 @@ pub enum FilePaneOutput {
         /// The folder of this pane they go into.
         dest_dir: SidePath,
     },
+    /// Change these items' permissions and everything inside them, as a job.
+    PermissionsJob {
+        /// The selected files and folders.
+        paths: Vec<SidePath>,
+        /// What to change.
+        change: PermissionsJob,
+    },
 }
 
 /// Results of background work, delivered back to the UI thread.
@@ -283,6 +305,13 @@ pub enum PaneCommand {
     Drives(Vec<Disk>),
     /// Permissions were changed (or not): see what to do next.
     Permissions(PermissionsDone),
+    /// Sudo was checked before changing permissions through it.
+    SudoChecked {
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        password: Option<SecretString>,
+        result: Result<(), CommandError>,
+    },
 }
 
 /// Result of a background directory listing.
@@ -596,6 +625,7 @@ impl FilePane {
                 mode: entry.mode(),
                 owner: entry.owner().map(str::to_owned),
                 group: entry.group().map(str::to_owned),
+                is_dir: entry.kind() == EntryKind::Directory,
             })
             .collect();
         // Local files: yes. Servers: SFTP, not FTP.
@@ -604,16 +634,87 @@ impl FilePane {
             .into_iter()
             .map(|(path, entry)| (path, entry.mode()))
             .collect();
+        let offers = permissions_dialog::Offers {
+            owners,
+            // Commands run on SSH servers only.
+            sudo: self.remote.as_ref().is_some_and(Remote::can_set_owner),
+        };
         let sender = sender.clone();
-        permissions_dialog::ask(&window, &shown, owners, move |edit| {
-            if let Some(edit) = edit {
-                sender.input(FilePaneMsg::ApplyPermissions {
-                    items,
-                    edit,
-                    run_as: RunAs::User,
-                });
+        permissions_dialog::ask(&window, &shown, offers, move |answer| {
+            if let Some(answer) = answer {
+                sender.input(FilePaneMsg::PermissionsAnswered { items, answer });
             }
         });
+    }
+
+    /// Carry out the dialog's answer, sudo already checked if it is wanted: one job for
+    /// folders with everything inside them, otherwise each item at once.
+    fn change_permissions(
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        sudo: Option<SudoPassword>,
+        sender: &ComponentSender<Self>,
+    ) {
+        match answer.inside {
+            Some((scope, execute_only_on_folders)) => {
+                let _ = sender.output(FilePaneOutput::PermissionsJob {
+                    paths: items.into_iter().map(|(path, _)| path).collect(),
+                    change: PermissionsJob {
+                        edit: answer.edit,
+                        scope,
+                        execute_only_on_folders,
+                        sudo,
+                    },
+                });
+            }
+            None => sender.input(FilePaneMsg::ApplyPermissions {
+                items,
+                edit: answer.edit,
+                run_as: sudo.as_ref().map_or(RunAs::User, SudoPassword::run_as),
+            }),
+        }
+    }
+
+    /// Sudo was checked: go on, or ask for its password, or say why not.
+    fn sudo_checked(
+        &mut self,
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        password: Option<SecretString>,
+        result: Result<(), CommandError>,
+        root: &gtk::Box,
+        sender: &ComponentSender<Self>,
+    ) {
+        match result {
+            Ok(()) => {
+                Self::change_permissions(items, answer, Some(SudoPassword::new(password)), sender);
+            }
+            Err(error @ (CommandError::NeedsPassword | CommandError::WrongPassword)) => {
+                let Some(window) = root.root().and_downcast::<gtk::Window>() else {
+                    return;
+                };
+                let server = self
+                    .remote
+                    .as_ref()
+                    .map(|remote| remote.host().to_owned())
+                    .unwrap_or_default();
+                let again = error == CommandError::WrongPassword;
+                let sender = sender.clone();
+                permissions_dialog::ask_sudo_password(&window, &server, again, move |password| {
+                    if let Some(password) = password {
+                        sender.input(FilePaneMsg::CheckSudo {
+                            items,
+                            answer,
+                            password: Some(password),
+                        });
+                    }
+                });
+            }
+            Err(error) => {
+                tracing::warn!("sudo cannot be used: {error}");
+                self.status = tr!("permissions-no-sudo", reason = error.to_string());
+            }
+        }
     }
 
     /// After a change: report it, or offer sudo, or ask for sudo's password, as the
@@ -1384,6 +1485,37 @@ impl Component for FilePane {
                 });
             }
             FilePaneMsg::Permissions => self.ask_permissions(root, &sender),
+            FilePaneMsg::PermissionsAnswered { items, answer } if answer.sudo => {
+                sender.input(FilePaneMsg::CheckSudo {
+                    items,
+                    answer,
+                    password: None,
+                });
+            }
+            FilePaneMsg::PermissionsAnswered { items, answer } => {
+                Self::change_permissions(items, answer, None, &sender);
+            }
+            FilePaneMsg::CheckSudo {
+                items,
+                answer,
+                password,
+            } => {
+                let Some(remote) = self.remote.clone() else {
+                    return;
+                };
+                sender.oneshot_command(async move {
+                    let run_as = RunAs::Sudo {
+                        password: password.clone(),
+                    };
+                    let result = remote.check_sudo(&run_as).await;
+                    PaneCommand::SudoChecked {
+                        items,
+                        answer,
+                        password,
+                        result,
+                    }
+                });
+            }
             FilePaneMsg::ApplyPermissions {
                 items,
                 edit,
@@ -1450,6 +1582,15 @@ impl Component for FilePane {
             }
             PaneCommand::Permissions(done) => {
                 self.permissions_done(done, root, &sender);
+                return;
+            }
+            PaneCommand::SudoChecked {
+                items,
+                answer,
+                password,
+                result,
+            } => {
+                self.sudo_checked(items, answer, password, result, root, &sender);
                 return;
             }
         };

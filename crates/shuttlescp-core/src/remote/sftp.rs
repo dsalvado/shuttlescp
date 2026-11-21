@@ -522,6 +522,18 @@ impl Sftp {
         let Some(line) = command::command_line(change, path.as_str(), run_as) else {
             return Ok(());
         };
+        self.run_line(line, run_as).await
+    }
+
+    /// Check that sudo works as `run_as` says, changing nothing.
+    pub(super) async fn check_sudo(&self, run_as: &RunAs) -> Result<(), CommandError> {
+        self.run_line(command::sudo_check_line(run_as), run_as)
+            .await
+    }
+
+    /// Run a command line made by [`command`], giving it the sudo password if there is
+    /// one, and read what happened.
+    async fn run_line(&self, line: String, run_as: &RunAs) -> Result<(), CommandError> {
         let password = match run_as {
             RunAs::Sudo {
                 password: Some(password),

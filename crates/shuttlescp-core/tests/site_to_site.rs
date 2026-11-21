@@ -126,7 +126,8 @@ async fn run_job(job: Job, remote: &Remote, dest: Option<&Remote>) -> (JobSummar
 /// A job; copies and moves from one server to another are site to site.
 fn job(kind: JobKind, side: Side, sources: Vec<SidePath>, dest_dir: SidePath) -> Job {
     Job {
-        between_servers: kind != JobKind::Delete
+        permissions: None,
+        between_servers: !kind.in_place()
             && side == Side::Remote
             && dest_dir.side() == Side::Remote,
         left_server: false,
@@ -1284,4 +1285,51 @@ async fn commands_need_an_account_with_a_shell() {
             .await;
         assert_eq!(result, Err(CommandError::NoShell), "{var}");
     }
+}
+
+/// A permissions job on a folder of root's: as the user every item is refused; with
+/// sudo and its password everything inside changes, and the log of each item holds no
+/// password. Uses the script's `/config/sudo` on the shell server.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_permissions_job_uses_sudo_for_a_whole_folder() {
+    use shuttlescp_core::permissions::{PermissionEdit, PermissionsJob, Scope, SudoPassword};
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let folder = RemotePath::new("/config/sudo");
+    let chmod = |sudo: Option<SudoPassword>| {
+        let mut job = job(
+            JobKind::Permissions,
+            Side::Remote,
+            vec![SidePath::Remote(folder.clone())],
+            SidePath::Remote(folder.clone()),
+        );
+        // Files only: exactly rw-r-----.
+        job.permissions = Some(PermissionsJob {
+            edit: PermissionEdit {
+                set: 0o640,
+                clear: 0o137,
+                ..PermissionEdit::default()
+            },
+            scope: Scope::Files,
+            execute_only_on_folders: false,
+            sudo,
+        });
+        job
+    };
+
+    let (as_user, _) = run_job(chmod(None), &remote, None).await;
+    let password = SudoPassword::new(Some(SecretString::from(server.password.clone())));
+    let (as_root, errors) = run_job(chmod(Some(password)), &remote, None).await;
+
+    assert!(as_user.failed > 0, "{as_user:?}");
+    assert_eq!(as_root.failed, 0, "{errors:?}");
+    let file = remote
+        .list_dir(&folder)
+        .await
+        .expect("list")
+        .into_iter()
+        .find(|entry| entry.name() == "root-file")
+        .expect("root-file");
+    assert_eq!(file.mode(), Some(0o640));
 }

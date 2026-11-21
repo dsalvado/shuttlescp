@@ -235,7 +235,7 @@ pub fn run(
             "permissions-one",
             Box::new(|window| {
                 let item = permissions_item("deploy.sh", 0o755, "alex", "www-data");
-                crate::permissions_dialog::ask(window, &[item], true, |_| {});
+                crate::permissions_dialog::ask(window, &[item], SERVER_OFFERS, |_| {});
             }),
         ),
         (
@@ -246,7 +246,7 @@ pub fn run(
                     permissions_item("index.html", 0o644, "alex", "www-data"),
                     permissions_item("uploads", 0o2775, "www-data", "www-data"),
                 ];
-                crate::permissions_dialog::ask(window, &items, true, |_| {});
+                crate::permissions_dialog::ask(window, &items, SERVER_OFFERS, |_| {});
             }),
         ),
         (
@@ -572,5 +572,13 @@ fn permissions_item(
         mode: Some(mode),
         owner: Some(owner.to_owned()),
         group: Some(group.to_owned()),
+        // Names without a dot are folders here.
+        is_dir: !name.contains('.'),
     }
 }
+
+/// What the Permissions dialog offers for an SSH server.
+const SERVER_OFFERS: crate::permissions_dialog::Offers = crate::permissions_dialog::Offers {
+    owners: true,
+    sudo: true,
+};

@@ -43,6 +43,7 @@ fn remote(path: &str) -> SidePath {
 /// A job whose sources and destination are all local folders, as the engine tests run.
 fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
     Job {
+        permissions: None,
         kind,
         side: Side::Local,
         sources: sources.into_iter().map(SidePath::Local).collect(),
@@ -589,6 +590,7 @@ async fn files_of_every_size_copy_whole() {
 #[test]
 fn site_to_site_jobs_go_to_the_server_and_say_so() {
     let job = Job {
+        permissions: None,
         kind: JobKind::Copy,
         side: Side::Remote,
         sources: vec![remote("/srv/a/report.pdf")],
@@ -623,6 +625,7 @@ fn site_to_site_jobs_go_to_the_server_and_say_so() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_site_to_site_job_without_its_destination_does_not_start() {
     let job = Job {
+        permissions: None,
         kind: JobKind::Copy,
         side: Side::Remote,
         sources: vec![remote("/srv/a/report.pdf")],
@@ -664,6 +667,7 @@ async fn giving_up_a_job_deletes_its_partial_files_only() {
 #[test]
 fn jobs_writing_the_same_files_conflict() {
     let upload = |sources: &[&str], dest: &str| Job {
+        permissions: None,
         kind: JobKind::Copy,
         side: Side::Local,
         sources: sources
@@ -869,6 +873,7 @@ fn job_titles_name_the_direction() {
     );
     assert_eq!(one.title(), "Upload report.pdf to /srv");
     let many = Job {
+        permissions: None,
         kind: JobKind::Delete,
         side: Side::Remote,
         sources: vec![remote("/a"), remote("/b")],
@@ -1247,6 +1252,8 @@ async fn a_copy_that_differs_from_its_source_is_reported_with_both_checksums() {
         modified: None,
         existing_is_dir: false,
         partial: 0,
+        mode: None,
+        is_link: false,
     };
 
     // Act
@@ -1374,4 +1381,67 @@ where
         results.push(handle.await.expect("task"));
     }
     results
+}
+
+/// A permissions job on a folder: everything inside changes (files keep from becoming
+/// runnable with "execute only on folders"), a link inside is left alone along with
+/// what it points to, and the job does not get saved to resume.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_permissions_job_changes_a_whole_folder_but_not_links() {
+    use crate::permissions::{PermissionEdit, PermissionsJob, Scope};
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o7777
+    };
+    let set = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    };
+    // Arrange: site/ with a file, a script, a subfolder, and a link to a file outside.
+    let temp = tempfile::tempdir().expect("temp dir");
+    let site = temp.path().join("site");
+    std::fs::create_dir_all(site.join("sub")).expect("folders");
+    for (name, start) in [
+        ("page.html", 0o600),
+        ("run.sh", 0o700),
+        ("sub/more.html", 0o600),
+    ] {
+        std::fs::write(site.join(name), b"x").expect("write");
+        set(&site.join(name), start);
+    }
+    set(&site, 0o700);
+    set(&site.join("sub"), 0o700);
+    let outside = temp.path().join("outside.txt");
+    std::fs::write(&outside, b"x").expect("write");
+    set(&outside, 0o600);
+    std::os::unix::fs::symlink(&outside, site.join("link")).expect("symlink");
+    // "Everyone may read, and open folders": a+rX.
+    let mut chmod = job(JobKind::Permissions, vec![site.clone()], temp.path());
+    chmod.permissions = Some(PermissionsJob {
+        edit: PermissionEdit {
+            set: 0o555,
+            clear: 0,
+            ..PermissionEdit::default()
+        },
+        scope: Scope::All,
+        execute_only_on_folders: true,
+        sudo: None,
+    });
+    assert!(!chmod.resumable());
+
+    // Act
+    let (summary, _) = run_local(chmod).await;
+
+    // Assert: 5 changed (site, sub, three files), the link skipped.
+    assert_eq!((summary.done, summary.skipped, summary.failed), (5, 1, 0));
+    assert_eq!(mode(&site), 0o755);
+    assert_eq!(mode(&site.join("sub")), 0o755);
+    assert_eq!(mode(&site.join("page.html")), 0o644);
+    assert_eq!(mode(&site.join("sub/more.html")), 0o644);
+    assert_eq!(mode(&site.join("run.sh")), 0o755);
+    assert_eq!(mode(&outside), 0o600, "the link's target changed");
 }

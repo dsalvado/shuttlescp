@@ -257,6 +257,16 @@ pub enum AppMsg {
         /// The selected items.
         paths: Vec<SidePath>,
     },
+    /// A file pane asks to change permissions of folders and everything inside them.
+    PermissionsJob {
+        session: SessionId,
+        /// The pane's side.
+        side: Side,
+        /// The selected items.
+        paths: Vec<SidePath>,
+        /// What to change.
+        change: shuttlescp_core::permissions::PermissionsJob,
+    },
     /// Items were dropped on a file pane and the user chose to copy or move them.
     PaneDrop {
         session: SessionId,
@@ -1143,6 +1153,33 @@ impl SimpleComponent for App {
             } => {
                 self.request_job(session, side, kind, paths, &sender);
             }
+            AppMsg::PermissionsJob {
+                session,
+                side,
+                paths,
+                change,
+            } => {
+                let Some(dir) = self
+                    .session(session)
+                    .and_then(|current| current.pane_dir(side))
+                else {
+                    return;
+                };
+                let job = Job {
+                    kind: JobKind::Permissions,
+                    side,
+                    sources: paths,
+                    // Unused: the job changes the items where they are.
+                    dest_dir: dir,
+                    same_side: false,
+                    between_servers: false,
+                    left_server: false,
+                    resume: false,
+                    verify: Verify::default(),
+                    permissions: Some(change),
+                };
+                self.start_job(session, job);
+            }
             AppMsg::PaneDrop {
                 session,
                 side,
@@ -1156,6 +1193,7 @@ impl SimpleComponent for App {
                 self.start_job(
                     session,
                     Job {
+                        permissions: None,
                         kind,
                         side: source_side,
                         sources: paths,
@@ -1754,6 +1792,7 @@ impl App {
             return;
         };
         let job = Job {
+            permissions: None,
             kind,
             side,
             sources: paths,

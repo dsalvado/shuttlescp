@@ -939,7 +939,7 @@ impl TransferPanel {
         // Record jobs that use the server, so they can be resumed if interrupted (site to
         // site, with both sites). A new job replaces earlier interrupted records over the
         // same files.
-        let pending_key = match (&self.connection, job.uses_server()) {
+        let pending_key = match (&self.connection, job.uses_server() && job.resumable()) {
             (_, _) if blocked_by.is_some() => pending_key,
             (Some(connection), true) => {
                 if pending_key.is_none() {
@@ -1185,7 +1185,7 @@ impl TransferPanel {
             let Some(job) = shared.jobs.get_mut(&id) else {
                 return;
             };
-            if job.job.kind == JobKind::Delete {
+            if job.job.kind.in_place() {
                 return;
             }
             let new = match event {
@@ -1805,7 +1805,7 @@ impl TransferPanel {
             // By pane: site to site, both panes hold server paths.
             let mut in_use = (Vec::new(), Vec::new());
             for job in shared.jobs.values().filter(|job| job.is_running()) {
-                let pane = if job.job.kind == JobKind::Delete {
+                let pane = if job.job.kind.in_place() {
                     job.job.source_pane()
                 } else {
                     job.job.dest_pane()
@@ -2250,11 +2250,13 @@ fn copy_progress(job: &JobState, now: Instant) -> String {
 
 /// A job's header line.
 fn job_row(job: &JobState, now: Instant) -> RowView {
-    let deleting = job.job.kind == JobKind::Delete;
+    // Deletes and permissions jobs count items, not bytes.
+    let deleting = job.job.kind.in_place();
     let icon = match (job.job.kind, job.job.side) {
         // Site to site: through this computer.
         _ if job.route.is_some() => "computer-symbolic",
         (JobKind::Delete, _) => "user-trash-symbolic",
+        (JobKind::Permissions, _) => "document-properties-symbolic",
         _ if job.job.same_side => "go-next-symbolic",
         (_, Side::Local) => "go-up-symbolic",
         (_, Side::Remote) => "go-down-symbolic",
@@ -2277,6 +2279,15 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             None,
         ),
         None if !job.planned => (tr!("job-preparing"), false, None),
+        None if job.job.kind == JobKind::Permissions => (
+            tr!(
+                "job-changing",
+                done = job.finished_items,
+                total = job.items.len()
+            ),
+            false,
+            None,
+        ),
         None if deleting => (
             tr!(
                 "job-deleting",
@@ -2454,7 +2465,9 @@ fn summary_text(job: &JobState, summary: &JobSummary) -> (String, bool, Option<&
 
 /// A file or folder line.
 fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
-    let deleting = job.job.kind == JobKind::Delete;
+    let changing = job.job.kind == JobKind::Permissions;
+    // Deletes and permissions jobs: no bytes to show.
+    let deleting = job.job.kind.in_place();
     // Copied, but not checked for its size: it can be checked now.
     let verify_now = item.outcome == Some(ItemOutcome::Done)
         && item.verification == Some(Verification::LargeFile);
@@ -2475,7 +2488,12 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             };
             (info, false, None)
         }
+        Some(ItemOutcome::Done) if changing => (tr!("item-changed"), false, Some(DONE_ICON)),
         Some(ItemOutcome::Done) if deleting => (tr!("item-deleted"), false, Some(DONE_ICON)),
+        // A symbolic link, or outside the job's scope.
+        Some(ItemOutcome::Skipped) if changing => {
+            (tr!("item-not-changed"), false, Some(STOPPED_ICON))
+        }
         Some(ItemOutcome::Done) => {
             let size = format_size(item.size);
             let info = match &item.verification {
@@ -2494,7 +2512,7 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             (tr!("item-paused"), false, Some(PAUSED_ICON))
         }
         Some(ItemOutcome::Cancelled) => (tr!("item-cancelled"), false, Some(STOPPED_ICON)),
-        Some(ItemOutcome::Stopped) if deleting => {
+        Some(ItemOutcome::Stopped) if deleting && !changing => {
             (tr!("item-stopped-delete"), false, Some(STOPPED_ICON))
         }
         Some(ItemOutcome::Stopped) => (tr!("item-stopped"), false, Some(STOPPED_ICON)),
@@ -2842,6 +2860,7 @@ mod tests {
             site_id: String::from("site"),
             left_site_id: None,
             job: Job {
+                permissions: None,
                 kind: JobKind::Copy,
                 side: Side::Local,
                 sources: vec![SidePath::Local(PathBuf::from("/data/a"))],

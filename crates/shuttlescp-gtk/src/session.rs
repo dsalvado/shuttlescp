@@ -27,7 +27,7 @@ use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteVerify};
-use shuttlescp_core::transfer::{FilePlaces, Job, JobKind, Side, Verify};
+use shuttlescp_core::transfer::{FilePlaces, Job, Side, Verify};
 
 use crate::app::{App, AppMsg, not_connected};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
@@ -827,7 +827,7 @@ impl TransferTabs {
 fn site_to_site_job(mut job: Job) -> Job {
     job.left_server = job.side == Side::Local;
     job.side = Side::Remote;
-    job.between_servers = !job.same_side && job.kind != JobKind::Delete;
+    job.between_servers = !job.same_side && !job.kind.in_place();
     job
 }
 
@@ -864,6 +864,12 @@ fn pane_message(session: SessionId, side: Side, output: FilePaneOutput) -> AppMs
             side,
             kind,
             paths,
+        },
+        FilePaneOutput::PermissionsJob { paths, change } => AppMsg::PermissionsJob {
+            session,
+            side,
+            paths,
+            change,
         },
         FilePaneOutput::Dropped {
             kind,
@@ -928,6 +934,7 @@ fn titled(name: &str, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shuttlescp_core::transfer::JobKind;
 
     #[test]
     fn titles_count_only_when_there_is_something() {
@@ -946,6 +953,7 @@ mod tests {
     /// A job as a pane makes it: `pane` holds the sources.
     fn pane_job(kind: JobKind, pane: Side, same_side: bool) -> Job {
         Job {
+            permissions: None,
             kind,
             side: pane,
             sources: vec![SidePath::Remote(RemotePath::new("/a/file"))],
