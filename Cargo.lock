@@ -3397,7 +3397,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shuttlescp"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "embed-resource",
  "file_icon_provider",
@@ -3417,7 +3417,7 @@ dependencies = [
 
 [[package]]
 name = "shuttlescp-core"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "argon2",
  "base64",
