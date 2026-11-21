@@ -18,7 +18,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use secrecy::SecretString;
 use shuttlescp_core::entry::EntryKind;
 use shuttlescp_core::path::{RemotePath, SidePath};
-use shuttlescp_core::remote::{ConnectError, Credentials, Remote, connect};
+use shuttlescp_core::remote::{
+    Change, CommandError, ConnectError, Credentials, Remote, RunAs, connect,
+};
 use shuttlescp_core::sites::{FtpOptions, Protocol, Site, SshAuth};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -124,7 +126,8 @@ async fn run_job(job: Job, remote: &Remote, dest: Option<&Remote>) -> (JobSummar
 /// A job; copies and moves from one server to another are site to site.
 fn job(kind: JobKind, side: Side, sources: Vec<SidePath>, dest_dir: SidePath) -> Job {
     Job {
-        between_servers: kind != JobKind::Delete
+        permissions: None,
+        between_servers: !kind.in_place()
             && side == Side::Remote
             && dest_dir.side() == Side::Remote,
         left_server: false,
@@ -394,6 +397,56 @@ async fn links_list_as_what_they_lead_to() {
             );
             assert_eq!(kind("real-file"), EntryKind::File, "{var}");
             assert_eq!(kind("to-file"), EntryKind::File, "{var}, listing {listing}");
+        }
+    }
+}
+
+/// Permissions and owner: listings show them, `set_mode` changes them, and `set_owner`
+/// with only the group keeps the owner (SFTP sends both, so the missing one must be
+/// read first, not sent as 0 = root). Uses the script's `links/own-file`, which the
+/// test user owns.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn permissions_are_listed_and_changed() {
+    for var in ["SHUTTLESCP_TEST_SFTP", "SHUTTLESCP_TEST_FTP"] {
+        let server = Server::from_env(var);
+        let remote = server.connect().await;
+        let dir = server.dir.join("links");
+        let file = dir.join("own-file");
+        let listed = || async {
+            remote
+                .list_dir(&dir)
+                .await
+                .expect("list")
+                .into_iter()
+                .find(|entry| entry.name() == "own-file")
+                .expect("own-file listed")
+        };
+        let before = listed().await;
+        let original = before
+            .mode()
+            .unwrap_or_else(|| panic!("{var}: no mode listed"));
+        assert!(before.owner().is_some(), "{var}: no owner listed");
+
+        remote.set_mode(&file, 0o640).await.expect("chmod");
+        assert_eq!(listed().await.mode(), Some(0o640), "{var}");
+        remote.set_mode(&file, original).await.expect("chmod back");
+
+        if remote.can_set_owner() {
+            // SFTP lists numbers; "changing" the group to its own needs no root.
+            let gid = before.group().and_then(|gid| gid.parse().ok());
+            remote.set_owner(&file, None, gid).await.expect("chgrp");
+            let after = listed().await;
+            assert_eq!(
+                (after.owner(), after.group()),
+                (before.owner(), before.group())
+            );
+        } else {
+            let error = remote
+                .set_owner(&file, Some(0), None)
+                .await
+                .expect_err("FTP");
+            assert!(error.contains("own-file"), "{error}");
         }
     }
 }
@@ -1157,4 +1210,126 @@ async fn a_file_held_back_by_the_limit_continues_from_its_partial_copy() {
         .expect("it was held back and continued");
     assert!(resumed_at > 0, "it started over");
     assert_eq!(std::fs::read(back.join(name)).expect("read"), pattern(SIZE));
+}
+
+/// Changing a file of root's: the user's own rights are refused, sudo without a
+/// password says one is needed, a wrong one is refused, the right one works, and owners
+/// can be given by name. Uses the script's `/config/sudo/root-file` on the shell server.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn sudo_changes_what_the_user_may_not() {
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let dir = RemotePath::new("/config/sudo");
+    let file = dir.join("root-file");
+    let listed = || async {
+        remote
+            .list_dir(&dir)
+            .await
+            .expect("list")
+            .into_iter()
+            .find(|entry| entry.name() == "root-file")
+            .expect("root-file listed")
+    };
+    let sudo = |password: Option<&str>| RunAs::Sudo {
+        password: password.map(SecretString::from),
+    };
+    let chmod = Change::Mode(0o600);
+
+    let as_user = remote.change_by_command(&file, &chmod, &RunAs::User).await;
+    assert!(
+        matches!(&as_user, Err(CommandError::Failed(reason)) if reason.contains("not permitted")),
+        "{as_user:?}"
+    );
+    assert_eq!(
+        remote.change_by_command(&file, &chmod, &sudo(None)).await,
+        Err(CommandError::NeedsPassword)
+    );
+    assert_eq!(
+        remote
+            .change_by_command(&file, &chmod, &sudo(Some("wrong")))
+            .await,
+        Err(CommandError::WrongPassword)
+    );
+
+    let right = sudo(Some(&server.password));
+    remote
+        .change_by_command(&file, &chmod, &right)
+        .await
+        .expect("sudo chmod");
+    assert_eq!(listed().await.mode(), Some(0o600));
+
+    // Owner by name; the SFTP listing then shows the test user's number.
+    let mine = Change::Owner {
+        owner: Some("test".to_owned()),
+        group: None,
+    };
+    remote
+        .change_by_command(&file, &mine, &right)
+        .await
+        .expect("sudo chown");
+    assert_ne!(listed().await.owner(), Some("0"), "still root's");
+}
+
+/// Accounts that may not run commands say so, rather than seeming to succeed: an
+/// SFTP-only account (whose server "runs" any command by starting SFTP), and FTP.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn commands_need_an_account_with_a_shell() {
+    for var in ["SHUTTLESCP_TEST_SFTP", "SHUTTLESCP_TEST_FTP"] {
+        let server = Server::from_env(var);
+        let remote = server.connect().await;
+        let file = server.dir.join("links/own-file");
+        let result = remote
+            .change_by_command(&file, &Change::Mode(0o644), &RunAs::User)
+            .await;
+        assert_eq!(result, Err(CommandError::NoShell), "{var}");
+    }
+}
+
+/// A permissions job on a folder of root's: as the user every item is refused; with
+/// sudo and its password everything inside changes, and the log of each item holds no
+/// password. Uses the script's `/config/sudo` on the shell server.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_permissions_job_uses_sudo_for_a_whole_folder() {
+    use shuttlescp_core::permissions::{PermissionEdit, PermissionsJob, Scope, SudoPassword};
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let folder = RemotePath::new("/config/sudo");
+    let chmod = |sudo: Option<SudoPassword>| {
+        let mut job = job(
+            JobKind::Permissions,
+            Side::Remote,
+            vec![SidePath::Remote(folder.clone())],
+            SidePath::Remote(folder.clone()),
+        );
+        // Files only: exactly rw-r-----.
+        job.permissions = Some(PermissionsJob {
+            edit: PermissionEdit {
+                set: 0o640,
+                clear: 0o137,
+                ..PermissionEdit::default()
+            },
+            scope: Scope::Files,
+            execute_only_on_folders: false,
+            sudo,
+        });
+        job
+    };
+
+    let (as_user, _) = run_job(chmod(None), &remote, None).await;
+    let password = SudoPassword::new(Some(SecretString::from(server.password.clone())));
+    let (as_root, errors) = run_job(chmod(Some(password)), &remote, None).await;
+
+    assert!(as_user.failed > 0, "{as_user:?}");
+    assert_eq!(as_root.failed, 0, "{errors:?}");
+    let file = remote
+        .list_dir(&folder)
+        .await
+        .expect("list")
+        .into_iter()
+        .find(|entry| entry.name() == "root-file")
+        .expect("root-file");
+    assert_eq!(file.mode(), Some(0o640));
 }

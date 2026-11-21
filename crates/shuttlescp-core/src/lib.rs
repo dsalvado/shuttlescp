@@ -31,6 +31,7 @@ pub mod log_reader;
 pub mod logging;
 pub mod path;
 pub mod pending;
+pub mod permissions;
 pub mod remote;
 pub mod secrets;
 pub mod session;

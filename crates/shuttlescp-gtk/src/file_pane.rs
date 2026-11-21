@@ -21,18 +21,24 @@ use relm4::prelude::*;
 use relm4::typed_view::OrdFn;
 use relm4::typed_view::column::{RelmColumn, TypedColumnView};
 
+use secrecy::SecretString;
 use shuttlescp_core::disks::{self, Disk};
 use shuttlescp_core::entry::{EntryKind, FileEntry};
-use shuttlescp_core::format::{format_modified, format_size};
+use shuttlescp_core::format::{format_modified, format_owner, format_rights, format_size};
 use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::local_fs;
 use shuttlescp_core::path::SidePath;
-use shuttlescp_core::remote::Remote;
+use shuttlescp_core::permissions::{
+    self, ApplyError, PermissionEdit, PermissionsJob, SudoPassword,
+};
+use shuttlescp_core::remote::{CommandError, Remote, RunAs};
 use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
+use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog::{self, Dialog};
 use crate::disk_picker::DiskPicker;
 use crate::name_dialog::{self, NamePrompt};
+use crate::permissions_dialog;
 use crate::tooltip::TooltipExt;
 use shuttlescp_core::tr;
 
@@ -103,7 +109,15 @@ const AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// The most it scrolls per step, in pixels (the further past the edge, the faster).
 const AUTOSCROLL_MAX_STEP: f64 = 40.0;
 
+/// The columns that can be hidden, by the name the settings keep them under, in order
+/// after Name (which always shows).
+const OPTIONAL_COLUMNS: [&str; 4] = ["size", "modified", "permissions", "owner"];
+/// Name of the column menu's actions: "columns.size" and so on.
+const COLUMNS_GROUP: &str = "columns";
+
 thread_local! {
+    // The columns hidden in every pane (see `set_hidden_columns`).
+    static HIDDEN_COLUMNS: RefCell<Vec<String>> = RefCell::default();
     // The list item of each cell, by the cell's address, so a point in the list can be
     // traced to its row (GTK does not say which row a widget shows).
     static CELL_ITEMS: RefCell<HashMap<usize, glib::WeakRef<gtk::ListItem>>> =
@@ -174,6 +188,44 @@ pub enum FilePaneMsg {
     /// These files and folders (and everything inside them) are used by running
     /// transfers: show them as busy until the next update.
     InUse(Vec<SidePath>),
+    /// The user showed or hid a column in this pane.
+    ColumnToggled,
+    /// Show the columns except these (the same in every pane).
+    ShowColumns(Vec<String>),
+    /// Open the Permissions dialog for the selected items.
+    Permissions,
+    /// The Permissions dialog's answer for these items (each with its permissions now).
+    PermissionsAnswered {
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+    },
+    /// Check that sudo works (with this password, or without one), then go on with
+    /// the answer.
+    CheckSudo {
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        password: Option<SecretString>,
+    },
+    /// Change these items' permissions and owner (each with its permissions now).
+    ApplyPermissions {
+        /// The items, each with its permission bits now, if known.
+        items: Vec<(SidePath, Option<u32>)>,
+        /// What to change.
+        edit: PermissionEdit,
+        /// As the user, or as root through sudo.
+        run_as: RunAs,
+    },
+}
+
+/// The outcome of changing permissions, item by item.
+#[derive(Debug)]
+pub struct PermissionsDone {
+    /// What was asked.
+    edit: PermissionEdit,
+    /// Each item, its permissions before, and what happened.
+    results: Vec<(SidePath, Option<u32>, Result<(), ApplyError>)>,
+    /// It ran through sudo.
+    sudo: bool,
 }
 
 /// Files and folders dropped on a pane.
@@ -245,6 +297,15 @@ pub enum FilePaneOutput {
         /// The folder of this pane they go into.
         dest_dir: SidePath,
     },
+    /// The user showed or hid a column: these are hidden now (for every pane).
+    ColumnsChanged(Vec<String>),
+    /// Change these items' permissions and everything inside them, as a job.
+    PermissionsJob {
+        /// The selected files and folders.
+        paths: Vec<SidePath>,
+        /// What to change.
+        change: PermissionsJob,
+    },
 }
 
 /// Results of background work, delivered back to the UI thread.
@@ -256,6 +317,15 @@ pub enum PaneCommand {
     Operation(Result<String, String>),
     /// The server's drives, for the drive drop-down.
     Drives(Vec<Disk>),
+    /// Permissions were changed (or not): see what to do next.
+    Permissions(PermissionsDone),
+    /// Sudo was checked before changing permissions through it.
+    SudoChecked {
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        password: Option<SecretString>,
+        result: Result<(), CommandError>,
+    },
 }
 
 /// Result of a background directory listing.
@@ -381,6 +451,8 @@ pub struct FilePane {
     context_menu: gtk::PopoverMenu,
     /// Menu shown after a drop: copy or move?
     drop_menu: gtk::PopoverMenu,
+    /// The columns that can be hidden, by name, each with its menu item's action.
+    optional_columns: Vec<(&'static str, gtk::ColumnViewColumn, gio::SimpleAction)>,
     /// The drop the drop menu is about.
     pending_drop: Option<PendingDrop>,
     /// The menu's actions, enabled to suit the selection before it opens.
@@ -413,6 +485,7 @@ struct PaneActions {
     move_: gio::SimpleAction,
     delete: gio::SimpleAction,
     rename: gio::SimpleAction,
+    permissions: gio::SimpleAction,
     /// The menu section holding the copy and move items, renamed after the other pane.
     transfer_section: gio::Menu,
 }
@@ -531,6 +604,239 @@ impl FilePane {
             .set_enabled(self.peer_available && selected > 0);
         self.actions.delete.set_enabled(selected > 0);
         self.actions.rename.set_enabled(selected == 1);
+        // Windows' own files have no Unix permissions.
+        let has_permissions = self.remote.is_some() || cfg!(unix);
+        self.actions
+            .permissions
+            .set_enabled(has_permissions && selected > 0);
+    }
+
+    /// The selected items with what their listing says about them.
+    fn selected_entries(&self) -> Vec<(SidePath, FileEntry)> {
+        let selection = &self.entries.selection_model;
+        (0..selection.n_items())
+            .filter(|&position| selection.is_selected(position))
+            .filter_map(|position| self.entries.get_visible(position))
+            .filter_map(|item| match &*item.borrow() {
+                Row::Parent { .. } => None,
+                Row::Entry { path, entry, .. } => Some((path.clone(), entry.clone())),
+            })
+            .collect()
+    }
+
+    /// Open the Permissions dialog for the selected items; its answer comes back as
+    /// [`FilePaneMsg::ApplyPermissions`].
+    fn ask_permissions(&self, root: &gtk::Box, sender: &ComponentSender<Self>) {
+        let selected = self.selected_entries();
+        let Some(window) = root.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        if selected.is_empty() {
+            return;
+        }
+        let shown: Vec<permissions_dialog::Item> = selected
+            .iter()
+            .map(|(_, entry)| permissions_dialog::Item {
+                name: entry.display_name().into_owned(),
+                mode: entry.mode(),
+                owner: entry.owner().map(str::to_owned),
+                group: entry.group().map(str::to_owned),
+                is_dir: entry.kind() == EntryKind::Directory,
+            })
+            .collect();
+        // Local files: yes. Servers: SFTP, not FTP.
+        let owners = self.remote.as_ref().is_none_or(Remote::can_set_owner);
+        let items: Vec<(SidePath, Option<u32>)> = selected
+            .into_iter()
+            .map(|(path, entry)| (path, entry.mode()))
+            .collect();
+        let offers = permissions_dialog::Offers {
+            owners,
+            // Commands run on SSH servers only.
+            sudo: self.remote.as_ref().is_some_and(Remote::can_set_owner),
+        };
+        let sender = sender.clone();
+        permissions_dialog::ask(&window, &shown, offers, move |answer| {
+            if let Some(answer) = answer {
+                sender.input(FilePaneMsg::PermissionsAnswered { items, answer });
+            }
+        });
+    }
+
+    /// Carry out the dialog's answer, sudo already checked if it is wanted: one job for
+    /// folders with everything inside them, otherwise each item at once.
+    fn change_permissions(
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        sudo: Option<SudoPassword>,
+        sender: &ComponentSender<Self>,
+    ) {
+        match answer.inside {
+            Some((scope, execute_only_on_folders)) => {
+                let _ = sender.output(FilePaneOutput::PermissionsJob {
+                    paths: items.into_iter().map(|(path, _)| path).collect(),
+                    change: PermissionsJob {
+                        edit: answer.edit,
+                        scope,
+                        execute_only_on_folders,
+                        sudo,
+                    },
+                });
+            }
+            None => sender.input(FilePaneMsg::ApplyPermissions {
+                items,
+                edit: answer.edit,
+                run_as: sudo.as_ref().map_or(RunAs::User, SudoPassword::run_as),
+            }),
+        }
+    }
+
+    /// Sudo was checked: go on, or ask for its password, or say why not.
+    fn sudo_checked(
+        &mut self,
+        items: Vec<(SidePath, Option<u32>)>,
+        answer: permissions_dialog::Answer,
+        password: Option<SecretString>,
+        result: Result<(), CommandError>,
+        root: &gtk::Box,
+        sender: &ComponentSender<Self>,
+    ) {
+        match result {
+            Ok(()) => {
+                Self::change_permissions(items, answer, Some(SudoPassword::new(password)), sender);
+            }
+            Err(error @ (CommandError::NeedsPassword | CommandError::WrongPassword)) => {
+                let Some(window) = root.root().and_downcast::<gtk::Window>() else {
+                    return;
+                };
+                let server = self
+                    .remote
+                    .as_ref()
+                    .map(|remote| remote.host().to_owned())
+                    .unwrap_or_default();
+                let again = error == CommandError::WrongPassword;
+                let sender = sender.clone();
+                permissions_dialog::ask_sudo_password(&window, &server, again, move |password| {
+                    if let Some(password) = password {
+                        sender.input(FilePaneMsg::CheckSudo {
+                            items,
+                            answer,
+                            password: Some(password),
+                        });
+                    }
+                });
+            }
+            Err(error) => {
+                tracing::warn!("sudo cannot be used: {error}");
+                self.status = tr!("permissions-no-sudo", reason = error.to_string());
+            }
+        }
+    }
+
+    /// After a change: report it, or offer sudo, or ask for sudo's password, as the
+    /// results call for.
+    fn permissions_done(
+        &mut self,
+        done: PermissionsDone,
+        root: &gtk::Box,
+        sender: &ComponentSender<Self>,
+    ) {
+        let PermissionsDone {
+            edit,
+            results,
+            sudo,
+        } = done;
+        let changed = results
+            .iter()
+            .filter(|(_, _, result)| result.is_ok())
+            .count();
+        let failed: Vec<(SidePath, Option<u32>, ApplyError)> = results
+            .into_iter()
+            .filter_map(|(path, mode, result)| result.err().map(|error| (path, mode, error)))
+            .collect();
+        if changed > 0 {
+            // The listing shows the new values.
+            self.request_listing(self.current_dir.clone(), sender);
+        }
+        let Some(first) = failed.first().map(|(_, _, error)| error.clone()) else {
+            self.notice = Some(tr!("permissions-changed", count = changed));
+            return;
+        };
+        let window = root.root().and_downcast::<gtk::Window>();
+        let retry = |run_as: RunAs, failed: &[(SidePath, Option<u32>, ApplyError)]| {
+            FilePaneMsg::ApplyPermissions {
+                items: failed
+                    .iter()
+                    .map(|(path, mode, _)| (path.clone(), *mode))
+                    .collect(),
+                edit: edit.clone(),
+                run_as,
+            }
+        };
+        let server = self
+            .remote
+            .as_ref()
+            .map(|remote| remote.host().to_owned())
+            .unwrap_or_default();
+        match (&window, first.sudo.as_ref()) {
+            // Sudo wants a password, or a better one: ask, then try again with it.
+            (Some(window), Some(CommandError::NeedsPassword | CommandError::WrongPassword)) => {
+                let again = first.sudo == Some(CommandError::WrongPassword);
+                let (sender, retry_with) = (sender.clone(), retry(RunAs::User, &failed));
+                permissions_dialog::ask_sudo_password(window, &server, again, move |password| {
+                    let Some(password) = password else {
+                        return;
+                    };
+                    if let FilePaneMsg::ApplyPermissions { items, edit, .. } = retry_with {
+                        sender.input(FilePaneMsg::ApplyPermissions {
+                            items,
+                            edit,
+                            run_as: RunAs::Sudo {
+                                password: Some(password),
+                            },
+                        });
+                    }
+                });
+            }
+            // Refused as the user: offer to try as root.
+            (Some(window), None) if !sudo && first.sudo_may_help => {
+                let question = match failed.as_slice() {
+                    [(path, _, _)] => tr!("permissions-sudo-one", name = path.to_string()),
+                    _ => tr!("permissions-sudo-many", count = failed.len()),
+                };
+                let (sender, message) = (
+                    sender.clone(),
+                    retry(RunAs::Sudo { password: None }, &failed),
+                );
+                let message = RefCell::new(Some(message));
+                confirm_dialog::ask(
+                    window,
+                    Confirmation {
+                        title: &tr!("permissions-sudo-title"),
+                        question: &question,
+                        detail: &tr!("permissions-sudo-detail", reason = first.message.clone()),
+                        confirm_label: &tr!("permissions-sudo-confirm"),
+                    },
+                    move |yes| {
+                        if let (true, Some(message)) = (yes, message.borrow_mut().take()) {
+                            sender.input(message);
+                        }
+                    },
+                );
+                self.status = first.message;
+            }
+            _ => {
+                tracing::warn!("{}", first.message);
+                self.status = match failed.len() {
+                    1 => first.message,
+                    count => tr!(
+                        "permissions-failed-many",
+                        count = count,
+                        error = first.message
+                    ),
+                };
+            }
+        }
     }
 
     /// Ask for a name over the pane's window, then send the message `on_name` makes.
@@ -862,12 +1168,16 @@ impl Component for FilePane {
         entries.append_column::<NameColumn>();
         entries.append_column::<SizeColumn>();
         entries.append_column::<ModifiedColumn>();
+        entries.append_column::<PermissionsColumn>();
+        entries.append_column::<OwnerColumn>();
         // Their titles in the interface language (relm4 takes a fixed name).
         let columns = entries.view.columns();
         for (index, title) in [
             tr!("pane-column-name"),
             tr!("pane-column-size"),
             tr!("pane-column-modified"),
+            tr!("pane-column-permissions"),
+            tr!("pane-column-owner"),
         ]
         .iter()
         .enumerate()
@@ -881,6 +1191,7 @@ impl Component for FilePane {
             }
         }
         pin_parent_row(&entries);
+        let optional_columns = columns_menu(&root, &entries.view, &sender);
 
         // Each callback owns its own sender clone, since both outlive this function.
         let select_sender = sender.clone();
@@ -954,6 +1265,7 @@ impl Component for FilePane {
             remote,
             context_menu,
             drop_menu,
+            optional_columns,
             pending_drop: None,
             in_use: Rc::default(),
             actions,
@@ -982,6 +1294,7 @@ impl Component for FilePane {
                     | FilePaneMsg::Request(_)
                     | FilePaneMsg::Rename
                     | FilePaneMsg::NewFolder
+                    | FilePaneMsg::Permissions
             )
         {
             tracing::debug!("ignoring {message:?}: the folder is being read");
@@ -1189,6 +1502,69 @@ impl Component for FilePane {
                     )
                 });
             }
+            FilePaneMsg::ColumnToggled => {
+                let hidden: Vec<String> = self
+                    .optional_columns
+                    .iter()
+                    .filter(|(_, column, _)| !column.is_visible())
+                    .map(|(name, _, _)| (*name).to_owned())
+                    .collect();
+                set_hidden_columns(hidden.clone());
+                let _ = sender.output(FilePaneOutput::ColumnsChanged(hidden));
+            }
+            FilePaneMsg::ShowColumns(hidden) => show_columns(&self.optional_columns, &hidden),
+            FilePaneMsg::Permissions => self.ask_permissions(root, &sender),
+            FilePaneMsg::PermissionsAnswered { items, answer } if answer.sudo => {
+                sender.input(FilePaneMsg::CheckSudo {
+                    items,
+                    answer,
+                    password: None,
+                });
+            }
+            FilePaneMsg::PermissionsAnswered { items, answer } => {
+                Self::change_permissions(items, answer, None, &sender);
+            }
+            FilePaneMsg::CheckSudo {
+                items,
+                answer,
+                password,
+            } => {
+                let Some(remote) = self.remote.clone() else {
+                    return;
+                };
+                sender.oneshot_command(async move {
+                    let run_as = RunAs::Sudo {
+                        password: password.clone(),
+                    };
+                    let result = remote.check_sudo(&run_as).await;
+                    PaneCommand::SudoChecked {
+                        items,
+                        answer,
+                        password,
+                        result,
+                    }
+                });
+            }
+            FilePaneMsg::ApplyPermissions {
+                items,
+                edit,
+                run_as,
+            } => {
+                let remote = self.remote.clone();
+                sender.oneshot_command(async move {
+                    let mut results = Vec::new();
+                    for (path, mode) in items {
+                        let result =
+                            permissions::apply(remote.as_ref(), &path, mode, &edit, &run_as).await;
+                        results.push((path, mode, result));
+                    }
+                    PaneCommand::Permissions(PermissionsDone {
+                        edit,
+                        results,
+                        sudo: run_as.is_sudo(),
+                    })
+                });
+            }
             FilePaneMsg::DisksChanged if self.remote.is_some() => {}
             FilePaneMsg::DisksChanged => {
                 self.disk_picker.reload();
@@ -1214,7 +1590,7 @@ impl Component for FilePane {
         &mut self,
         command: Self::CommandOutput,
         sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        root: &Self::Root,
     ) {
         let listing = match command {
             PaneCommand::Listing(listing) => listing,
@@ -1231,6 +1607,19 @@ impl Component for FilePane {
             PaneCommand::Drives(drives) => {
                 self.disk_picker.set_disks(drives);
                 self.disk_picker.show_dir(&self.current_dir);
+                return;
+            }
+            PaneCommand::Permissions(done) => {
+                self.permissions_done(done, root, &sender);
+                return;
+            }
+            PaneCommand::SudoChecked {
+                items,
+                answer,
+                password,
+                result,
+            } => {
+                self.sudo_checked(items, answer, password, result, root, &sender);
                 return;
             }
         };
@@ -1378,6 +1767,7 @@ fn context_menu(
         move_: add("move", || FilePaneMsg::Request(JobKind::Move)),
         delete: add("delete", || FilePaneMsg::Request(JobKind::Delete)),
         rename: add("rename", || FilePaneMsg::Rename),
+        permissions: add("permissions", || FilePaneMsg::Permissions),
         transfer_section: transfer_section.clone(),
     };
     add("new-folder", || FilePaneMsg::NewFolder);
@@ -1430,6 +1820,10 @@ fn context_menu(
     let edit_section = gio::Menu::new();
     edit_section.append(Some(&tr!("pane-menu-new-folder")), Some("pane.new-folder"));
     edit_section.append(Some(&tr!("pane-menu-rename")), Some("pane.rename"));
+    edit_section.append(
+        Some(&tr!("pane-menu-permissions")),
+        Some("pane.permissions"),
+    );
     let delete_section = gio::Menu::new();
     delete_section.append(Some(&tr!("pane-menu-delete")), Some("pane.delete"));
     let menu = gio::Menu::new();
@@ -1503,10 +1897,14 @@ fn attach_empty_space_click(view: &gtk::ColumnView, sender: &ComponentSender<Fil
             return;
         };
         // Walk up from the widget under the pointer: a cell means a row was clicked
-        // (its own handler opens the menu); a column title means the header was.
+        // (its own handler opens the menu). Column titles never get here: GTK opens
+        // their header menu (the columns menu) itself.
         let mut widget = view.pick(x, y, gtk::PickFlags::DEFAULT);
         while let Some(current) = widget {
-            if current.has_css_class(CELL_CLASS) || current.type_().name().contains("Title") {
+            if current.type_().name().contains("Title") {
+                return;
+            }
+            if current.has_css_class(CELL_CLASS) {
                 return;
             }
             if current == view {
@@ -2206,6 +2604,72 @@ impl RelmColumn for ModifiedColumn {
     }
 }
 
+/// Permissions column: "rwxr-xr-x", blank when the listing doesn't say (Windows,
+/// some FTP servers) and on "..".
+struct PermissionsColumn;
+
+impl RelmColumn for PermissionsColumn {
+    type Root = gtk::Label;
+    type Widgets = ();
+    type Item = Row;
+
+    const COLUMN_NAME: &'static str = "Permissions";
+    const ENABLE_RESIZE: bool = true;
+
+    fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        let cell = text_cell(0.0);
+        // Same-width letters, so the r/w/x line up from row to row.
+        cell.add_css_class("monospace");
+        attach_cell_handlers(&cell, item, false);
+        (cell, ())
+    }
+
+    fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
+        bind_in_use(item, label);
+        let text = match item {
+            Row::Parent { .. } => String::new(),
+            Row::Entry { entry, .. } => entry.mode().map(format_rights).unwrap_or_default(),
+        };
+        label.set_label(&text);
+    }
+
+    fn sort_fn() -> OrdFn<Self::Item> {
+        Some(Box::new(|a, b| compare_rows(a, b, FileEntry::mode_order)))
+    }
+}
+
+/// Owner column: "owner:group", blank when unknown and on "..".
+struct OwnerColumn;
+
+impl RelmColumn for OwnerColumn {
+    type Root = gtk::Label;
+    type Widgets = ();
+    type Item = Row;
+
+    const COLUMN_NAME: &'static str = "Owner";
+    const ENABLE_RESIZE: bool = true;
+
+    fn setup(item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
+        let cell = text_cell(0.0);
+        cell.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        attach_cell_handlers(&cell, item, false);
+        (cell, ())
+    }
+
+    fn bind(item: &mut Self::Item, _widgets: &mut Self::Widgets, label: &mut Self::Root) {
+        bind_in_use(item, label);
+        let text = match item {
+            Row::Parent { .. } => String::new(),
+            Row::Entry { entry, .. } => format_owner(entry.owner(), entry.group()),
+        };
+        label.set_label(&text);
+    }
+
+    fn sort_fn() -> OrdFn<Self::Item> {
+        Some(Box::new(|a, b| compare_rows(a, b, FileEntry::owner_order)))
+    }
+}
+
 /// The folder inside `ancestor` on the way down to `dir` (from /a to /a/b/c: /a/b),
 /// if `ancestor` contains `dir`.
 fn child_towards(ancestor: &SidePath, dir: &SidePath) -> Option<SidePath> {
@@ -2217,6 +2681,91 @@ fn child_towards(ancestor: &SidePath, dir: &SidePath) -> Option<SidePath> {
         child = parent;
     }
     None
+}
+
+/// Set the columns hidden in every pane: panes made from now on start that way (the app
+/// tells the open ones with [`FilePaneMsg::ShowColumns`]).
+///
+/// # Arguments
+///
+/// * `hidden` - Names from [`OPTIONAL_COLUMNS`]
+pub fn set_hidden_columns(hidden: Vec<String>) {
+    HIDDEN_COLUMNS.with(|columns| *columns.borrow_mut() = hidden);
+}
+
+/// Show each optional column unless `hidden` names it, ticking its menu item to match.
+fn show_columns(
+    columns: &[(&'static str, gtk::ColumnViewColumn, gio::SimpleAction)],
+    hidden: &[String],
+) {
+    for (name, column, action) in columns {
+        let visible = !hidden.iter().any(|hidden| hidden == name);
+        column.set_visible(visible);
+        // Setting the state does not activate the action, so this tells no one.
+        action.set_state(&visible.to_variant());
+    }
+}
+
+/// Give every column title a right-click menu with a tick for each column that can be
+/// hidden (Name always shows). GTK opens it itself: a column title takes its own
+/// right-clicks and shows the column's "header menu".
+///
+/// # Arguments
+///
+/// * `root` - The pane, which holds the menu items' actions
+/// * `view` - The file list, whose columns follow [`OPTIONAL_COLUMNS`] after Name
+/// * `sender` - Told when the user shows or hides one
+///
+/// # Returns
+///
+/// The columns that can be hidden, by name, each with its menu item's action
+fn columns_menu(
+    root: &gtk::Box,
+    view: &gtk::ColumnView,
+    sender: &ComponentSender<FilePane>,
+) -> Vec<(&'static str, gtk::ColumnViewColumn, gio::SimpleAction)> {
+    let group = gio::SimpleActionGroup::new();
+    let menu = gio::Menu::new();
+    let titles = [
+        tr!("pane-column-size"),
+        tr!("pane-column-modified"),
+        tr!("pane-column-permissions"),
+        tr!("pane-column-owner"),
+    ];
+    let all = view.columns();
+    let mut columns = Vec::new();
+    for (index, (name, title)) in OPTIONAL_COLUMNS.into_iter().zip(titles).enumerate() {
+        // Name is column 0.
+        let Some(column) = all
+            .item(index as u32 + 1)
+            .and_downcast::<gtk::ColumnViewColumn>()
+        else {
+            continue;
+        };
+        // A boolean state makes the menu draw the item with a tick.
+        let action = gio::SimpleAction::new_stateful(name, None, &true.to_variant());
+        {
+            let (column, sender) = (column.clone(), sender.clone());
+            action.connect_activate(move |action, _| {
+                let visible = !action
+                    .state()
+                    .and_then(|state| state.get::<bool>())
+                    .unwrap_or(true);
+                action.set_state(&visible.to_variant());
+                column.set_visible(visible);
+                sender.input(FilePaneMsg::ColumnToggled);
+            });
+        }
+        group.add_action(&action);
+        menu.append(Some(&title), Some(&format!("{COLUMNS_GROUP}.{name}")));
+        columns.push((name, column, action));
+    }
+    root.insert_action_group(COLUMNS_GROUP, Some(&group));
+    for column in all.iter::<gtk::ColumnViewColumn>().flatten() {
+        column.set_header_menu(Some(&menu));
+    }
+    HIDDEN_COLUMNS.with(|hidden| show_columns(&columns, &hidden.borrow()));
+    columns
 }
 
 #[cfg(test)]

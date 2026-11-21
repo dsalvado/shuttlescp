@@ -216,6 +216,51 @@ pane-open-error = { $error }.
 pane-column-name = Name
 pane-column-size = Größe
 pane-column-modified = Geändert
+pane-column-permissions = Rechte
+pane-column-owner = Besitzer
+
+permissions-title = Rechte
+permissions-items = { $count } Elemente
+permissions-read = Lesen
+permissions-write = Schreiben
+permissions-execute = Ausführen
+permissions-owner-row = Besitzer
+permissions-group-row = Gruppe
+permissions-others-row = Andere
+permissions-number = Zahl:
+permissions-mixed = gemischt
+permissions-special = Spezial
+permissions-setuid = Set-User-ID
+permissions-setgid = Set-Group-ID
+permissions-sticky = Sticky
+permissions-owner = Besitzer:
+permissions-group = Gruppe:
+permissions-keep = gemischt: leer lassen zum Beibehalten
+permissions-no-owners = FTP kann Besitzer nicht ändern
+permissions-change = Ändern
+permissions-inside = Auf den gesamten Inhalt anwenden
+permissions-scope-all = Dateien und Ordner
+permissions-scope-files = Nur Dateien
+permissions-scope-folders = Nur Ordner
+permissions-x-folders = Ausführen nur für Ordner
+permissions-x-folders-hint = Dateien erhalten Ausführen nur, wenn sie es schon haben: Ordner lassen sich öffnen, ohne jede Datei ausführbar zu machen
+permissions-use-sudo = Als root ändern (sudo)
+permissions-use-sudo-hint = Für Dateien, die Ihnen nicht gehören: fragt nach dem sudo-Passwort, wenn der Server es verlangt
+permissions-no-sudo = sudo kann nicht verwendet werden: { $reason }
+permissions-password-title = sudo-Passwort
+permissions-password-prompt = sudo-Passwort auf { $server }:
+permissions-password-wrong = sudo hat dieses Passwort nicht angenommen. Bitte erneut eingeben:
+permissions-password-ok = Weiter
+permissions-sudo-title = sudo verwenden?
+permissions-sudo-one = Der Server hat das Ändern von { $name } abgelehnt
+permissions-sudo-many = Der Server hat das Ändern von { $count } Elementen abgelehnt
+permissions-sudo-detail = { $reason }. Als root mit sudo erneut versuchen?
+permissions-sudo-confirm = sudo verwenden
+permissions-changed = { $count ->
+        [one] 1 Element geändert
+       *[other] { $count } Elemente geändert
+    }
+permissions-failed-many = { $count } Elemente nicht geändert: { $error }
 
 pane-transfer =
     { $kind ->
@@ -233,6 +278,7 @@ pane-move = _Verschieben
 pane-move-to = _Verschieben nach { $name }
 pane-menu-new-folder = _Neuer Ordner…
 pane-menu-rename = _Umbenennen…
+pane-menu-permissions = _Rechte…
 pane-menu-delete = _Löschen
 pane-menu-refresh = _Aktualisieren
 
@@ -267,6 +313,7 @@ job-paused = Angehalten
 job-paused-copied = Angehalten: { $done } von { $total } kopiert
 job-preparing = Wird vorbereitet...
 job-deleting = { $done } von { $total } gelöscht
+job-changing = { $done } von { $total } geändert
 job-relay-right =
     { $kind ->
         [move] { $subject } verschieben: { $from } → { $to }
@@ -304,6 +351,8 @@ summary-skipped = { $count } übersprungen
 summary-stopped = { $count } gestoppt
 
 item-deleted = Gelöscht
+item-changed = Geändert
+item-not-changed = Nicht geändert (Link oder nicht gewählt)
 item-skipped = Übersprungen: Die vorhandene Datei wurde behalten
 item-paused = Angehalten
 item-paused-slot = Angehalten: wartet auf einen freien Übertragungsplatz
@@ -359,6 +408,7 @@ login-unfinished-what =
     { $kind ->
         [move] { $subject } verschieben
         [delete] { $subject } löschen
+        [permissions] Rechte { $subject }
        *[copy] { $subject } kopieren
     }
 login-unfinished-saved-unknown = Unbekannt (von einer älteren Version gespeichert)
@@ -541,6 +591,8 @@ job-title =
         [copy-other-server] { $what } nach { $dest } auf dem anderen Server kopieren
         [move-other-server] { $what } nach { $dest } auf dem anderen Server verschieben
         [delete-here] { $what } von diesem Computer löschen
+        [permissions-here] Rechte von { $what } auf diesem Computer ändern
+        [permissions-on-server] Rechte von { $what } auf dem Server ändern
        *[delete-on-server] { $what } vom Server löschen
     }
 job-items =
@@ -559,6 +611,8 @@ error-cannot =
         [delete] { $path } kann nicht gelöscht werden: { $reason }
         [delete-folder] Ordner { $path } kann nicht gelöscht werden: { $reason }
         [set-time] Die Zeit von { $path } kann nicht gesetzt werden: { $reason }
+        [set-permissions] Die Rechte von { $path } können nicht geändert werden: { $reason }
+        [set-owner] Der Besitzer von { $path } kann nicht geändert werden: { $reason }
         [finish] { $path } kann nicht abgeschlossen werden: { $reason }
         [download] { $path } kann nicht heruntergeladen werden: { $reason }
         [replace] { $path } kann nicht ersetzt werden: { $reason }
@@ -575,6 +629,8 @@ error-cannot-bare =
         [delete] { $path } kann nicht gelöscht werden
         [delete-folder] Ordner { $path } kann nicht gelöscht werden
         [set-time] Die Zeit von { $path } kann nicht gesetzt werden
+        [set-permissions] Die Rechte von { $path } können nicht geändert werden
+        [set-owner] Der Besitzer von { $path } kann nicht geändert werden
         [finish] { $path } kann nicht abgeschlossen werden
         [download] { $path } kann nicht heruntergeladen werden
         [replace] { $path } kann nicht ersetzt werden
@@ -585,6 +641,18 @@ error-cannot-rename = { $from } kann nicht in { $to } umbenannt werden: { $reaso
 error-cannot-rename-bare = { $from } kann nicht in { $to } umbenannt werden
 error-no-such-item = keine solche Datei und kein solcher Ordner
 error-sftp-date = { $path } hat ein Datum, das SFTP nicht speichern kann
+error-ftp-no-owner = FTP kann den Besitzer einer Datei nicht ändern
+error-owner-unknown = Der Server hat den aktuellen Besitzer nicht genannt
+error-mode-unknown = Die aktuellen Rechte sind unbekannt, daher muss jedes Kästchen gesetzt oder geleert werden
+error-no-such-user = Es gibt keinen Benutzer und keine Gruppe { $name }
+
+command-no-shell = Dieses Konto darf auf dem Server keine Befehle ausführen
+command-sudo-password = sudo verlangt ein Passwort
+command-sudo-wrong-password = sudo hat das Passwort nicht angenommen
+command-sudo-not-allowed = Dieses Konto darf sudo nicht verwenden
+command-no-sudo = Der Server hat kein sudo
+command-sudo-terminal = sudo funktioniert auf diesem Server nur in einem Terminal
+command-no-answer = Der Server hat nicht rechtzeitig geantwortet
 checksum-unsupported = der Server kann keine Prüfsummen berechnen
 checksum-no-answer = die Antwort des Servers enthielt keine Prüfsumme
 verify-mismatch = die Prüfsumme der Kopie weicht von der des Originals ab: die Kopie entspricht nicht dem Kopierten

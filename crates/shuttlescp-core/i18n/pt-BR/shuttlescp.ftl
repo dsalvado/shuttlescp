@@ -216,6 +216,51 @@ pane-open-error = { $error }.
 pane-column-name = Nome
 pane-column-size = Tamanho
 pane-column-modified = Modificado
+pane-column-permissions = Permissões
+pane-column-owner = Proprietário
+
+permissions-title = Permissões
+permissions-items = { $count } itens
+permissions-read = Leitura
+permissions-write = Escrita
+permissions-execute = Execução
+permissions-owner-row = Proprietário
+permissions-group-row = Grupo
+permissions-others-row = Outros
+permissions-number = Número:
+permissions-mixed = misto
+permissions-special = Especiais
+permissions-setuid = Set-user-ID
+permissions-setgid = Set-group-ID
+permissions-sticky = Sticky
+permissions-owner = Proprietário:
+permissions-group = Grupo:
+permissions-keep = misto: deixe vazio para manter
+permissions-no-owners = O FTP não pode alterar proprietários
+permissions-change = Alterar
+permissions-inside = Aplicar a todo o conteúdo
+permissions-scope-all = Arquivos e pastas
+permissions-scope-files = Somente arquivos
+permissions-scope-folders = Somente pastas
+permissions-x-folders = Execução somente em pastas
+permissions-x-folders-hint = Arquivos só recebem execução se já a tiverem: as pastas abrem sem tornar cada arquivo executável
+permissions-use-sudo = Alterar como root (sudo)
+permissions-use-sudo-hint = Para arquivos que não são seus: pede a senha do sudo se o servidor precisar
+permissions-no-sudo = Não é possível usar o sudo: { $reason }
+permissions-password-title = Senha do sudo
+permissions-password-prompt = Senha do sudo em { $server }:
+permissions-password-wrong = O sudo não aceitou essa senha. Tente de novo:
+permissions-password-ok = Continuar
+permissions-sudo-title = Usar sudo?
+permissions-sudo-one = O servidor recusou alterar { $name }
+permissions-sudo-many = O servidor recusou alterar { $count } itens
+permissions-sudo-detail = { $reason }. Tentar de novo como root, com sudo?
+permissions-sudo-confirm = Usar sudo
+permissions-changed = { $count ->
+        [one] 1 item alterado
+       *[other] { $count } itens alterados
+    }
+permissions-failed-many = { $count } itens não alterados: { $error }
 
 pane-transfer =
     { $kind ->
@@ -233,6 +278,7 @@ pane-move = _Mover
 pane-move-to = _Mover para { $name }
 pane-menu-new-folder = _Nova pasta…
 pane-menu-rename = _Renomear…
+pane-menu-permissions = _Permissões…
 pane-menu-delete = E_xcluir
 pane-menu-refresh = A_tualizar
 
@@ -267,6 +313,7 @@ job-paused = Pausada
 job-paused-copied = Pausada: { $done } de { $total } copiados
 job-preparing = Preparando...
 job-deleting = { $done } de { $total } excluídos
+job-changing = { $done } de { $total } alterados
 job-relay-right =
     { $kind ->
         [move] Mover { $subject }: { $from } → { $to }
@@ -304,6 +351,8 @@ summary-skipped = { $count } pulados
 summary-stopped = { $count } interrompidos
 
 item-deleted = Excluído
+item-changed = Alterado
+item-not-changed = Não alterado (link ou não escolhido)
 item-skipped = Pulado: o arquivo existente foi mantido
 item-paused = Pausado
 item-paused-slot = Pausado: aguardando uma vaga de transferência livre
@@ -359,6 +408,7 @@ login-unfinished-what =
     { $kind ->
         [move] Mover { $subject }
         [delete] Excluir { $subject }
+        [permissions] Permissões { $subject }
        *[copy] Copiar { $subject }
     }
 login-unfinished-saved-unknown = Desconhecido (salvo por uma versão anterior)
@@ -541,6 +591,8 @@ job-title =
         [copy-other-server] Copiar { $what } para { $dest } no outro servidor
         [move-other-server] Mover { $what } para { $dest } no outro servidor
         [delete-here] Excluir { $what } deste computador
+        [permissions-here] Alterar as permissões de { $what } neste computador
+        [permissions-on-server] Alterar as permissões de { $what } no servidor
        *[delete-on-server] Excluir { $what } do servidor
     }
 job-items =
@@ -559,6 +611,8 @@ error-cannot =
         [delete] não é possível excluir { $path }: { $reason }
         [delete-folder] não é possível excluir a pasta { $path }: { $reason }
         [set-time] não é possível ajustar a hora de { $path }: { $reason }
+        [set-permissions] não é possível alterar as permissões de { $path }: { $reason }
+        [set-owner] não é possível alterar o proprietário de { $path }: { $reason }
         [finish] não é possível concluir { $path }: { $reason }
         [download] não é possível baixar { $path }: { $reason }
         [replace] não é possível substituir { $path }: { $reason }
@@ -575,6 +629,8 @@ error-cannot-bare =
         [delete] não é possível excluir { $path }
         [delete-folder] não é possível excluir a pasta { $path }
         [set-time] não é possível ajustar a hora de { $path }
+        [set-permissions] não é possível alterar as permissões de { $path }
+        [set-owner] não é possível alterar o proprietário de { $path }
         [finish] não é possível concluir { $path }
         [download] não é possível baixar { $path }
         [replace] não é possível substituir { $path }
@@ -585,6 +641,18 @@ error-cannot-rename = não é possível renomear { $from } para { $to }: { $reas
 error-cannot-rename-bare = não é possível renomear { $from } para { $to }
 error-no-such-item = arquivo ou pasta inexistente
 error-sftp-date = { $path } tem uma data que o SFTP não consegue gravar
+error-ftp-no-owner = o FTP não permite alterar o proprietário de um arquivo
+error-owner-unknown = o servidor não informou o proprietário atual
+error-mode-unknown = as permissões atuais são desconhecidas: cada caixa precisa ser marcada ou desmarcada
+error-no-such-user = não existe usuário ou grupo { $name }
+
+command-no-shell = esta conta não pode executar comandos no servidor
+command-sudo-password = o sudo pede uma senha
+command-sudo-wrong-password = o sudo não aceitou a senha
+command-sudo-not-allowed = esta conta não pode usar o sudo
+command-no-sudo = o servidor não tem sudo
+command-sudo-terminal = o sudo do servidor só funciona a partir de um terminal
+command-no-answer = o servidor não respondeu a tempo
 checksum-unsupported = o servidor não consegue calcular somas de verificação
 checksum-no-answer = a resposta do servidor não continha nenhuma soma de verificação
 verify-mismatch = a soma de verificação da cópia difere da do original: a cópia não é o que foi copiado

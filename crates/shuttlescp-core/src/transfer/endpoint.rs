@@ -18,6 +18,10 @@ pub(super) struct Node {
     pub(super) is_dir: bool,
     pub(super) size: u64,
     pub(super) modified: Option<SystemTime>,
+    /// Unix permission bits, if known.
+    pub(super) mode: Option<u32>,
+    /// A symbolic link itself (only when not following links).
+    pub(super) is_link: bool,
 }
 
 /// File access on one side of a transfer.
@@ -82,6 +86,8 @@ impl Endpoint {
                     is_dir: metadata.is_dir(),
                     size: metadata.len(),
                     modified: metadata.modified().ok(),
+                    mode: local_mode(&metadata),
+                    is_link: metadata.file_type().is_symlink(),
                 })
             }
             Target::Remote(remote, path) => {
@@ -333,5 +339,21 @@ fn remote_node(metadata: &RemoteMeta) -> Node {
         is_dir: metadata.is_dir,
         size: metadata.size,
         modified: metadata.modified,
+        mode: metadata.mode,
+        is_link: metadata.is_symlink,
+    }
+}
+
+/// A local file's permission bits (Linux, macOS; Windows has none).
+fn local_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(metadata.mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
     }
 }

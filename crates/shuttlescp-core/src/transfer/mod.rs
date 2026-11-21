@@ -17,6 +17,7 @@
 //! Every job runs as its own async task, so several jobs proceed side by side. All jobs to
 //! one server share its single SSH connection.
 
+mod change;
 mod copy;
 mod endpoint;
 mod meter;
@@ -90,6 +91,17 @@ pub enum JobKind {
     Move,
     /// Delete the sources.
     Delete,
+    /// Change the sources' permissions and owner, and everything inside them (see
+    /// [`Job::permissions`]).
+    Permissions,
+}
+
+impl JobKind {
+    /// Whether the job acts on its sources where they are (deleting them, changing
+    /// their permissions) rather than copying them somewhere.
+    pub fn in_place(self) -> bool {
+        matches!(self, Self::Delete | Self::Permissions)
+    }
 }
 
 /// One user request: copy, move or delete some files and folders.
@@ -126,6 +138,9 @@ pub struct Job {
     /// Whether to check each copy against its source. Not saved with the job: a
     /// resumed job follows the settings of the time.
     pub verify: Verify,
+    /// What a [`JobKind::Permissions`] job changes; `None` for other jobs. Such jobs
+    /// are never saved to resume (they may hold a sudo password).
+    pub permissions: Option<crate::permissions::PermissionsJob>,
 }
 
 /// Whether and how copies are checked against their sources once made: by comparing
@@ -198,6 +213,8 @@ impl Job {
             (JobKind::Move, Side::Remote) => "move-to-computer",
             (JobKind::Delete, Side::Local) => "delete-here",
             (JobKind::Delete, Side::Remote) => "delete-on-server",
+            (JobKind::Permissions, Side::Local) => "permissions-here",
+            (JobKind::Permissions, Side::Remote) => "permissions-on-server",
         };
         crate::tr!(
             "job-title",
@@ -221,7 +238,7 @@ impl Job {
     /// The pane copies go to (left is [`Side::Local`], right [`Side::Remote`]): the
     /// other pane, or the same one for a [`Job::same_side`] job or a delete.
     pub fn dest_pane(&self) -> Side {
-        if self.kind == JobKind::Delete || self.same_side {
+        if self.kind.in_place() || self.same_side {
             self.source_pane()
         } else {
             self.source_pane().other()
@@ -268,7 +285,7 @@ impl Job {
     /// The pane whose files the job changes: where copies go, or what a delete removes
     /// (left is [`Side::Local`], right [`Side::Remote`]).
     pub fn changed_pane(&self) -> Side {
-        if self.kind == JobKind::Delete {
+        if self.kind.in_place() {
             self.source_pane()
         } else {
             self.dest_pane()
@@ -299,9 +316,15 @@ impl Job {
         }
     }
 
+    /// Whether the job may be saved, to be resumed after a restart. Permissions jobs are
+    /// not: they are quick to run again, and may hold a sudo password.
+    pub fn resumable(&self) -> bool {
+        self.kind != JobKind::Permissions
+    }
+
     /// Whether the job needs the server connection.
     pub fn uses_server(&self) -> bool {
-        let stays_local = self.kind == JobKind::Delete || self.same_side;
+        let stays_local = self.kind.in_place() || self.same_side;
         !(stays_local && self.side == Side::Local)
     }
 
@@ -310,7 +333,7 @@ impl Job {
     /// listed here is in use too, and so is a file's partial copy (its name plus
     /// [`PARTIAL_SUFFIX`]).
     pub fn paths_in_use(&self) -> Vec<SidePath> {
-        if self.kind == JobKind::Delete {
+        if self.kind.in_place() {
             return self.sources.clone();
         }
         self.sources
@@ -384,6 +407,7 @@ impl From<JobRecord> for Job {
             left_server: record.left_server,
             resume: record.resume,
             verify: Verify::default(),
+            permissions: None,
         };
         job.sources = record
             .sources
@@ -468,6 +492,10 @@ pub struct PlanItem {
     existing_is_dir: bool,
     /// Bytes of an earlier, interrupted copy found at `dest` + [`PARTIAL_SUFFIX`].
     partial: u64,
+    /// Its permission bits, if known (for permissions jobs).
+    pub mode: Option<u32>,
+    /// A symbolic link itself, not followed (deletes and permissions jobs).
+    pub is_link: bool,
 }
 
 impl PlanItem {
@@ -811,6 +839,8 @@ pub async fn verify_now(
         modified: None,
         existing_is_dir: false,
         partial: 0,
+        mode: None,
+        is_link: false,
     };
     let verify = Verify {
         enabled: true,
@@ -853,7 +883,7 @@ pub async fn run(
         Some(source) => execute(&job, source, dest, &cancel, &sink).await,
     };
     let seconds = started.elapsed().as_secs_f64();
-    let amount = if job.kind == JobKind::Delete || summary.bytes == 0 {
+    let amount = if job.kind.in_place() || summary.bytes == 0 {
         String::new()
     } else {
         // Rounded to whole bytes for display.
@@ -901,7 +931,7 @@ pub async fn discard_partials(
     remote: Option<Remote>,
     dest_remote: Option<Remote>,
 ) -> Result<usize, String> {
-    if job.kind == JobKind::Delete {
+    if job.kind.in_place() {
         return Ok(0);
     }
     let endpoint = |side: Side| match side {
@@ -972,11 +1002,15 @@ async fn execute(
     sink(TransferEvent::Planned(items.clone()));
     let outcomes = match (job.kind, dst) {
         (JobKind::Delete, _) => copy::delete_items(&items, &src, cancel, sink).await,
+        (JobKind::Permissions, _) => match &job.permissions {
+            Some(change) => change::change_items(change, &items, &src, cancel, sink).await,
+            None => return failed_to_start("a permissions job without its changes"),
+        },
         (_, Some(dst)) => copy::copy_items(job, &items, &src, &dst, cancel, sink).await,
         (_, None) => return failed_to_start(&crate::tr!("error-not-connected")),
     };
     let mut summary = JobSummary::default();
-    if job.kind != JobKind::Delete {
+    if !job.kind.in_place() {
         summary.bytes = items
             .iter()
             .filter(|item| item.kind == ItemKind::File && outcomes[item.id] == ItemOutcome::Done)

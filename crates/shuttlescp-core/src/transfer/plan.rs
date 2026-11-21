@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 
 use super::endpoint::{Endpoint, Node};
-use super::{FileInfo, ItemKind, Job, JobKind, PARTIAL_SUFFIX, PlanItem};
+use super::{FileInfo, ItemKind, Job, PARTIAL_SUFFIX, PlanItem};
 
 /// Deepest folder nesting walked; deeper usually means a symbolic link loop.
 const MAX_DEPTH: usize = 64;
@@ -37,9 +37,12 @@ pub(super) async fn plan(
     src: &Endpoint,
     dst: Option<&Endpoint>,
 ) -> Result<Vec<PlanItem>, String> {
-    let follow = job.kind != JobKind::Delete;
-    let dst = dst.filter(|_| job.kind != JobKind::Delete);
-    if job.same_side && job.kind != JobKind::Delete {
+    // Deletes and permissions jobs act on the items themselves: links are not followed,
+    // and there is no destination.
+    let in_place = job.kind.in_place();
+    let follow = !in_place;
+    let dst = dst.filter(|_| !in_place);
+    if job.same_side && !in_place {
         super::check_same_side(&job.sources, &job.dest_dir)?;
     }
     let mut items: Vec<PlanItem> = Vec::new();
@@ -217,6 +220,8 @@ fn push_item(
         modified: node.modified,
         existing_is_dir: there.is_some_and(|there| there.is_dir),
         partial,
+        mode: node.mode,
+        is_link: node.is_link,
     });
     id
 }

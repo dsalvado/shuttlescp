@@ -432,7 +432,7 @@ impl Ftp {
         };
         match found {
             Some(line) => ListParser::parse_mlst(&line)
-                .map(|file| meta(&file))
+                .map(|file| meta(&file, unix_from_facts(&line)))
                 .map_err(|error| crate::i18n::cannot("read", &text, &error)),
             // Servers without MLST: look the item up in its folder's listing.
             None => {
@@ -440,9 +440,7 @@ impl Ftp {
                     // The root folder.
                     return Ok(RemoteMeta {
                         is_dir: true,
-                        is_symlink: false,
-                        size: 0,
-                        modified: None,
+                        ..RemoteMeta::default()
                     });
                 };
                 self.read_dir(&parent)
@@ -481,10 +479,14 @@ impl Ftp {
             }
             lines.ok().flatten()
         };
-        let files: Vec<File> = match lines {
+        // Each file with the Unix details read from its own line.
+        let files: Vec<(File, UnixDetails)> = match lines {
             Some(lines) => lines
                 .iter()
-                .filter_map(|line| ListParser::parse_mlsd(line).ok())
+                .filter_map(|line| {
+                    let file = ListParser::parse_mlsd(line).ok()?;
+                    Some((file, unix_from_facts(line)))
+                })
                 .collect(),
             // Servers without MLSD: parse the older, free-form LIST output.
             None => {
@@ -496,17 +498,18 @@ impl Ftp {
                 .await?
                 .iter()
                 .filter_map(|line| {
-                    ListParser::parse_posix(line)
+                    let file = ListParser::parse_posix(line)
                         .or_else(|_| ListParser::parse_dos(line))
-                        .ok()
+                        .ok()?;
+                    Some((file, unix_from_ls(line)))
                 })
                 .collect()
             }
         };
         Ok(files
-            .iter()
-            .filter(|file| file.name() != "." && file.name() != "..")
-            .map(|file| (file.name().to_owned(), meta(file)))
+            .into_iter()
+            .filter(|(file, _)| file.name() != "." && file.name() != "..")
+            .map(|(file, unix)| (file.name().to_owned(), meta(&file, unix)))
             .collect())
     }
 
@@ -646,6 +649,23 @@ impl Ftp {
         .await
     }
 
+    /// Change permission bits with `SITE CHMOD`, which most Unix servers accept (it is
+    /// not part of the FTP standard, so some refuse it).
+    pub(super) async fn set_mode(&self, path: &RemotePath, mode: u32) -> Result<(), String> {
+        let text = path_text(path);
+        let what = crate::i18n::cannot_bare("set-permissions", &text);
+        self.run(&what, &move |connection| {
+            let command = format!("SITE CHMOD {:o} {text}", mode & 0o7777);
+            Box::pin(async move {
+                connection
+                    .custom_command(command, &[Status::CommandOk])
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await
+    }
+
     /// The SHA-256 of a file, computed by the server: with HASH after choosing SHA-256
     /// (FileZilla Server, ProFTPD), else XSHA256 (older servers). Many servers have
     /// neither (vsftpd); once one says so, later files do not ask again.
@@ -697,15 +717,124 @@ impl Ftp {
     }
 }
 
-/// [`RemoteMeta`] from a listing entry.
-fn meta(file: &File) -> RemoteMeta {
+/// [`RemoteMeta`] from a listing entry, with the Unix details read from its raw line.
+fn meta(file: &File, unix: UnixDetails) -> RemoteMeta {
     RemoteMeta {
         is_dir: file.is_directory(),
         is_symlink: file.is_symlink(),
         // `usize` always fits in a `u64` on the platforms ShuttleSCP runs on.
         size: file.size() as u64,
         modified: Some(file.modified()),
+        mode: unix.mode,
+        owner: unix.owner,
+        group: unix.group,
     }
+}
+
+/// Permissions and owner as a listing line states them; each is `None` when the line
+/// does not say. (suppaftp's own parsing can't be used for this: it makes up 777 or 000
+/// when the mode is missing, and drops owner names and the special bits.)
+#[derive(Debug, Default, PartialEq, Eq)]
+struct UnixDetails {
+    mode: Option<u32>,
+    owner: Option<String>,
+    group: Option<String>,
+}
+
+/// Unix details from an MLSD or MLST line: "fact=value;fact=value; name". Servers name
+/// these facts differently (ProFTPD: `UNIX.ownername`, others: `UNIX.owner` or
+/// `UNIX.uid`), so a name is preferred over a number.
+fn unix_from_facts(line: &str) -> UnixDetails {
+    // The facts end at the first space; the name follows and may contain anything.
+    let facts = line
+        .trim_start()
+        .split_once(' ')
+        .map_or("", |(facts, _)| facts);
+    let (mut owner_name, mut owner_id, mut group_name, mut group_id) = (None, None, None, None);
+    let mut mode = None;
+    for fact in facts.split(';') {
+        let Some((key, value)) = fact.split_once('=') else {
+            continue;
+        };
+        let value = Some(value.to_owned());
+        match key.to_ascii_lowercase().as_str() {
+            "unix.mode" => mode = value.and_then(|text| u32::from_str_radix(&text, 8).ok()),
+            "unix.ownername" => owner_name = value,
+            "unix.owner" | "unix.uid" => owner_id = owner_id.or(value),
+            "unix.groupname" => group_name = value,
+            "unix.group" | "unix.gid" => group_id = group_id.or(value),
+            _ => {}
+        }
+    }
+    UnixDetails {
+        mode,
+        owner: owner_name.or(owner_id),
+        group: group_name.or(group_id),
+    }
+}
+
+/// Unix details from an `ls -l` style LIST line:
+/// "-rwxr-x--- 1 alex staff 1234 Jan 01 12:00 name". Lines in other shapes (Windows
+/// servers' DOS style) give nothing.
+fn unix_from_ls(line: &str) -> UnixDetails {
+    let mut words = line.split_whitespace();
+    let (Some(rights), Some(_links), Some(owner), Some(group)) =
+        (words.next(), words.next(), words.next(), words.next())
+    else {
+        return UnixDetails::default();
+    };
+    UnixDetails {
+        mode: mode_from_rights(rights),
+        owner: Some(owner.to_owned()),
+        group: Some(group.to_owned()),
+    }
+    .only_with_mode()
+}
+
+impl UnixDetails {
+    /// Nothing at all unless the mode was understood: then the line was not in `ls -l`
+    /// shape, and its third and fourth words are not an owner and group either.
+    fn only_with_mode(self) -> Self {
+        if self.mode.is_some() {
+            self
+        } else {
+            Self::default()
+        }
+    }
+}
+
+/// Permission bits from `ls -l` letters such as "drwxr-sr-t": the first letter is the
+/// type, then three of r/w/x for owner, group and others. In the x places, `s` (owner,
+/// group) and `t` (others) mean execute plus setuid / setgid / sticky; capital `S` / `T`
+/// mean the special bit without execute. A trailing `+` or `@` (ACLs) is ignored.
+fn mode_from_rights(rights: &str) -> Option<u32> {
+    let letters: Vec<char> = rights.chars().collect();
+    if letters.len() < 10 || !"-dlbcps".contains(letters[0]) {
+        return None;
+    }
+    let mut mode = 0;
+    // (letter position, plain bit, special bit set by s/S or t/T)
+    for (who, special) in [(1, 0o4000), (4, 0o2000), (7, 0o1000)] {
+        let shift = 3 * (2 - (who - 1) / 3);
+        match letters[who] {
+            'r' => mode |= 0o4 << shift,
+            '-' => {}
+            _ => return None,
+        }
+        match letters[who + 1] {
+            'w' => mode |= 0o2 << shift,
+            '-' => {}
+            _ => return None,
+        }
+        match letters[who + 2] {
+            'x' => mode |= 0o1 << shift,
+            's' | 't' => mode |= (0o1 << shift) | special,
+            'S' | 'T' => mode |= special,
+            '-' => {}
+            _ => return None,
+        }
+    }
+    Some(mode)
 }
 
 /// A command's result, with "the server does not know this command" (500, 502, 504)
@@ -878,6 +1007,48 @@ impl AsyncWrite for FtpWriter {
 mod tests {
     use super::*;
     use suppaftp::types::Response;
+
+    #[test]
+    fn reads_rights_letters_including_special_bits() {
+        assert_eq!(mode_from_rights("-rw-r--r--"), Some(0o644));
+        assert_eq!(mode_from_rights("drwxr-xr-x"), Some(0o755));
+        assert_eq!(mode_from_rights("-rwsr-xr-x"), Some(0o4755));
+        assert_eq!(mode_from_rights("drwxrwsr-x+"), Some(0o2775));
+        assert_eq!(mode_from_rights("drwxrwxrwt"), Some(0o1777));
+        assert_eq!(mode_from_rights("-rwSr--r-T"), Some(0o5644));
+        assert_eq!(mode_from_rights("total"), None);
+        assert_eq!(mode_from_rights("-rwqr--r--"), None);
+    }
+
+    #[test]
+    fn reads_owner_and_group_from_ls_lines_only() {
+        let unix = unix_from_ls("-rw-r----- 1 alex staff 1234 Jan 01 12:00 my file.txt");
+        assert_eq!(unix.mode, Some(0o640));
+        assert_eq!(unix.owner.as_deref(), Some("alex"));
+        assert_eq!(unix.group.as_deref(), Some("staff"));
+        // A Windows server's line has no Unix details.
+        let dos = unix_from_ls("01-16-26  11:08AM       <DIR>          photos");
+        assert_eq!(dos, UnixDetails::default());
+    }
+
+    #[test]
+    fn reads_facts_preferring_names_over_numbers() {
+        let unix = unix_from_facts(
+            "type=file;size=5;UNIX.mode=0644;UNIX.owner=1000;UNIX.ownername=alex;\
+             UNIX.group=50;UNIX.groupname=staff; a name; with spaces",
+        );
+        assert_eq!(unix.mode, Some(0o644));
+        assert_eq!(unix.owner.as_deref(), Some("alex"));
+        assert_eq!(unix.group.as_deref(), Some("staff"));
+        let numbers = unix_from_facts(" type=dir;UNIX.mode=0755;UNIX.uid=0;UNIX.gid=0; /etc");
+        assert_eq!(numbers.owner.as_deref(), Some("0"));
+        assert_eq!(numbers.mode, Some(0o755));
+        // No facts about it at all: unknown, not 777.
+        assert_eq!(
+            unix_from_facts("type=file;size=5; x"),
+            UnixDetails::default()
+        );
+    }
 
     /// The error a server's reply with this status gives.
     fn reply(status: Status) -> Result<(), FtpError> {

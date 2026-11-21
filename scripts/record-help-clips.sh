@@ -7,7 +7,8 @@
 # files (bwrap hides the real /home from it, and it gets none of your settings, keys or
 # environment); its servers are two throwaway containers, "web" (web.example.com) and
 # "backup" (backup.example.com: names set aside for examples, which the app's own
-# /etc/hosts points to this computer), removed afterwards. A slow relay in front of each
+# /etc/hosts points to this computer), removed afterwards. Its own /etc/passwd names
+# your user ID "alex", for the Owner column. A slow relay in front of each
 # lets a copy of a few megabytes last a few seconds.
 #
 # Needs Docker, bwrap, Python 3 and ImageMagick (convert), and a desktop session: the
@@ -115,6 +116,11 @@ done
 SITES="web=alex:$PASSWORD@web.example.com:$WEB_PORT/website"
 SITES+=",backup=alex:$PASSWORD@backup.example.com:$BACKUP_PORT/backup"
 printf '127.0.0.1 localhost web.example.com backup.example.com\n' >"$WORK/hosts"
+# Made-up user and group lists, so that the Owner column shows your files as alex's,
+# not under your own user name.
+printf 'root:x:0:0:root:/root:/bin/sh\nalex:x:%s:%s:Alex Example:/home/alex:/bin/sh\n' \
+    "$(id -u)" "$(id -g)" >"$WORK/passwd"
+printf 'root:x:0:\nalex:x:%s:\n' "$(id -g)" >"$WORK/group"
 mkdir -p "$OUT"
 for scene in "${SCENES[@]}"; do
     echo "==> Recording $scene"
@@ -128,7 +134,8 @@ for scene in "${SCENES[@]}"; do
         SHUTTLESCP_UI_CLIPS="$frames" SHUTTLESCP_UI_CLIPS_SCENE="$scene" \
         SHUTTLESCP_UI_CLIPS_SITES="$SITES" \
         bwrap --dev-bind / / --tmpfs /home --bind "$home" /home/alex \
-        --ro-bind "$WORK/hosts" /etc/hosts --chdir /home/alex \
+        --ro-bind "$WORK/hosts" /etc/hosts --ro-bind "$WORK/passwd" /etc/passwd \
+        --ro-bind "$WORK/group" /etc/group --chdir /home/alex \
         "$WORK/shuttlescp"
     [[ -s "$frames/frames.txt" ]] || {
         echo "error: $scene recorded nothing; the app's log:" >&2

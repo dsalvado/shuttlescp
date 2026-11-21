@@ -3427,6 +3427,7 @@ dependencies = [
  "getrandom 0.4.3",
  "jiff",
  "keyring-core",
+ "nix",
  "oo7",
  "ring",
  "russh",

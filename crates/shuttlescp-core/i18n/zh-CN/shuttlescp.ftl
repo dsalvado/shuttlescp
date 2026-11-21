@@ -195,6 +195,48 @@ pane-open-error = { $error }。
 pane-column-name = 名称
 pane-column-size = 大小
 pane-column-modified = 修改时间
+pane-column-permissions = 权限
+pane-column-owner = 所有者
+
+permissions-title = 权限
+permissions-items = { $count } 个项目
+permissions-read = 读取
+permissions-write = 写入
+permissions-execute = 执行
+permissions-owner-row = 所有者
+permissions-group-row = 组
+permissions-others-row = 其他
+permissions-number = 数字：
+permissions-mixed = 混合
+permissions-special = 特殊
+permissions-setuid = 设置用户 ID
+permissions-setgid = 设置组 ID
+permissions-sticky = 粘滞位
+permissions-owner = 所有者：
+permissions-group = 组：
+permissions-keep = 混合：留空则保持不变
+permissions-no-owners = FTP 无法更改所有者
+permissions-change = 更改
+permissions-inside = 应用于其中的所有内容
+permissions-scope-all = 文件和文件夹
+permissions-scope-files = 仅文件
+permissions-scope-folders = 仅文件夹
+permissions-x-folders = 仅对文件夹设置执行
+permissions-x-folders-hint = 文件只有在已具有执行权限时才会获得执行权限：文件夹可以打开，而不会让每个文件都可执行
+permissions-use-sudo = 以 root 身份更改（sudo）
+permissions-use-sudo-hint = 适用于不属于您的文件：如服务器需要，会询问 sudo 密码
+permissions-no-sudo = 无法使用 sudo：{ $reason }
+permissions-password-title = sudo 密码
+permissions-password-prompt = { $server } 上的 sudo 密码：
+permissions-password-wrong = sudo 未接受该密码。请重试：
+permissions-password-ok = 继续
+permissions-sudo-title = 使用 sudo？
+permissions-sudo-one = 服务器拒绝更改 { $name }
+permissions-sudo-many = 服务器拒绝更改 { $count } 个项目
+permissions-sudo-detail = { $reason }。以 root 身份通过 sudo 重试？
+permissions-sudo-confirm = 使用 sudo
+permissions-changed = 已更改 { $count } 个项目
+permissions-failed-many = { $count } 个项目未更改：{ $error }
 
 pane-transfer =
     { $kind ->
@@ -212,6 +254,7 @@ pane-move = 移动(_M)
 pane-move-to = 移动到 { $name }(_M)
 pane-menu-new-folder = 新建文件夹(_N)…
 pane-menu-rename = 重命名(_R)…
+pane-menu-permissions = 权限(_P)…
 pane-menu-delete = 删除(_E)
 pane-menu-refresh = 刷新(_F)
 
@@ -242,6 +285,7 @@ job-paused = 已暂停
 job-paused-copied = 已暂停：已复制 { $done }/{ $total }
 job-preparing = 正在准备……
 job-deleting = 已删除 { $done }/{ $total }
+job-changing = 已更改 { $done }/{ $total }
 job-relay-right =
     { $kind ->
         [move] 移动 { $subject }：{ $from } → { $to }
@@ -271,6 +315,8 @@ summary-skipped = { $count } 个已跳过
 summary-stopped = { $count } 个已停止
 
 item-deleted = 已删除
+item-changed = 已更改
+item-not-changed = 未更改（链接或未选中）
 item-skipped = 已跳过：保留了现有文件
 item-paused = 已暂停
 item-paused-slot = 已暂停：正在等待空闲的传输位置
@@ -326,6 +372,7 @@ login-unfinished-what =
     { $kind ->
         [move] 移动 { $subject }
         [delete] 删除 { $subject }
+        [permissions] 权限 { $subject }
        *[copy] 复制 { $subject }
     }
 login-unfinished-saved-unknown = 未知（由旧版本保存）
@@ -486,6 +533,8 @@ job-title =
         [copy-other-server] 复制 { $what } 到另一台服务器的 { $dest }
         [move-other-server] 移动 { $what } 到另一台服务器的 { $dest }
         [delete-here] 从本机删除 { $what }
+        [permissions-here] 更改此计算机上 { $what } 的权限
+        [permissions-on-server] 更改服务器上 { $what } 的权限
        *[delete-on-server] 从服务器删除 { $what }
     }
 job-items = { $count } 项
@@ -500,6 +549,8 @@ error-cannot =
         [delete] 无法删除 { $path }：{ $reason }
         [delete-folder] 无法删除文件夹 { $path }：{ $reason }
         [set-time] 无法设置 { $path } 的时间：{ $reason }
+        [set-permissions] 无法更改 { $path } 的权限：{ $reason }
+        [set-owner] 无法更改 { $path } 的所有者：{ $reason }
         [finish] 无法完成 { $path }：{ $reason }
         [download] 无法下载 { $path }：{ $reason }
         [replace] 无法替换 { $path }：{ $reason }
@@ -516,6 +567,8 @@ error-cannot-bare =
         [delete] 无法删除 { $path }
         [delete-folder] 无法删除文件夹 { $path }
         [set-time] 无法设置 { $path } 的时间
+        [set-permissions] 无法更改 { $path } 的权限
+        [set-owner] 无法更改 { $path } 的所有者
         [finish] 无法完成 { $path }
         [download] 无法下载 { $path }
         [replace] 无法替换 { $path }
@@ -526,6 +579,18 @@ error-cannot-rename = 无法将 { $from } 重命名为 { $to }：{ $reason }
 error-cannot-rename-bare = 无法将 { $from } 重命名为 { $to }
 error-no-such-item = 没有这个文件或文件夹
 error-sftp-date = { $path } 的日期无法用 SFTP 保存
+error-ftp-no-owner = FTP 无法更改文件的所有者
+error-owner-unknown = 服务器未告知其当前所有者
+error-mode-unknown = 其当前权限未知，因此每个复选框都必须勾选或取消
+error-no-such-user = 没有名为 { $name } 的用户或组
+
+command-no-shell = 此账户不能在服务器上运行命令
+command-sudo-password = sudo 需要密码
+command-sudo-wrong-password = sudo 未接受该密码
+command-sudo-not-allowed = 此账户不能使用 sudo
+command-no-sudo = 服务器上没有 sudo
+command-sudo-terminal = 服务器的 sudo 只能在终端中使用
+command-no-answer = 服务器未及时响应
 checksum-unsupported = 服务器无法计算校验和
 checksum-no-answer = 服务器的回复中没有校验和
 verify-mismatch = 副本的校验和与原文件不同：副本与所复制的内容不一致

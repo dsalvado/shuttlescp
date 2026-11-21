@@ -57,6 +57,14 @@ struct StoredEntry {
     /// Seconds since 1970, if known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     modified: Option<u64>,
+    /// Unix permission bits. Files saved before ShuttleSCP knew them lack this and the
+    /// next two, which then read back as unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
 }
 
 impl ListingCache {
@@ -92,6 +100,7 @@ impl ListingCache {
                         entry.size,
                         entry.modified.map(from_seconds),
                     )
+                    .with_unix(entry.mode, entry.owner, entry.group)
                 })
                 .collect(),
         })
@@ -114,6 +123,9 @@ impl ListingCache {
                     folder: entry.kind() == EntryKind::Directory,
                     size: entry.size(),
                     modified: entry.modified().and_then(seconds),
+                    mode: entry.mode(),
+                    owner: entry.owner().map(str::to_owned),
+                    group: entry.group().map(str::to_owned),
                 })
                 .collect(),
         };
@@ -242,7 +254,11 @@ mod tests {
         let path = RemotePath::new("/media/store01");
         let entries = vec![
             entry("videos", EntryKind::Directory, 0, Some(1_700_000_000)),
-            entry("notes.txt", EntryKind::File, 1234, None),
+            entry("notes.txt", EntryKind::File, 1234, None).with_unix(
+                Some(0o640),
+                Some("alex".into()),
+                Some("staff".into()),
+            ),
         ];
         assert_eq!(cache.load(&path), None);
 
@@ -251,6 +267,21 @@ mod tests {
         assert_eq!(saved.entries, entries);
         assert!(saved.saved_at <= SystemTime::now());
         assert_eq!(cache.load(&RemotePath::new("/media")), None);
+    }
+
+    #[test]
+    fn a_listing_saved_by_an_older_version_still_loads() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cache = ListingCache::in_dir(temp.path().join("site"), 10);
+        let path = RemotePath::new("/old");
+        create_private_dir(&cache.dir).expect("dir");
+        // The shape older versions wrote: no mode, owner or group.
+        let old = r#"{"path":"/old","saved_at":1700000000,
+                      "entries":[{"name":"a.txt","folder":false,"size":5}]}"#;
+        fs::write(cache.file(&path), old).expect("write");
+        let saved = cache.load(&path).expect("old listing loads");
+        assert_eq!(saved.entries[0].mode(), None);
+        assert_eq!(saved.entries[0].owner(), None);
     }
 
     #[cfg(unix)]

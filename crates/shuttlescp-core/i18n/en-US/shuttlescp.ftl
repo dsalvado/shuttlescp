@@ -279,6 +279,54 @@ pane-open-error = { $error }.
 pane-column-name = Name
 pane-column-size = Size
 pane-column-modified = Modified
+pane-column-permissions = Permissions
+pane-column-owner = Owner
+
+## The Permissions dialog (permissions_dialog.rs) and what follows it: sudo, when
+## the server refuses. $count: a number of files and folders; $name: one of them;
+## $server: the server's name; $reason, $error: why a change failed.
+permissions-title = Permissions
+permissions-items = { $count } items
+permissions-read = Read
+permissions-write = Write
+permissions-execute = Execute
+permissions-owner-row = Owner
+permissions-group-row = Group
+permissions-others-row = Others
+permissions-number = Number:
+permissions-mixed = mixed
+permissions-special = Special
+permissions-setuid = Set user ID
+permissions-setgid = Set group ID
+permissions-sticky = Sticky
+permissions-owner = Owner:
+permissions-group = Group:
+permissions-keep = mixed: leave empty to keep
+permissions-no-owners = FTP cannot change owners
+permissions-change = Change
+permissions-inside = Apply to everything inside
+permissions-scope-all = Files and folders
+permissions-scope-files = Files only
+permissions-scope-folders = Folders only
+permissions-x-folders = Execute only on folders
+permissions-x-folders-hint = Files get execute only if they have it already, so folders open without making every file runnable
+permissions-use-sudo = Change as root (sudo)
+permissions-use-sudo-hint = For files you don't own: asks for the sudo password if the server needs it
+permissions-no-sudo = Sudo cannot be used: { $reason }
+permissions-password-title = Sudo Password
+permissions-password-prompt = Password for sudo on { $server }:
+permissions-password-wrong = Sudo did not accept that password. Try again:
+permissions-password-ok = Continue
+permissions-sudo-title = Use Sudo?
+permissions-sudo-one = The server refused to change { $name }
+permissions-sudo-many = The server refused to change { $count } items
+permissions-sudo-detail = { $reason }. Try again as root, with sudo?
+permissions-sudo-confirm = Use Sudo
+permissions-changed = { $count ->
+        [one] Changed 1 item
+       *[other] Changed { $count } items
+    }
+permissions-failed-many = { $count } items not changed: { $error }
 
 ## The file panes' right-click menu. The underscore marks the keyboard letter.
 ## $kind is upload, download or copy: the item copies files to the other pane,
@@ -300,6 +348,7 @@ pane-move = _Move
 pane-move-to = _Move to { $name }
 pane-menu-new-folder = _New Folder…
 pane-menu-rename = _Rename…
+pane-menu-permissions = _Permissions…
 pane-menu-delete = _Delete
 pane-menu-refresh = Re_fresh
 
@@ -345,6 +394,7 @@ job-paused = Paused
 job-paused-copied = Paused: { $done } of { $total } copied
 job-preparing = Preparing...
 job-deleting = { $done } of { $total } deleted
+job-changing = { $done } of { $total } changed
 # Site to site: $subject is what is copied (a name, or "3 items"); $from and $to the
 # two servers, the left pane's first with an arrow showing the way: → or ←.
 job-relay-right =
@@ -391,6 +441,8 @@ summary-stopped = { $count } stopped
 ## A file or folder's line inside a transfer.
 
 item-deleted = Deleted
+item-changed = Changed
+item-not-changed = Not changed (link or not chosen)
 item-skipped = Skipped: the existing file was kept
 item-paused = Paused
 item-paused-slot = Paused: waiting for a free transfer slot
@@ -461,6 +513,7 @@ login-unfinished-what =
     { $kind ->
         [move] Move { $subject }
         [delete] Delete { $subject }
+        [permissions] Permissions { $subject }
        *[copy] Copy { $subject }
     }
 login-unfinished-saved-unknown = Unknown (saved by an older version)
@@ -671,6 +724,8 @@ job-title =
         [copy-other-server] Copy { $what } to { $dest } on the other server
         [move-other-server] Move { $what } to { $dest } on the other server
         [delete-here] Delete { $what } from this computer
+        [permissions-here] Change permissions of { $what } on this computer
+        [permissions-on-server] Change permissions of { $what } on the server
        *[delete-on-server] Delete { $what } from the server
     }
 job-items =
@@ -694,6 +749,8 @@ error-cannot =
         [delete] cannot delete { $path }: { $reason }
         [delete-folder] cannot delete folder { $path }: { $reason }
         [set-time] cannot set the time of { $path }: { $reason }
+        [set-permissions] cannot change the permissions of { $path }: { $reason }
+        [set-owner] cannot change the owner of { $path }: { $reason }
         [finish] cannot finish { $path }: { $reason }
         [download] cannot download { $path }: { $reason }
         [replace] cannot replace { $path }: { $reason }
@@ -710,6 +767,8 @@ error-cannot-bare =
         [delete] cannot delete { $path }
         [delete-folder] cannot delete folder { $path }
         [set-time] cannot set the time of { $path }
+        [set-permissions] cannot change the permissions of { $path }
+        [set-owner] cannot change the owner of { $path }
         [finish] cannot finish { $path }
         [download] cannot download { $path }
         [replace] cannot replace { $path }
@@ -721,6 +780,19 @@ error-cannot-rename-bare = cannot rename { $from } to { $to }
 error-no-such-item = no such file or folder
 # $path: a file whose date is before 1970 or after 2106.
 error-sftp-date = { $path } has a date SFTP cannot store
+error-ftp-no-owner = FTP cannot change who owns a file
+error-owner-unknown = the server did not say who owns it now
+error-mode-unknown = its permissions now are unknown, so every box must be ticked or cleared
+error-no-such-user = there is no user or group { $name }
+
+## Changing permissions and owners with commands on the server, maybe through sudo
+command-no-shell = this account cannot run commands on the server
+command-sudo-password = sudo needs a password
+command-sudo-wrong-password = sudo did not accept the password
+command-sudo-not-allowed = this account may not use sudo
+command-no-sudo = the server has no sudo
+command-sudo-terminal = the server's sudo only works from a terminal
+command-no-answer = the server did not answer in time
 checksum-unsupported = the server cannot compute checksums
 checksum-no-answer = the server's answer held no checksum
 verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied

@@ -27,6 +27,7 @@ use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::io::AsyncSeekExt;
 
+use super::command::{self, Change, CommandError, RunAs, shell_quote};
 use super::{
     CONNECT_TIMEOUT, Challenge, ConnectError, Credentials, HostKey, RemoteMeta, RemoteReader,
     RemoteWriter, path_text,
@@ -171,12 +172,12 @@ const CHECKSUM_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Most bytes kept of the answer to a checksum command (a checksum takes 64).
 const MAX_CHECKSUM_ANSWER: usize = 64 * 1024;
 
-/// `text` as one word for the server's shell: in single quotes, inside which nothing
-/// (`$`, `;`, backquotes, spaces) has a meaning, each `'` written as `'\''` (end the
-/// quotes, an escaped quote, start them again). Works in sh, bash, zsh and fish.
-fn shell_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
-}
+/// Most bytes kept of a permission command's output.
+const MAX_COMMAND_ANSWER: usize = 64 * 1024;
+
+/// How long a permission command may take (sudo waits a few seconds after a wrong
+/// password before saying so).
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Sftp {
     /// The connection in use.
@@ -489,6 +490,159 @@ impl Sftp {
         .await
         .map_err(|error| crate::i18n::cannot("set-time", &text, &error))
     }
+
+    /// Change permission bits (SFTP "setstat" with only the permissions set). A link
+    /// is followed: the server changes the file it points to.
+    pub(super) async fn set_mode(&self, path: &RemotePath, mode: u32) -> Result<(), String> {
+        let text = path_text(path);
+        let attributes = FileAttributes {
+            permissions: Some(mode & 0o7777),
+            ..FileAttributes::empty()
+        };
+        self.run(|link| {
+            let (text, attributes) = (text.clone(), attributes.clone());
+            async move { link.session.set_metadata(text, attributes).await }
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("set-permissions", &text, &error))
+    }
+
+    /// Make `change` to `path` with a shell command on a second channel of the SSH
+    /// connection, as the user or through sudo (see [`command`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns why it was not made: no shell, sudo's refusal, or the command's own error
+    pub(super) async fn run_change(
+        &self,
+        path: &RemotePath,
+        change: &Change,
+        run_as: &RunAs,
+    ) -> Result<(), CommandError> {
+        let Some(line) = command::command_line(change, path.as_str(), run_as) else {
+            return Ok(());
+        };
+        self.run_line(line, run_as).await
+    }
+
+    /// Check that sudo works as `run_as` says, changing nothing.
+    pub(super) async fn check_sudo(&self, run_as: &RunAs) -> Result<(), CommandError> {
+        self.run_line(command::sudo_check_line(run_as), run_as)
+            .await
+    }
+
+    /// Run a command line made by [`command`], giving it the sudo password if there is
+    /// one, and read what happened.
+    async fn run_line(&self, line: String, run_as: &RunAs) -> Result<(), CommandError> {
+        let password = match run_as {
+            RunAs::Sudo {
+                password: Some(password),
+            } => Some(password),
+            RunAs::User | RunAs::Sudo { password: None } => None,
+        };
+        let (output, errors, status) = self.run_command(line, password).await?;
+        command::outcome(&output, &errors, status, run_as.is_sudo())
+    }
+
+    /// Run `line` in the account's shell and collect what it prints. `input`, if given,
+    /// is sent to the command as one line and then the input is closed (sudo -S reads
+    /// its password from there).
+    ///
+    /// # Returns
+    ///
+    /// Its output, its error output, and its exit status if the server sent one
+    async fn run_command(
+        &self,
+        line: String,
+        input: Option<&SecretString>,
+    ) -> Result<(String, String, Option<u32>), CommandError> {
+        let link = self.link().await;
+        let run = async {
+            let mut channel = link
+                .connection
+                .ssh
+                .channel_open_session()
+                .await
+                .map_err(|_| CommandError::NoShell)?;
+            channel
+                .exec(true, line)
+                .await
+                .map_err(|_| CommandError::NoShell)?;
+            if let Some(secret) = input {
+                // Wiped from memory when dropped, rather than left lying around.
+                let bytes = zeroize::Zeroizing::new(format!("{}\n", secret.expose_secret()));
+                // If sending fails, the command just doesn't get it and says so.
+                let _ = channel.data_bytes(bytes.as_bytes().to_vec()).await;
+            }
+            let _ = channel.eof().await;
+            let (mut output, mut errors, mut status) = (Vec::new(), Vec::new(), None);
+            while let Some(message) = channel.wait().await {
+                match message {
+                    russh::ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                    russh::ChannelMsg::ExtendedData { data, .. } => {
+                        errors.extend_from_slice(&data);
+                    }
+                    russh::ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    russh::ChannelMsg::Close => break,
+                    _ => {}
+                }
+                if output.len() + errors.len() > MAX_COMMAND_ANSWER {
+                    break;
+                }
+            }
+            let _ = channel.close().await;
+            Ok((
+                String::from_utf8_lossy(&output).into_owned(),
+                String::from_utf8_lossy(&errors).into_owned(),
+                status,
+            ))
+        };
+        tokio::time::timeout(COMMAND_TIMEOUT, run)
+            .await
+            .unwrap_or(Err(CommandError::NoAnswer))
+    }
+
+    /// Change the owner and/or group, by number. SFTP always sends the two together, so
+    /// one left out is first read from the file and sent back unchanged (otherwise the
+    /// library would send 0, making root its owner or group).
+    pub(super) async fn set_owner(
+        &self,
+        path: &RemotePath,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<(), String> {
+        let text = path_text(path);
+        let cannot = |error: &dyn std::fmt::Display| crate::i18n::cannot("set-owner", &text, error);
+        let (uid, gid) = match (uid, gid) {
+            (None, None) => return Ok(()),
+            (Some(uid), Some(gid)) => (uid, gid),
+            (uid, gid) => {
+                let current = self
+                    .run(|link| {
+                        let text = text.clone();
+                        async move { link.session.metadata(text).await }
+                    })
+                    .await
+                    .map_err(|error| cannot(&error))?;
+                match (uid.or(current.uid), gid.or(current.gid)) {
+                    (Some(uid), Some(gid)) => (uid, gid),
+                    // The server didn't say: better to change nothing than to guess.
+                    _ => return Err(cannot(&crate::tr!("error-owner-unknown"))),
+                }
+            }
+        };
+        let attributes = FileAttributes {
+            uid: Some(uid),
+            gid: Some(gid),
+            ..FileAttributes::empty()
+        };
+        self.run(|link| {
+            let (text, attributes) = (text.clone(), attributes.clone());
+            async move { link.session.set_metadata(text, attributes).await }
+        })
+        .await
+        .map_err(|error| cannot(&error))
+    }
 }
 
 /// [`RemoteMeta`] from SFTP file attributes.
@@ -500,6 +654,17 @@ fn meta(metadata: &Metadata) -> RemoteMeta {
         modified: metadata
             .mtime
             .map(|seconds| UNIX_EPOCH + Duration::from_secs(u64::from(seconds))),
+        mode: metadata.permissions,
+        // SFTP version 3 sends only the numbers; a name, if the library ever has one,
+        // is better.
+        owner: metadata
+            .user
+            .clone()
+            .or_else(|| metadata.uid.map(|uid| uid.to_string())),
+        group: metadata
+            .group
+            .clone()
+            .or_else(|| metadata.gid.map(|gid| gid.to_string())),
     }
 }
 

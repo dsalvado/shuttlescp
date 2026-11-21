@@ -8,6 +8,7 @@
 //!
 //! Front ends see one [`Remote`] type whichever protocol is in use.
 
+mod command;
 mod drives;
 mod ftp;
 mod sftp;
@@ -32,6 +33,7 @@ use crate::sites::{Protocol, Site};
 
 /// A server's SSH host key. Re-exported so front ends can pass keys around (for
 /// example after the user agrees to trust one) without depending on the SSH library.
+pub use command::{Change, CommandError, RunAs};
 pub use russh::keys::PublicKey as HostKey;
 pub use sftp::fingerprint;
 pub use tls::trust_certificate;
@@ -220,7 +222,7 @@ pub type Prompter = Arc<
 >;
 
 /// What a listing or a lookup says about a file or folder on the server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RemoteMeta {
     /// A folder (or, when following links, a link to one).
     pub(crate) is_dir: bool,
@@ -230,6 +232,12 @@ pub(crate) struct RemoteMeta {
     pub(crate) size: u64,
     /// Last modification, if known.
     pub(crate) modified: Option<SystemTime>,
+    /// Unix permission bits, if the server gives them.
+    pub(crate) mode: Option<u32>,
+    /// Owner's name, or number as text, if the server gives it.
+    pub(crate) owner: Option<String>,
+    /// Group's name, or number as text, if the server gives it.
+    pub(crate) group: Option<String>,
 }
 
 /// A server file being read.
@@ -360,16 +368,19 @@ impl Remote {
             } else {
                 meta.is_dir
             };
-            entries.push(FileEntry::new(
-                OsString::from(name),
-                if is_dir {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::File
-                },
-                meta.size,
-                meta.modified,
-            ));
+            entries.push(
+                FileEntry::new(
+                    OsString::from(name),
+                    if is_dir {
+                        EntryKind::Directory
+                    } else {
+                        EntryKind::File
+                    },
+                    meta.size,
+                    meta.modified,
+                )
+                .with_unix(meta.mode, meta.owner, meta.group),
+            );
         }
         entries.sort_unstable_by(FileEntry::listing_order);
         tracing::trace!("read {} remote entries from {}", entries.len(), dir);
@@ -523,6 +534,93 @@ impl Remote {
             Backend::Sftp(sftp) => sftp.set_modified(path, time).await,
             Backend::Ftp(ftp) => ftp.set_modified(path, time).await,
         }
+    }
+
+    /// Change a file's or folder's permission bits (only the lowest 12 are used).
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses (not the owner, or an FTP
+    /// server without `SITE CHMOD`)
+    pub async fn set_mode(&self, path: &RemotePath, mode: u32) -> Result<(), String> {
+        tracing::info!("setting permissions of {path} to {:04o}", mode & 0o7777);
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.set_mode(path, mode).await,
+            Backend::Ftp(ftp) => ftp.set_mode(path, mode).await,
+        }
+    }
+
+    /// Change a file's or folder's owner and/or group, by number; `None` keeps that one.
+    /// SFTP only (FTP has no command for it).
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses (usually: only root may give
+    /// files away) or the site is FTP
+    pub async fn set_owner(
+        &self,
+        path: &RemotePath,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<(), String> {
+        tracing::info!("setting owner of {path} to uid {uid:?}, gid {gid:?}");
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.set_owner(path, uid, gid).await,
+            Backend::Ftp(_) => Err(crate::i18n::cannot(
+                "set-owner",
+                path,
+                crate::tr!("error-ftp-no-owner"),
+            )),
+        }
+    }
+
+    /// Make `change` with a shell command (`chmod`, `chown`, `chgrp`), as the user or as
+    /// root through sudo. Owners can be given by name here. Needs an SSH account that may
+    /// run commands; FTP sites have none.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the change was not made; with [`RunAs::Sudo`] and no password,
+    /// [`CommandError::NeedsPassword`] says to ask for one and try again
+    pub async fn change_by_command(
+        &self,
+        path: &RemotePath,
+        change: &Change,
+        run_as: &RunAs,
+    ) -> Result<(), CommandError> {
+        // The password is never logged: it is not part of the command.
+        let who = if run_as.is_sudo() {
+            "as root (sudo)"
+        } else {
+            "as the user"
+        };
+        tracing::info!("changing {path} {who}: {change:?}");
+        let result = match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.run_change(path, change, run_as).await,
+            Backend::Ftp(_) => Err(CommandError::NoShell),
+        };
+        if let Err(error) = &result {
+            tracing::info!("not changed: {error:?}");
+        }
+        result
+    }
+
+    /// Check that sudo works on the server as `run_as` says (without a password, or
+    /// with the one given), changing nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns what sudo answered: [`CommandError::NeedsPassword`] means ask for one
+    pub async fn check_sudo(&self, run_as: &RunAs) -> Result<(), CommandError> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.check_sudo(run_as).await,
+            Backend::Ftp(_) => Err(CommandError::NoShell),
+        }
+    }
+
+    /// Whether this site can change owners at all (SFTP yes, FTP no).
+    pub fn can_set_owner(&self) -> bool {
+        matches!(self.0.backend, Backend::Sftp(_))
     }
 }
 
