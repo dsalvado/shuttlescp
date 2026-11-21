@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 /// Placeholder for a fact that could not be found.
 const UNKNOWN: &str = "unknown";
@@ -116,9 +116,10 @@ fn build_time() -> String {
     let time = std::env::var("SOURCE_DATE_EPOCH")
         .ok()
         .and_then(|seconds| seconds.trim().parse::<i64>().ok())
-        .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
-        .unwrap_or_else(Utc::now);
-    time.format("%Y-%m-%d %H:%M UTC").to_string()
+        .and_then(|seconds| Timestamp::from_second(seconds).ok())
+        .unwrap_or_else(Timestamp::now);
+    // A Timestamp formats in UTC.
+    time.strftime("%Y-%m-%d %H:%M UTC").to_string()
 }
 
 /// Rerun this script, refreshing the commit, "dirty" flag and build time, whenever the

@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use chrono::{Local, NaiveDateTime};
+use jiff::Zoned;
+use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{Event, Subscriber};
@@ -202,7 +203,7 @@ pub fn default_log_path() -> PathBuf {
 pub fn init(level: LogLevel, log_path: &Path) -> Logger {
     // A failing random source only makes the tag less unique, so fall back to 0.
     let tag = session_tag(getrandom::u32().unwrap_or(0));
-    let session_label = session_label(Some(Local::now().naive_local()), &tag);
+    let session_label = session_label(Some(Zoned::now().datetime()), &tag);
     let line_format = LineFormat {
         session: Arc::from(tag),
     };
@@ -329,10 +330,10 @@ fn session_tag(random: u32) -> String {
 ///
 /// * `start` - Local start time, or `None` if the clock could not be read
 /// * `tag` - The session tag from [`session_tag`]
-fn session_label(start: Option<NaiveDateTime>, tag: &str) -> String {
+fn session_label(start: Option<DateTime>, tag: &str) -> String {
     let time = start.map_or_else(
         || String::from("unknown-time"),
-        |time| time.format("%Y%m%d-%H%M%S").to_string(),
+        |time| time.strftime("%Y%m%d-%H%M%S").to_string(),
     );
     format!("{time}-{tag}")
 }
@@ -380,7 +381,7 @@ where
 
 /// Current local time as `YYYY-MM-DD HH:MM:SS.mmm`.
 fn local_timestamp() -> String {
-    Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+    Zoned::now().strftime("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
 /// Format a duration as `H:MM:SS`, e.g. 3725 seconds becomes `"1:02:05"`.
@@ -496,11 +497,18 @@ mod tests {
     }
 
     #[test]
+    fn log_lines_show_the_time_to_the_millisecond() {
+        // "2026-10-18 07:05:12.345": the milliseconds always have three digits.
+        let stamp = local_timestamp();
+        assert_eq!(stamp.len(), 23, "{stamp}");
+        assert_eq!(&stamp[19..20], ".", "{stamp}");
+        assert!(stamp[20..].chars().all(|c| c.is_ascii_digit()), "{stamp}");
+    }
+
+    #[test]
     fn session_label_combines_start_time_and_tag() {
         // Arrange
-        let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 18)
-            .and_then(|date| date.and_hms_opt(7, 5, 12))
-            .expect("valid date");
+        let start = jiff::civil::date(2026, 10, 18).at(7, 5, 12, 0);
 
         // Act + Assert
         assert_eq!(

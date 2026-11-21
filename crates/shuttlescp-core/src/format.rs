@@ -3,7 +3,8 @@
 use std::borrow::Cow;
 use std::time::SystemTime;
 
-use chrono::{DateTime, Local};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 /// Marker inserted where text was shortened.
 const ELLIPSIS: &str = "...";
@@ -44,11 +45,18 @@ pub fn format_size(bytes: u64) -> String {
 ///
 /// # Returns
 ///
-/// The formatted local time
+/// The formatted local time, or nothing for a time outside the years -9999 to 9999
 pub fn format_modified(time: SystemTime) -> String {
-    DateTime::<Local>::from(time)
-        .format("%Y-%m-%d %H:%M")
-        .to_string()
+    // jiff remembers the system's time zone, so looking it up for every row is cheap.
+    Timestamp::try_from(time).map_or_else(
+        |_| String::new(),
+        |stamp| {
+            stamp
+                .to_zoned(TimeZone::system())
+                .strftime("%Y-%m-%d %H:%M")
+                .to_string()
+        },
+    )
 }
 
 /// Format a duration for a "time left" estimate: "0:45", "12:05", "1:02:03".

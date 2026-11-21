@@ -15,7 +15,6 @@ argon2 = "0.6"
 # Without the default SIMD engines: export files hold a few short strings.
 base64 = { version = "0.23", default-features = false, features = ["std"] }
 chacha20poly1305 = "0.11"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 dirs = "7"
 getrandom = { version = "0.4", features = ["std"] }
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
@@ -38,6 +37,7 @@ zeroize = "1"
 ring = "0.17"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 fluent-templates = "0.15.1"
+jiff = "0.2.39"
 
 # The password keyring backend is the Linux Secret Service (GNOME Keyring, KWallet...),
 # the macOS Keychain and the Windows Credential Manager. Other systems get a stub that
