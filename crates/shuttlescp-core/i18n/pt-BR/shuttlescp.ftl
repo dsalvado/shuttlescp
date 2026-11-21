@@ -593,6 +593,14 @@ error-no-such-item = arquivo ou pasta inexistente
 error-sftp-date = { $path } tem uma data que o SFTP não consegue gravar
 error-ftp-no-owner = o FTP não permite alterar o proprietário de um arquivo
 error-owner-unknown = o servidor não informou o proprietário atual
+
+command-no-shell = esta conta não pode executar comandos no servidor
+command-sudo-password = o sudo pede uma senha
+command-sudo-wrong-password = o sudo não aceitou a senha
+command-sudo-not-allowed = esta conta não pode usar o sudo
+command-no-sudo = o servidor não tem sudo
+command-sudo-terminal = o sudo do servidor só funciona a partir de um terminal
+command-no-answer = o servidor não respondeu a tempo
 checksum-unsupported = o servidor não consegue calcular somas de verificação
 checksum-no-answer = a resposta do servidor não continha nenhuma soma de verificação
 verify-mismatch = a soma de verificação da cópia difere da do original: a cópia não é o que foi copiado

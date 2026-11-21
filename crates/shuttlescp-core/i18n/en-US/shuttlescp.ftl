@@ -729,6 +729,15 @@ error-no-such-item = no such file or folder
 error-sftp-date = { $path } has a date SFTP cannot store
 error-ftp-no-owner = FTP cannot change who owns a file
 error-owner-unknown = the server did not say who owns it now
+
+## Changing permissions and owners with commands on the server, maybe through sudo
+command-no-shell = this account cannot run commands on the server
+command-sudo-password = sudo needs a password
+command-sudo-wrong-password = sudo did not accept the password
+command-sudo-not-allowed = this account may not use sudo
+command-no-sudo = the server has no sudo
+command-sudo-terminal = the server's sudo only works from a terminal
+command-no-answer = the server did not answer in time
 checksum-unsupported = the server cannot compute checksums
 checksum-no-answer = the server's answer held no checksum
 verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied

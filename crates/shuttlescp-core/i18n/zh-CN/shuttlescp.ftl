@@ -534,6 +534,14 @@ error-no-such-item = 没有这个文件或文件夹
 error-sftp-date = { $path } 的日期无法用 SFTP 保存
 error-ftp-no-owner = FTP 无法更改文件的所有者
 error-owner-unknown = 服务器未告知其当前所有者
+
+command-no-shell = 此账户不能在服务器上运行命令
+command-sudo-password = sudo 需要密码
+command-sudo-wrong-password = sudo 未接受该密码
+command-sudo-not-allowed = 此账户不能使用 sudo
+command-no-sudo = 服务器上没有 sudo
+command-sudo-terminal = 服务器的 sudo 只能在终端中使用
+command-no-answer = 服务器未及时响应
 checksum-unsupported = 服务器无法计算校验和
 checksum-no-answer = 服务器的回复中没有校验和
 verify-mismatch = 副本的校验和与原文件不同：副本与所复制的内容不一致

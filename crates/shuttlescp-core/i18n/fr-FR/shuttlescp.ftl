@@ -593,6 +593,14 @@ error-no-such-item = aucun fichier ou dossier de ce nom
 error-sftp-date = { $path } a une date que SFTP ne peut pas enregistrer
 error-ftp-no-owner = FTP ne permet pas de changer le propriétaire d'un fichier
 error-owner-unknown = le serveur n'a pas indiqué son propriétaire actuel
+
+command-no-shell = ce compte ne peut pas exécuter de commandes sur le serveur
+command-sudo-password = sudo demande un mot de passe
+command-sudo-wrong-password = sudo n'a pas accepté le mot de passe
+command-sudo-not-allowed = ce compte n'a pas le droit d'utiliser sudo
+command-no-sudo = le serveur n'a pas sudo
+command-sudo-terminal = le sudo du serveur ne fonctionne que depuis un terminal
+command-no-answer = le serveur n'a pas répondu à temps
 checksum-unsupported = le serveur ne peut pas calculer de sommes de contrôle
 checksum-no-answer = la réponse du serveur ne contenait aucune somme de contrôle
 verify-mismatch = la somme de contrôle de la copie diffère de celle de l'original : la copie n'est pas ce qui a été copié

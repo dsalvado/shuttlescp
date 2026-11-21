@@ -35,9 +35,10 @@ echo "==> Starting SSH servers on ports $SFTP_PORT and $SHELL_PORT and FTP serve
 docker run -d --name "$NAME-sftp" -p "$SFTP_PORT:22" "$SFTP_IMAGE" \
     test:test:::upload,upload/other >/dev/null
 # SSH with a shell: user test, password test; its home is /config, writable folder
-# /config/files.
+# /config/files. The user may use sudo, with its password.
 docker run -d --name "$NAME-shell" -p "$SHELL_PORT:2222" -e USER_NAME=test \
-    -e USER_PASSWORD=test -e PASSWORD_ACCESS=true "$SHELL_IMAGE" >/dev/null
+    -e USER_PASSWORD=test -e PASSWORD_ACCESS=true -e SUDO_ACCESS=true \
+    "$SHELL_IMAGE" >/dev/null
 # FTP (vsftpd): user test, password test; passive data ports 21000-21010. The image's
 # start script creates the user, then runs the command given. vsftpd is run in the
 # foreground as that command: left to the script, it starts in the background and the
@@ -90,6 +91,8 @@ wait_for() {
 wait_for "$SFTP_PORT" SSH "$NAME-sftp"
 wait_for "$SHELL_PORT" SSH "$NAME-shell"
 docker exec "$NAME-shell" sh -c 'mkdir -p /config/files && chown test /config/files'
+# A file of root's, which only sudo can change.
+docker exec "$NAME-shell" sh -c 'mkdir -p /config/sudo && echo hello > /config/sudo/root-file'
 wait_for "$FTP_PORT" 220 "$NAME-ftp"
 wait_for "$LIMITED_PORT" 220 "$NAME-limited"
 

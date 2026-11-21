@@ -18,7 +18,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use secrecy::SecretString;
 use shuttlescp_core::entry::EntryKind;
 use shuttlescp_core::path::{RemotePath, SidePath};
-use shuttlescp_core::remote::{ConnectError, Credentials, Remote, connect};
+use shuttlescp_core::remote::{
+    Change, CommandError, ConnectError, Credentials, Remote, RunAs, connect,
+};
 use shuttlescp_core::sites::{FtpOptions, Protocol, Site, SshAuth};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1207,4 +1209,79 @@ async fn a_file_held_back_by_the_limit_continues_from_its_partial_copy() {
         .expect("it was held back and continued");
     assert!(resumed_at > 0, "it started over");
     assert_eq!(std::fs::read(back.join(name)).expect("read"), pattern(SIZE));
+}
+
+/// Changing a file of root's: the user's own rights are refused, sudo without a
+/// password says one is needed, a wrong one is refused, the right one works, and owners
+/// can be given by name. Uses the script's `/config/sudo/root-file` on the shell server.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn sudo_changes_what_the_user_may_not() {
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let dir = RemotePath::new("/config/sudo");
+    let file = dir.join("root-file");
+    let listed = || async {
+        remote
+            .list_dir(&dir)
+            .await
+            .expect("list")
+            .into_iter()
+            .find(|entry| entry.name() == "root-file")
+            .expect("root-file listed")
+    };
+    let sudo = |password: Option<&str>| RunAs::Sudo {
+        password: password.map(SecretString::from),
+    };
+    let chmod = Change::Mode(0o600);
+
+    let as_user = remote.change_by_command(&file, &chmod, &RunAs::User).await;
+    assert!(
+        matches!(&as_user, Err(CommandError::Failed(reason)) if reason.contains("not permitted")),
+        "{as_user:?}"
+    );
+    assert_eq!(
+        remote.change_by_command(&file, &chmod, &sudo(None)).await,
+        Err(CommandError::NeedsPassword)
+    );
+    assert_eq!(
+        remote
+            .change_by_command(&file, &chmod, &sudo(Some("wrong")))
+            .await,
+        Err(CommandError::WrongPassword)
+    );
+
+    let right = sudo(Some(&server.password));
+    remote
+        .change_by_command(&file, &chmod, &right)
+        .await
+        .expect("sudo chmod");
+    assert_eq!(listed().await.mode(), Some(0o600));
+
+    // Owner by name; the SFTP listing then shows the test user's number.
+    let mine = Change::Owner {
+        owner: Some("test".to_owned()),
+        group: None,
+    };
+    remote
+        .change_by_command(&file, &mine, &right)
+        .await
+        .expect("sudo chown");
+    assert_ne!(listed().await.owner(), Some("0"), "still root's");
+}
+
+/// Accounts that may not run commands say so, rather than seeming to succeed: an
+/// SFTP-only account (whose server "runs" any command by starting SFTP), and FTP.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn commands_need_an_account_with_a_shell() {
+    for var in ["SHUTTLESCP_TEST_SFTP", "SHUTTLESCP_TEST_FTP"] {
+        let server = Server::from_env(var);
+        let remote = server.connect().await;
+        let file = server.dir.join("links/own-file");
+        let result = remote
+            .change_by_command(&file, &Change::Mode(0o644), &RunAs::User)
+            .await;
+        assert_eq!(result, Err(CommandError::NoShell), "{var}");
+    }
 }

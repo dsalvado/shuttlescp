@@ -27,6 +27,7 @@ use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::io::AsyncSeekExt;
 
+use super::command::{self, Change, CommandError, RunAs, shell_quote};
 use super::{
     CONNECT_TIMEOUT, Challenge, ConnectError, Credentials, HostKey, RemoteMeta, RemoteReader,
     RemoteWriter, path_text,
@@ -171,12 +172,12 @@ const CHECKSUM_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Most bytes kept of the answer to a checksum command (a checksum takes 64).
 const MAX_CHECKSUM_ANSWER: usize = 64 * 1024;
 
-/// `text` as one word for the server's shell: in single quotes, inside which nothing
-/// (`$`, `;`, backquotes, spaces) has a meaning, each `'` written as `'\''` (end the
-/// quotes, an escaped quote, start them again). Works in sh, bash, zsh and fish.
-fn shell_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
-}
+/// Most bytes kept of a permission command's output.
+const MAX_COMMAND_ANSWER: usize = 64 * 1024;
+
+/// How long a permission command may take (sudo waits a few seconds after a wrong
+/// password before saying so).
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Sftp {
     /// The connection in use.
@@ -504,6 +505,89 @@ impl Sftp {
         })
         .await
         .map_err(|error| crate::i18n::cannot("set-permissions", &text, &error))
+    }
+
+    /// Make `change` to `path` with a shell command on a second channel of the SSH
+    /// connection, as the user or through sudo (see [`command`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns why it was not made: no shell, sudo's refusal, or the command's own error
+    pub(super) async fn run_change(
+        &self,
+        path: &RemotePath,
+        change: &Change,
+        run_as: &RunAs,
+    ) -> Result<(), CommandError> {
+        let Some(line) = command::command_line(change, path.as_str(), run_as) else {
+            return Ok(());
+        };
+        let password = match run_as {
+            RunAs::Sudo {
+                password: Some(password),
+            } => Some(password),
+            RunAs::User | RunAs::Sudo { password: None } => None,
+        };
+        let (output, errors, status) = self.run_command(line, password).await?;
+        command::outcome(&output, &errors, status, run_as.is_sudo())
+    }
+
+    /// Run `line` in the account's shell and collect what it prints. `input`, if given,
+    /// is sent to the command as one line and then the input is closed (sudo -S reads
+    /// its password from there).
+    ///
+    /// # Returns
+    ///
+    /// Its output, its error output, and its exit status if the server sent one
+    async fn run_command(
+        &self,
+        line: String,
+        input: Option<&SecretString>,
+    ) -> Result<(String, String, Option<u32>), CommandError> {
+        let link = self.link().await;
+        let run = async {
+            let mut channel = link
+                .connection
+                .ssh
+                .channel_open_session()
+                .await
+                .map_err(|_| CommandError::NoShell)?;
+            channel
+                .exec(true, line)
+                .await
+                .map_err(|_| CommandError::NoShell)?;
+            if let Some(secret) = input {
+                // Wiped from memory when dropped, rather than left lying around.
+                let bytes = zeroize::Zeroizing::new(format!("{}\n", secret.expose_secret()));
+                // If sending fails, the command just doesn't get it and says so.
+                let _ = channel.data_bytes(bytes.as_bytes().to_vec()).await;
+            }
+            let _ = channel.eof().await;
+            let (mut output, mut errors, mut status) = (Vec::new(), Vec::new(), None);
+            while let Some(message) = channel.wait().await {
+                match message {
+                    russh::ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                    russh::ChannelMsg::ExtendedData { data, .. } => {
+                        errors.extend_from_slice(&data);
+                    }
+                    russh::ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    russh::ChannelMsg::Close => break,
+                    _ => {}
+                }
+                if output.len() + errors.len() > MAX_COMMAND_ANSWER {
+                    break;
+                }
+            }
+            let _ = channel.close().await;
+            Ok((
+                String::from_utf8_lossy(&output).into_owned(),
+                String::from_utf8_lossy(&errors).into_owned(),
+                status,
+            ))
+        };
+        tokio::time::timeout(COMMAND_TIMEOUT, run)
+            .await
+            .unwrap_or(Err(CommandError::NoAnswer))
     }
 
     /// Change the owner and/or group, by number. SFTP always sends the two together, so

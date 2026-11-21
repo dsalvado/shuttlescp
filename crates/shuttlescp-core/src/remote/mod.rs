@@ -8,6 +8,7 @@
 //!
 //! Front ends see one [`Remote`] type whichever protocol is in use.
 
+mod command;
 mod drives;
 mod ftp;
 mod sftp;
@@ -32,6 +33,7 @@ use crate::sites::{Protocol, Site};
 
 /// A server's SSH host key. Re-exported so front ends can pass keys around (for
 /// example after the user agrees to trust one) without depending on the SSH library.
+pub use command::{Change, CommandError, RunAs};
 pub use russh::keys::PublicKey as HostKey;
 pub use sftp::fingerprint;
 pub use tls::trust_certificate;
@@ -570,6 +572,37 @@ impl Remote {
                 crate::tr!("error-ftp-no-owner"),
             )),
         }
+    }
+
+    /// Make `change` with a shell command (`chmod`, `chown`, `chgrp`), as the user or as
+    /// root through sudo. Owners can be given by name here. Needs an SSH account that may
+    /// run commands; FTP sites have none.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the change was not made; with [`RunAs::Sudo`] and no password,
+    /// [`CommandError::NeedsPassword`] says to ask for one and try again
+    pub async fn change_by_command(
+        &self,
+        path: &RemotePath,
+        change: &Change,
+        run_as: &RunAs,
+    ) -> Result<(), CommandError> {
+        // The password is never logged: it is not part of the command.
+        let who = if run_as.is_sudo() {
+            "as root (sudo)"
+        } else {
+            "as the user"
+        };
+        tracing::info!("changing {path} {who}: {change:?}");
+        let result = match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.run_change(path, change, run_as).await,
+            Backend::Ftp(_) => Err(CommandError::NoShell),
+        };
+        if let Err(error) = &result {
+            tracing::info!("not changed: {error:?}");
+        }
+        result
     }
 
     /// Whether this site can change owners at all (SFTP yes, FTP no).
