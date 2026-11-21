@@ -27,12 +27,15 @@ use shuttlescp_core::format::{format_modified, format_owner, format_rights, form
 use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::local_fs;
 use shuttlescp_core::path::SidePath;
-use shuttlescp_core::remote::Remote;
+use shuttlescp_core::permissions::{self, ApplyError, PermissionEdit};
+use shuttlescp_core::remote::{CommandError, Remote, RunAs};
 use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
 
+use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog::{self, Dialog};
 use crate::disk_picker::DiskPicker;
 use crate::name_dialog::{self, NamePrompt};
+use crate::permissions_dialog;
 use crate::tooltip::TooltipExt;
 use shuttlescp_core::tr;
 
@@ -174,6 +177,28 @@ pub enum FilePaneMsg {
     /// These files and folders (and everything inside them) are used by running
     /// transfers: show them as busy until the next update.
     InUse(Vec<SidePath>),
+    /// Open the Permissions dialog for the selected items.
+    Permissions,
+    /// Change these items' permissions and owner (each with its permissions now).
+    ApplyPermissions {
+        /// The items, each with its permission bits now, if known.
+        items: Vec<(SidePath, Option<u32>)>,
+        /// What to change.
+        edit: PermissionEdit,
+        /// As the user, or as root through sudo.
+        run_as: RunAs,
+    },
+}
+
+/// The outcome of changing permissions, item by item.
+#[derive(Debug)]
+pub struct PermissionsDone {
+    /// What was asked.
+    edit: PermissionEdit,
+    /// Each item, its permissions before, and what happened.
+    results: Vec<(SidePath, Option<u32>, Result<(), ApplyError>)>,
+    /// It ran through sudo.
+    sudo: bool,
 }
 
 /// Files and folders dropped on a pane.
@@ -256,6 +281,8 @@ pub enum PaneCommand {
     Operation(Result<String, String>),
     /// The server's drives, for the drive drop-down.
     Drives(Vec<Disk>),
+    /// Permissions were changed (or not): see what to do next.
+    Permissions(PermissionsDone),
 }
 
 /// Result of a background directory listing.
@@ -413,6 +440,7 @@ struct PaneActions {
     move_: gio::SimpleAction,
     delete: gio::SimpleAction,
     rename: gio::SimpleAction,
+    permissions: gio::SimpleAction,
     /// The menu section holding the copy and move items, renamed after the other pane.
     transfer_section: gio::Menu,
 }
@@ -531,6 +559,167 @@ impl FilePane {
             .set_enabled(self.peer_available && selected > 0);
         self.actions.delete.set_enabled(selected > 0);
         self.actions.rename.set_enabled(selected == 1);
+        // Windows' own files have no Unix permissions.
+        let has_permissions = self.remote.is_some() || cfg!(unix);
+        self.actions
+            .permissions
+            .set_enabled(has_permissions && selected > 0);
+    }
+
+    /// The selected items with what their listing says about them.
+    fn selected_entries(&self) -> Vec<(SidePath, FileEntry)> {
+        let selection = &self.entries.selection_model;
+        (0..selection.n_items())
+            .filter(|&position| selection.is_selected(position))
+            .filter_map(|position| self.entries.get_visible(position))
+            .filter_map(|item| match &*item.borrow() {
+                Row::Parent { .. } => None,
+                Row::Entry { path, entry, .. } => Some((path.clone(), entry.clone())),
+            })
+            .collect()
+    }
+
+    /// Open the Permissions dialog for the selected items; its answer comes back as
+    /// [`FilePaneMsg::ApplyPermissions`].
+    fn ask_permissions(&self, root: &gtk::Box, sender: &ComponentSender<Self>) {
+        let selected = self.selected_entries();
+        let Some(window) = root.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        if selected.is_empty() {
+            return;
+        }
+        let shown: Vec<permissions_dialog::Item> = selected
+            .iter()
+            .map(|(_, entry)| permissions_dialog::Item {
+                name: entry.display_name().into_owned(),
+                mode: entry.mode(),
+                owner: entry.owner().map(str::to_owned),
+                group: entry.group().map(str::to_owned),
+            })
+            .collect();
+        // Local files: yes. Servers: SFTP, not FTP.
+        let owners = self.remote.as_ref().is_none_or(Remote::can_set_owner);
+        let items: Vec<(SidePath, Option<u32>)> = selected
+            .into_iter()
+            .map(|(path, entry)| (path, entry.mode()))
+            .collect();
+        let sender = sender.clone();
+        permissions_dialog::ask(&window, &shown, owners, move |edit| {
+            if let Some(edit) = edit {
+                sender.input(FilePaneMsg::ApplyPermissions {
+                    items,
+                    edit,
+                    run_as: RunAs::User,
+                });
+            }
+        });
+    }
+
+    /// After a change: report it, or offer sudo, or ask for sudo's password, as the
+    /// results call for.
+    fn permissions_done(
+        &mut self,
+        done: PermissionsDone,
+        root: &gtk::Box,
+        sender: &ComponentSender<Self>,
+    ) {
+        let PermissionsDone {
+            edit,
+            results,
+            sudo,
+        } = done;
+        let changed = results
+            .iter()
+            .filter(|(_, _, result)| result.is_ok())
+            .count();
+        let failed: Vec<(SidePath, Option<u32>, ApplyError)> = results
+            .into_iter()
+            .filter_map(|(path, mode, result)| result.err().map(|error| (path, mode, error)))
+            .collect();
+        if changed > 0 {
+            // The listing shows the new values.
+            self.request_listing(self.current_dir.clone(), sender);
+        }
+        let Some(first) = failed.first().map(|(_, _, error)| error.clone()) else {
+            self.notice = Some(tr!("permissions-changed", count = changed));
+            return;
+        };
+        let window = root.root().and_downcast::<gtk::Window>();
+        let retry = |run_as: RunAs, failed: &[(SidePath, Option<u32>, ApplyError)]| {
+            FilePaneMsg::ApplyPermissions {
+                items: failed
+                    .iter()
+                    .map(|(path, mode, _)| (path.clone(), *mode))
+                    .collect(),
+                edit: edit.clone(),
+                run_as,
+            }
+        };
+        let server = self
+            .remote
+            .as_ref()
+            .map(|remote| remote.host().to_owned())
+            .unwrap_or_default();
+        match (&window, first.sudo.as_ref()) {
+            // Sudo wants a password, or a better one: ask, then try again with it.
+            (Some(window), Some(CommandError::NeedsPassword | CommandError::WrongPassword)) => {
+                let again = first.sudo == Some(CommandError::WrongPassword);
+                let (sender, retry_with) = (sender.clone(), retry(RunAs::User, &failed));
+                permissions_dialog::ask_sudo_password(window, &server, again, move |password| {
+                    let Some(password) = password else {
+                        return;
+                    };
+                    if let FilePaneMsg::ApplyPermissions { items, edit, .. } = retry_with {
+                        sender.input(FilePaneMsg::ApplyPermissions {
+                            items,
+                            edit,
+                            run_as: RunAs::Sudo {
+                                password: Some(password),
+                            },
+                        });
+                    }
+                });
+            }
+            // Refused as the user: offer to try as root.
+            (Some(window), None) if !sudo && first.sudo_may_help => {
+                let question = match failed.as_slice() {
+                    [(path, _, _)] => tr!("permissions-sudo-one", name = path.to_string()),
+                    _ => tr!("permissions-sudo-many", count = failed.len()),
+                };
+                let (sender, message) = (
+                    sender.clone(),
+                    retry(RunAs::Sudo { password: None }, &failed),
+                );
+                let message = RefCell::new(Some(message));
+                confirm_dialog::ask(
+                    window,
+                    Confirmation {
+                        title: &tr!("permissions-sudo-title"),
+                        question: &question,
+                        detail: &tr!("permissions-sudo-detail", reason = first.message.clone()),
+                        confirm_label: &tr!("permissions-sudo-confirm"),
+                    },
+                    move |yes| {
+                        if let (true, Some(message)) = (yes, message.borrow_mut().take()) {
+                            sender.input(message);
+                        }
+                    },
+                );
+                self.status = first.message;
+            }
+            _ => {
+                tracing::warn!("{}", first.message);
+                self.status = match failed.len() {
+                    1 => first.message,
+                    count => tr!(
+                        "permissions-failed-many",
+                        count = count,
+                        error = first.message
+                    ),
+                };
+            }
+        }
     }
 
     /// Ask for a name over the pane's window, then send the message `on_name` makes.
@@ -986,6 +1175,7 @@ impl Component for FilePane {
                     | FilePaneMsg::Request(_)
                     | FilePaneMsg::Rename
                     | FilePaneMsg::NewFolder
+                    | FilePaneMsg::Permissions
             )
         {
             tracing::debug!("ignoring {message:?}: the folder is being read");
@@ -1193,6 +1383,27 @@ impl Component for FilePane {
                     )
                 });
             }
+            FilePaneMsg::Permissions => self.ask_permissions(root, &sender),
+            FilePaneMsg::ApplyPermissions {
+                items,
+                edit,
+                run_as,
+            } => {
+                let remote = self.remote.clone();
+                sender.oneshot_command(async move {
+                    let mut results = Vec::new();
+                    for (path, mode) in items {
+                        let result =
+                            permissions::apply(remote.as_ref(), &path, mode, &edit, &run_as).await;
+                        results.push((path, mode, result));
+                    }
+                    PaneCommand::Permissions(PermissionsDone {
+                        edit,
+                        results,
+                        sudo: run_as.is_sudo(),
+                    })
+                });
+            }
             FilePaneMsg::DisksChanged if self.remote.is_some() => {}
             FilePaneMsg::DisksChanged => {
                 self.disk_picker.reload();
@@ -1218,7 +1429,7 @@ impl Component for FilePane {
         &mut self,
         command: Self::CommandOutput,
         sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        root: &Self::Root,
     ) {
         let listing = match command {
             PaneCommand::Listing(listing) => listing,
@@ -1235,6 +1446,10 @@ impl Component for FilePane {
             PaneCommand::Drives(drives) => {
                 self.disk_picker.set_disks(drives);
                 self.disk_picker.show_dir(&self.current_dir);
+                return;
+            }
+            PaneCommand::Permissions(done) => {
+                self.permissions_done(done, root, &sender);
                 return;
             }
         };
@@ -1382,6 +1597,7 @@ fn context_menu(
         move_: add("move", || FilePaneMsg::Request(JobKind::Move)),
         delete: add("delete", || FilePaneMsg::Request(JobKind::Delete)),
         rename: add("rename", || FilePaneMsg::Rename),
+        permissions: add("permissions", || FilePaneMsg::Permissions),
         transfer_section: transfer_section.clone(),
     };
     add("new-folder", || FilePaneMsg::NewFolder);
@@ -1434,6 +1650,10 @@ fn context_menu(
     let edit_section = gio::Menu::new();
     edit_section.append(Some(&tr!("pane-menu-new-folder")), Some("pane.new-folder"));
     edit_section.append(Some(&tr!("pane-menu-rename")), Some("pane.rename"));
+    edit_section.append(
+        Some(&tr!("pane-menu-permissions")),
+        Some("pane.permissions"),
+    );
     let delete_section = gio::Menu::new();
     delete_section.append(Some(&tr!("pane-menu-delete")), Some("pane.delete"));
     let menu = gio::Menu::new();

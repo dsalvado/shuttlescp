@@ -219,6 +219,40 @@ pane-column-modified = Geändert
 pane-column-permissions = Rechte
 pane-column-owner = Besitzer
 
+permissions-title = Rechte
+permissions-items = { $count } Elemente
+permissions-read = Lesen
+permissions-write = Schreiben
+permissions-execute = Ausführen
+permissions-owner-row = Besitzer
+permissions-group-row = Gruppe
+permissions-others-row = Andere
+permissions-number = Zahl:
+permissions-mixed = gemischt
+permissions-special = Spezial
+permissions-setuid = Set-User-ID
+permissions-setgid = Set-Group-ID
+permissions-sticky = Sticky
+permissions-owner = Besitzer:
+permissions-group = Gruppe:
+permissions-keep = gemischt: leer lassen zum Beibehalten
+permissions-no-owners = FTP kann Besitzer nicht ändern
+permissions-change = Ändern
+permissions-password-title = sudo-Passwort
+permissions-password-prompt = sudo-Passwort auf { $server }:
+permissions-password-wrong = sudo hat dieses Passwort nicht angenommen. Bitte erneut eingeben:
+permissions-password-ok = Weiter
+permissions-sudo-title = sudo verwenden?
+permissions-sudo-one = Der Server hat das Ändern von { $name } abgelehnt
+permissions-sudo-many = Der Server hat das Ändern von { $count } Elementen abgelehnt
+permissions-sudo-detail = { $reason }. Als root mit sudo erneut versuchen?
+permissions-sudo-confirm = sudo verwenden
+permissions-changed = { $count ->
+        [one] 1 Element geändert
+       *[other] { $count } Elemente geändert
+    }
+permissions-failed-many = { $count } Elemente nicht geändert: { $error }
+
 pane-transfer =
     { $kind ->
         [upload] _Hochladen
@@ -235,6 +269,7 @@ pane-move = _Verschieben
 pane-move-to = _Verschieben nach { $name }
 pane-menu-new-folder = _Neuer Ordner…
 pane-menu-rename = _Umbenennen…
+pane-menu-permissions = _Rechte…
 pane-menu-delete = _Löschen
 pane-menu-refresh = _Aktualisieren
 
@@ -593,6 +628,8 @@ error-no-such-item = keine solche Datei und kein solcher Ordner
 error-sftp-date = { $path } hat ein Datum, das SFTP nicht speichern kann
 error-ftp-no-owner = FTP kann den Besitzer einer Datei nicht ändern
 error-owner-unknown = Der Server hat den aktuellen Besitzer nicht genannt
+error-mode-unknown = Die aktuellen Rechte sind unbekannt, daher muss jedes Kästchen gesetzt oder geleert werden
+error-no-such-user = Es gibt keinen Benutzer und keine Gruppe { $name }
 
 command-no-shell = Dieses Konto darf auf dem Server keine Befehle ausführen
 command-sudo-password = sudo verlangt ein Passwort

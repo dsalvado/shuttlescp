@@ -219,6 +219,40 @@ pane-column-modified = Modifié
 pane-column-permissions = Droits
 pane-column-owner = Propriétaire
 
+permissions-title = Droits
+permissions-items = { $count } éléments
+permissions-read = Lecture
+permissions-write = Écriture
+permissions-execute = Exécution
+permissions-owner-row = Propriétaire
+permissions-group-row = Groupe
+permissions-others-row = Autres
+permissions-number = Nombre :
+permissions-mixed = mixte
+permissions-special = Spéciaux
+permissions-setuid = Set-user-ID
+permissions-setgid = Set-group-ID
+permissions-sticky = Sticky
+permissions-owner = Propriétaire :
+permissions-group = Groupe :
+permissions-keep = mixte : laisser vide pour conserver
+permissions-no-owners = FTP ne peut pas changer les propriétaires
+permissions-change = Modifier
+permissions-password-title = Mot de passe sudo
+permissions-password-prompt = Mot de passe sudo sur { $server } :
+permissions-password-wrong = sudo n'a pas accepté ce mot de passe. Réessayez :
+permissions-password-ok = Continuer
+permissions-sudo-title = Utiliser sudo ?
+permissions-sudo-one = Le serveur a refusé de modifier { $name }
+permissions-sudo-many = Le serveur a refusé de modifier { $count } éléments
+permissions-sudo-detail = { $reason }. Réessayer en tant que root, avec sudo ?
+permissions-sudo-confirm = Utiliser sudo
+permissions-changed = { $count ->
+        [one] 1 élément modifié
+       *[other] { $count } éléments modifiés
+    }
+permissions-failed-many = { $count } éléments non modifiés : { $error }
+
 pane-transfer =
     { $kind ->
         [upload] _Envoyer
@@ -235,6 +269,7 @@ pane-move = _Déplacer
 pane-move-to = _Déplacer vers { $name }
 pane-menu-new-folder = _Nouveau dossier…
 pane-menu-rename = _Renommer…
+pane-menu-permissions = Dr_oits…
 pane-menu-delete = _Supprimer
 pane-menu-refresh = _Actualiser
 
@@ -593,6 +628,8 @@ error-no-such-item = aucun fichier ou dossier de ce nom
 error-sftp-date = { $path } a une date que SFTP ne peut pas enregistrer
 error-ftp-no-owner = FTP ne permet pas de changer le propriétaire d'un fichier
 error-owner-unknown = le serveur n'a pas indiqué son propriétaire actuel
+error-mode-unknown = ses droits actuels sont inconnus : chaque case doit être cochée ou décochée
+error-no-such-user = il n'y a pas d'utilisateur ou de groupe { $name }
 
 command-no-shell = ce compte ne peut pas exécuter de commandes sur le serveur
 command-sudo-password = sudo demande un mot de passe

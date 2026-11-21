@@ -198,6 +198,37 @@ pane-column-modified = 修改时间
 pane-column-permissions = 权限
 pane-column-owner = 所有者
 
+permissions-title = 权限
+permissions-items = { $count } 个项目
+permissions-read = 读取
+permissions-write = 写入
+permissions-execute = 执行
+permissions-owner-row = 所有者
+permissions-group-row = 组
+permissions-others-row = 其他
+permissions-number = 数字：
+permissions-mixed = 混合
+permissions-special = 特殊
+permissions-setuid = 设置用户 ID
+permissions-setgid = 设置组 ID
+permissions-sticky = 粘滞位
+permissions-owner = 所有者：
+permissions-group = 组：
+permissions-keep = 混合：留空则保持不变
+permissions-no-owners = FTP 无法更改所有者
+permissions-change = 更改
+permissions-password-title = sudo 密码
+permissions-password-prompt = { $server } 上的 sudo 密码：
+permissions-password-wrong = sudo 未接受该密码。请重试：
+permissions-password-ok = 继续
+permissions-sudo-title = 使用 sudo？
+permissions-sudo-one = 服务器拒绝更改 { $name }
+permissions-sudo-many = 服务器拒绝更改 { $count } 个项目
+permissions-sudo-detail = { $reason }。以 root 身份通过 sudo 重试？
+permissions-sudo-confirm = 使用 sudo
+permissions-changed = 已更改 { $count } 个项目
+permissions-failed-many = { $count } 个项目未更改：{ $error }
+
 pane-transfer =
     { $kind ->
         [upload] 上传(_U)
@@ -214,6 +245,7 @@ pane-move = 移动(_M)
 pane-move-to = 移动到 { $name }(_M)
 pane-menu-new-folder = 新建文件夹(_N)…
 pane-menu-rename = 重命名(_R)…
+pane-menu-permissions = 权限(_P)…
 pane-menu-delete = 删除(_E)
 pane-menu-refresh = 刷新(_F)
 
@@ -534,6 +566,8 @@ error-no-such-item = 没有这个文件或文件夹
 error-sftp-date = { $path } 的日期无法用 SFTP 保存
 error-ftp-no-owner = FTP 无法更改文件的所有者
 error-owner-unknown = 服务器未告知其当前所有者
+error-mode-unknown = 其当前权限未知，因此每个复选框都必须勾选或取消
+error-no-such-user = 没有名为 { $name } 的用户或组
 
 command-no-shell = 此账户不能在服务器上运行命令
 command-sudo-password = sudo 需要密码

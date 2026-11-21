@@ -204,6 +204,30 @@ pub fn set_owner(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), 
         .map_err(|error| crate::i18n::cannot("set-owner", path.display(), error))
 }
 
+/// The number of the user named `name` on this computer, or `name` itself if it is a
+/// number (Linux and macOS).
+#[cfg(unix)]
+pub fn user_id(name: &str) -> Option<u32> {
+    name.parse().ok().or_else(|| {
+        User::from_name(name)
+            .ok()
+            .flatten()
+            .map(|user| user.uid.as_raw())
+    })
+}
+
+/// The number of the group named `name` on this computer, or `name` itself if it is a
+/// number (Linux and macOS).
+#[cfg(unix)]
+pub fn group_id(name: &str) -> Option<u32> {
+    name.parse().ok().or_else(|| {
+        Group::from_name(name)
+            .ok()
+            .flatten()
+            .map(|group| group.gid.as_raw())
+    })
+}
+
 /// Find the closest directory at or above `path` that can be opened for listing.
 ///
 /// # Arguments

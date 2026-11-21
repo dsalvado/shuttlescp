@@ -231,6 +231,35 @@ pub fn run(
                 passphrase_dialog::ask(window, PassphrasePurpose::Import, |_| {});
             }),
         ),
+        (
+            "permissions-one",
+            Box::new(|window| {
+                let item = permissions_item("deploy.sh", 0o755, "alex", "www-data");
+                crate::permissions_dialog::ask(window, &[item], true, |_| {});
+            }),
+        ),
+        (
+            "permissions-mixed",
+            Box::new(|window| {
+                // Two items that differ in group write and owner: those show as mixed.
+                let items = [
+                    permissions_item("index.html", 0o644, "alex", "www-data"),
+                    permissions_item("uploads", 0o2775, "www-data", "www-data"),
+                ];
+                crate::permissions_dialog::ask(window, &items, true, |_| {});
+            }),
+        ),
+        (
+            "permissions-password",
+            Box::new(|window| {
+                crate::permissions_dialog::ask_sudo_password(
+                    window,
+                    "files.example.com",
+                    false,
+                    |_| {},
+                );
+            }),
+        ),
     ];
     tracing::info!(
         "UI gallery: saving {} pictures in {}",
@@ -529,4 +558,19 @@ fn has_text(widget: &gtk::Widget, wanted: char) -> bool {
         child = current.next_sibling();
     }
     false
+}
+
+/// A made-up item for the Permissions dialog's pictures.
+fn permissions_item(
+    name: &str,
+    mode: u32,
+    owner: &str,
+    group: &str,
+) -> crate::permissions_dialog::Item {
+    crate::permissions_dialog::Item {
+        name: name.to_owned(),
+        mode: Some(mode),
+        owner: Some(owner.to_owned()),
+        group: Some(group.to_owned()),
+    }
 }

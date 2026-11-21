@@ -22,6 +22,7 @@ mod login_dialog;
 mod mac_icons;
 mod name_dialog;
 mod passphrase_dialog;
+mod permissions_dialog;
 mod preferences_dialog;
 mod quit_dialog;
 mod resize_grips;

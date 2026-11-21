@@ -219,6 +219,40 @@ pane-column-modified = Modificado
 pane-column-permissions = Permisos
 pane-column-owner = Propietario
 
+permissions-title = Permisos
+permissions-items = { $count } elementos
+permissions-read = Lectura
+permissions-write = Escritura
+permissions-execute = Ejecución
+permissions-owner-row = Propietario
+permissions-group-row = Grupo
+permissions-others-row = Otros
+permissions-number = Número:
+permissions-mixed = mixto
+permissions-special = Especiales
+permissions-setuid = Set-user-ID
+permissions-setgid = Set-group-ID
+permissions-sticky = Sticky
+permissions-owner = Propietario:
+permissions-group = Grupo:
+permissions-keep = mixto: dejar vacío para conservar
+permissions-no-owners = FTP no puede cambiar propietarios
+permissions-change = Cambiar
+permissions-password-title = Contraseña de sudo
+permissions-password-prompt = Contraseña de sudo en { $server }:
+permissions-password-wrong = sudo no aceptó esa contraseña. Inténtelo de nuevo:
+permissions-password-ok = Continuar
+permissions-sudo-title = ¿Usar sudo?
+permissions-sudo-one = El servidor se negó a cambiar { $name }
+permissions-sudo-many = El servidor se negó a cambiar { $count } elementos
+permissions-sudo-detail = { $reason }. ¿Intentarlo de nuevo como root, con sudo?
+permissions-sudo-confirm = Usar sudo
+permissions-changed = { $count ->
+        [one] 1 elemento cambiado
+       *[other] { $count } elementos cambiados
+    }
+permissions-failed-many = { $count } elementos sin cambiar: { $error }
+
 pane-transfer =
     { $kind ->
         [upload] _Subir
@@ -235,6 +269,7 @@ pane-move = _Mover
 pane-move-to = _Mover a { $name }
 pane-menu-new-folder = _Nueva carpeta…
 pane-menu-rename = _Renombrar…
+pane-menu-permissions = _Permisos…
 pane-menu-delete = _Eliminar
 pane-menu-refresh = _Actualizar
 
@@ -593,6 +628,8 @@ error-no-such-item = no existe ese archivo o carpeta
 error-sftp-date = { $path } tiene una fecha que SFTP no puede guardar
 error-ftp-no-owner = FTP no permite cambiar el propietario de un archivo
 error-owner-unknown = el servidor no indicó su propietario actual
+error-mode-unknown = sus permisos actuales son desconocidos: hay que marcar o desmarcar cada casilla
+error-no-such-user = no hay ningún usuario o grupo { $name }
 
 command-no-shell = esta cuenta no puede ejecutar órdenes en el servidor
 command-sudo-password = sudo pide una contraseña

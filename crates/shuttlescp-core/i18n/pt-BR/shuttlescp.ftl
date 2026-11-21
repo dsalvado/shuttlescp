@@ -219,6 +219,40 @@ pane-column-modified = Modificado
 pane-column-permissions = Permissões
 pane-column-owner = Proprietário
 
+permissions-title = Permissões
+permissions-items = { $count } itens
+permissions-read = Leitura
+permissions-write = Escrita
+permissions-execute = Execução
+permissions-owner-row = Proprietário
+permissions-group-row = Grupo
+permissions-others-row = Outros
+permissions-number = Número:
+permissions-mixed = misto
+permissions-special = Especiais
+permissions-setuid = Set-user-ID
+permissions-setgid = Set-group-ID
+permissions-sticky = Sticky
+permissions-owner = Proprietário:
+permissions-group = Grupo:
+permissions-keep = misto: deixe vazio para manter
+permissions-no-owners = O FTP não pode alterar proprietários
+permissions-change = Alterar
+permissions-password-title = Senha do sudo
+permissions-password-prompt = Senha do sudo em { $server }:
+permissions-password-wrong = O sudo não aceitou essa senha. Tente de novo:
+permissions-password-ok = Continuar
+permissions-sudo-title = Usar sudo?
+permissions-sudo-one = O servidor recusou alterar { $name }
+permissions-sudo-many = O servidor recusou alterar { $count } itens
+permissions-sudo-detail = { $reason }. Tentar de novo como root, com sudo?
+permissions-sudo-confirm = Usar sudo
+permissions-changed = { $count ->
+        [one] 1 item alterado
+       *[other] { $count } itens alterados
+    }
+permissions-failed-many = { $count } itens não alterados: { $error }
+
 pane-transfer =
     { $kind ->
         [upload] _Enviar
@@ -235,6 +269,7 @@ pane-move = _Mover
 pane-move-to = _Mover para { $name }
 pane-menu-new-folder = _Nova pasta…
 pane-menu-rename = _Renomear…
+pane-menu-permissions = _Permissões…
 pane-menu-delete = E_xcluir
 pane-menu-refresh = A_tualizar
 
@@ -593,6 +628,8 @@ error-no-such-item = arquivo ou pasta inexistente
 error-sftp-date = { $path } tem uma data que o SFTP não consegue gravar
 error-ftp-no-owner = o FTP não permite alterar o proprietário de um arquivo
 error-owner-unknown = o servidor não informou o proprietário atual
+error-mode-unknown = as permissões atuais são desconhecidas: cada caixa precisa ser marcada ou desmarcada
+error-no-such-user = não existe usuário ou grupo { $name }
 
 command-no-shell = esta conta não pode executar comandos no servidor
 command-sudo-password = o sudo pede uma senha

@@ -282,6 +282,43 @@ pane-column-modified = Modified
 pane-column-permissions = Permissions
 pane-column-owner = Owner
 
+## The Permissions dialog (permissions_dialog.rs) and what follows it: sudo, when
+## the server refuses. $count: a number of files and folders; $name: one of them;
+## $server: the server's name; $reason, $error: why a change failed.
+permissions-title = Permissions
+permissions-items = { $count } items
+permissions-read = Read
+permissions-write = Write
+permissions-execute = Execute
+permissions-owner-row = Owner
+permissions-group-row = Group
+permissions-others-row = Others
+permissions-number = Number:
+permissions-mixed = mixed
+permissions-special = Special
+permissions-setuid = Set user ID
+permissions-setgid = Set group ID
+permissions-sticky = Sticky
+permissions-owner = Owner:
+permissions-group = Group:
+permissions-keep = mixed: leave empty to keep
+permissions-no-owners = FTP cannot change owners
+permissions-change = Change
+permissions-password-title = Sudo Password
+permissions-password-prompt = Password for sudo on { $server }:
+permissions-password-wrong = Sudo did not accept that password. Try again:
+permissions-password-ok = Continue
+permissions-sudo-title = Use Sudo?
+permissions-sudo-one = The server refused to change { $name }
+permissions-sudo-many = The server refused to change { $count } items
+permissions-sudo-detail = { $reason }. Try again as root, with sudo?
+permissions-sudo-confirm = Use Sudo
+permissions-changed = { $count ->
+        [one] Changed 1 item
+       *[other] Changed { $count } items
+    }
+permissions-failed-many = { $count } items not changed: { $error }
+
 ## The file panes' right-click menu. The underscore marks the keyboard letter.
 ## $kind is upload, download or copy: the item copies files to the other pane,
 ## named $name (another server, or "this computer").
@@ -302,6 +339,7 @@ pane-move = _Move
 pane-move-to = _Move to { $name }
 pane-menu-new-folder = _New Folder…
 pane-menu-rename = _Rename…
+pane-menu-permissions = _Permissions…
 pane-menu-delete = _Delete
 pane-menu-refresh = Re_fresh
 
@@ -729,6 +767,8 @@ error-no-such-item = no such file or folder
 error-sftp-date = { $path } has a date SFTP cannot store
 error-ftp-no-owner = FTP cannot change who owns a file
 error-owner-unknown = the server did not say who owns it now
+error-mode-unknown = its permissions now are unknown, so every box must be ticked or cleared
+error-no-such-user = there is no user or group { $name }
 
 ## Changing permissions and owners with commands on the server, maybe through sudo
 command-no-shell = this account cannot run commands on the server
