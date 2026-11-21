@@ -685,9 +685,50 @@ pub struct CancelFlag {
     places: Option<Arc<FilePlaces>>,
     /// Start now was asked for: the job goes first in the shared limit's line.
     start_now: Arc<AtomicBool>,
+    /// Wakes whatever waits on a slow server when the user cancels, pauses or stops,
+    /// so it does not wait out the server's timeout first.
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl CancelFlag {
+    /// Whether the user asked this file (or the whole job) to end: cancelled, paused
+    /// or stopped.
+    pub(super) fn ends(&self, id: usize) -> bool {
+        self.is_cancelled() || self.is_item_stopped(id) || self.is_item_paused(id)
+    }
+
+    /// Wait until [`CancelFlag::ends`] is true for this file. Raced against a read that
+    /// a stalled server may keep waiting for minutes.
+    pub(super) async fn until_ended(&self, id: usize) {
+        loop {
+            // Registered before checking, so a request made in between still wakes it.
+            let notified = self.wake.notified();
+            let mut notified = std::pin::pin!(notified);
+            notified.as_mut().enable();
+            if self.ends(id) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Run `work`, unless the user asks this file (or the job) to end first.
+    ///
+    /// # Returns
+    ///
+    /// What `work` gave, or `None` if it was given up
+    pub(super) async fn unless_ended<T>(
+        &self,
+        id: usize,
+        work: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        tokio::select! {
+            biased;
+            () = self.until_ended(id) => None,
+            done = work => Some(done),
+        }
+    }
+
     /// Copy files within this shared limit: each file waits for a place in it.
     ///
     /// # Arguments
@@ -722,6 +763,7 @@ impl CancelFlag {
     pub fn pause(&self) {
         self.paused.store(true, Ordering::Relaxed);
         self.cancelled.store(true, Ordering::Relaxed);
+        self.wake.notify_waiters();
     }
 
     /// Whether pausing was asked for.
@@ -736,6 +778,7 @@ impl CancelFlag {
         if let Ok(mut stopped) = self.stopped.lock() {
             stopped.insert(id);
         }
+        self.wake.notify_waiters();
     }
 
     /// Pause one file (by id) while the rest of the job goes on: it stops at its next
@@ -746,6 +789,7 @@ impl CancelFlag {
         if let Ok(mut paused) = self.paused_items.lock() {
             paused.insert(id);
         }
+        self.wake.notify_waiters();
     }
 
     /// Let a paused file continue where it stopped.
@@ -773,6 +817,7 @@ impl CancelFlag {
     /// partial copies are deleted; items not started are skipped.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
+        self.wake.notify_waiters();
     }
 
     /// Whether cancelling (or pausing) was asked for.

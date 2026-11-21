@@ -7,7 +7,7 @@
 # tests run with a throwaway HOME, so the containers' SSH host keys never reach your
 # ~/.ssh/known_hosts. Needs Docker.
 #
-# Usage: scripts/test-site-to-site.sh
+# Usage: scripts/test-site-to-site.sh [test name...]   (only the tests whose names contain it)
 
 set -euo pipefail
 
@@ -105,4 +105,4 @@ SHUTTLESCP_TEST_SFTP="sftp://test:test@127.0.0.1:$SFTP_PORT/upload" \
 SHUTTLESCP_TEST_SSH_SHELL="sftp://test:test@127.0.0.1:$SHELL_PORT/config/files" \
 SHUTTLESCP_TEST_FTP="ftp://test:test@127.0.0.1:$FTP_PORT/ftp/test/files" \
 SHUTTLESCP_TEST_FTP_LIMITED="ftp://test:test@127.0.0.1:$LIMITED_PORT/ftp/test/files" \
-    cargo test -p shuttlescp-core --test site_to_site -- --ignored --test-threads 1 --skip live_
+    cargo test -p shuttlescp-core --test site_to_site -- --ignored --test-threads 1 --skip live_ "$@"
