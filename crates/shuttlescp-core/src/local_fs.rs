@@ -93,10 +93,11 @@ impl Names {
     }
 }
 
-/// Windows has no Unix permissions: entries stay without them.
+/// Windows has no Unix permissions: entries stay without them. (Braces, not a unit
+/// struct, so `Names::default()` reads the same on every system.)
 #[cfg(not(unix))]
 #[derive(Default)]
-struct Names;
+struct Names {}
 
 #[cfg(not(unix))]
 impl Names {
