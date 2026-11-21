@@ -11,6 +11,15 @@ becomes its release notes on GitHub.
 
 - Show codes in the two-factor dialog, ticked by default, so a mistyped digit can be
   seen before logging in. Password questions stay hidden either way.
+- Permissions and owners. The panes have Permissions and Owner columns, and
+  right-click › Permissions… changes them for one item or many (boxes the items
+  differ in show "mixed" and are left as they are), on SFTP, SCP, FTP (permissions
+  only) and this computer. For a folder, the change can reach everything inside: files,
+  folders or both, with "execute only on folders". It runs as a transfer, item by
+  item, and every change is logged. Files you don't own can be changed as root with
+  sudo; its password is asked for when needed and never saved.
+- Show or hide columns: right-click a column title. The choice applies to every pane
+  and is kept.
 
 ### Fixed
 

@@ -34,9 +34,51 @@
     drives and main folders.</li>
   <li>On this computer, double-clicking a file opens it with its usual program.</li>
   <li>Right-click for <span class="ui">New Folder…</span>, <span class="ui">Rename…</span>
-    (<kbd>F2</kbd>), <span class="ui">Delete</span> (<kbd>Delete</kbd>) and <span
+    (<kbd>F2</kbd>), <span class="ui">Delete</span> (<kbd>Delete</kbd>), <span
+    class="ui">Permissions…</span> (see <a href="#permissions">below</a>) and <span
     class="ui">Refresh</span>.</li>
+  <li>Right-click a column title to show or hide the <span class="ui">Size</span>, <span
+    class="ui">Modified</span>, <span class="ui">Permissions</span> and <span
+    class="ui">Owner</span> columns. Every pane follows, and the choice is kept.</li>
 </ul>
+
+<h2 id="permissions">Permissions and owners</h2>
+<p>The <span class="ui">Permissions</span> column shows who may do what, as in <code>ls
+-l</code>: <code>rwxr-xr-x</code> is read, write and execute for the owner, then for the
+group, then for everyone else. The <span class="ui">Owner</span> column shows the owner and
+group, like <code>alex:staff</code>.</p>
+<p>To change them, select one or more files or folders, right-click and choose <span
+class="ui">Permissions…</span>:</p>
+<ul>
+  <li>Tick <span class="ui">Read</span>, <span class="ui">Write</span> and <span
+    class="ui">Execute</span> for <span class="ui">Owner</span>, <span
+    class="ui">Group</span> and <span class="ui">Others</span>, or type the <span
+    class="ui">Number</span> (such as <code>644</code> or <code>755</code>).</li>
+  <li>When the selected items differ, a box shows <span class="ui">mixed</span>. Left that
+    way, each item keeps its own setting; only the boxes you change are changed.</li>
+  <li><span class="ui">Special</span> holds the rarely needed bits: <span class="ui">Set user
+    ID</span>, <span class="ui">Set group ID</span> and <span class="ui">Sticky</span>.</li>
+  <li><span class="ui">Owner</span> and <span class="ui">Group</span> take a name or a
+    number. FTP servers cannot change owners.</li>
+</ul>
+
+<h3 id="permissions-inside">Folders and everything in them</h3>
+<p>For a folder, tick <span class="ui">Apply to everything inside</span>, and choose <span
+class="ui">Files and folders</span>, <span class="ui">Files only</span> or <span
+class="ui">Folders only</span>. <span class="ui">Execute only on folders</span> lets folders
+be opened without making every file runnable: files keep execute only if they have it
+already.</p>
+<p>This runs as a transfer in the <span class="ui">Transfers</span> area, one item at a
+time, so it can be watched and cancelled. Each change, with the permissions before and
+after, is written to the log. Symbolic links are left alone.</p>
+
+<h3 id="sudo">Files you don't own: sudo</h3>
+<p>Usually only a file's owner may change it. On an SSH server where your account may use
+<code>sudo</code>, tick <span class="ui">Change as root (sudo)</span>; if the server refuses
+a change, ShuttleSCP also offers <span class="ui">Use Sudo</span>. When sudo needs a
+password, it is asked for. The password is used for that change only and never saved.</p>
+<p>Sudo needs a shell on the server: accounts that only allow SFTP, and FTP servers,
+cannot use it.</p>
 
 <h2 id="copying">Uploading and downloading</h2>
 <p>Either way works:</p>
