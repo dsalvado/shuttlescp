@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use secrecy::{ExposeSecret, SecretString};
 use suppaftp::list::{File, ListParser};
 use suppaftp::tokio::AsyncRustlsStream;
@@ -628,10 +628,12 @@ impl Ftp {
         time: SystemTime,
     ) -> Result<(), String> {
         let text = path_text(path);
-        let stamp = DateTime::<Utc>::from(time)
-            .format("%Y%m%d%H%M%S")
-            .to_string();
         let what = crate::i18n::cannot_bare("set-time", &text);
+        // A Timestamp formats in UTC, as MFMT wants.
+        let stamp = Timestamp::try_from(time)
+            .map_err(|error| format!("{what}: {error}"))?
+            .strftime("%Y%m%d%H%M%S")
+            .to_string();
         self.run(&what, &move |connection| {
             let command = format!("MFMT {stamp} {text}");
             Box::pin(async move {
