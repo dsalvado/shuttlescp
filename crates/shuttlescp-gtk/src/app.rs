@@ -851,6 +851,7 @@ impl SimpleComponent for App {
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
+        let _watch = crate::watchdog::handling("App", &message);
         match message {
             AppMsg::CheckForUpdates { asked } => self.check_for_updates(asked, &sender),
             AppMsg::UpdateChecked { asked, result } => {

@@ -7,6 +7,18 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- The log notes when the window stops responding for 10 seconds or more, and what it
+  was doing, and again when it recovers. This is to track down a rare hang of an app
+  left open for a long time: please send the log if it happens to you.
+
+### Fixed
+
+- Cancel, Pause and Stop work at once on a server that stopped answering. Before, each
+  one waited for the server's two-minute timeout and the retries after it, so the
+  buttons seemed to do nothing.
+
 ## [0.27.0] - 2026-11-21
 
 ### Added

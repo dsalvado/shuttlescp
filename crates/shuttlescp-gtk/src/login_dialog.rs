@@ -2311,6 +2311,7 @@ impl Component for LoginDialog {
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
+        let _watch = crate::watchdog::handling("Login", &message);
         match message {
             LoginMsg::Show => {
                 // Reopen without half-finished edits: keep a picked saved site, drop the rest.
@@ -2677,6 +2678,7 @@ impl Component for LoginDialog {
         sender: ComponentSender<Self>,
         root: &Self::Root,
     ) {
+        let _watch = crate::watchdog::handling("Login", &message);
         match message {
             LoginCmd::Discarded {
                 keys,

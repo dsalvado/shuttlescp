@@ -1283,6 +1283,7 @@ impl Component for FilePane {
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
+        let _watch = crate::watchdog::handling("FilePane", &message);
         // Read-only while a folder is being read: nothing may act on a list that is about
         // to change (keys and menu items still send these).
         if self.loading
@@ -1592,6 +1593,7 @@ impl Component for FilePane {
         sender: ComponentSender<Self>,
         root: &Self::Root,
     ) {
+        let _watch = crate::watchdog::handling("FilePane", &command);
         let listing = match command {
             PaneCommand::Listing(listing) => listing,
             PaneCommand::Operation(Ok(notice)) => {

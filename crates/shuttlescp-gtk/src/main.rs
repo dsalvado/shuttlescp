@@ -36,6 +36,7 @@ mod ui_clips;
 #[cfg(debug_assertions)]
 mod ui_gallery;
 mod update_dialog;
+mod watchdog;
 #[cfg(windows)]
 mod win_icons;
 
@@ -101,6 +102,8 @@ fn main() {
     #[cfg(not(target_os = "macos"))]
     relm4::set_global_css(include_str!("style.css"));
     desktop_entry::install(APP_ID);
+    // Before the main loop: a hang leaves a line in the log (see watchdog.rs).
+    watchdog::start();
     app.run::<App>(AppInit {
         config,
         config_path,
