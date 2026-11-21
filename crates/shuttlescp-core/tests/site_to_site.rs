@@ -518,13 +518,16 @@ async fn more_files_at_once_than_the_ftp_server_allows() {
 }
 
 /// A stand-in for the network between ShuttleSCP and a test server: a local port that
-/// passes each connection on to the server. It can slow down what comes back, and cut
-/// every connection at once, as a dropped line would.
+/// passes each connection on to the server. It can slow down what comes back, freeze it
+/// (a server that stops answering but keeps the connection open), and cut every
+/// connection at once, as a dropped line would.
 #[derive(Clone)]
 struct TestLink {
     port: u16,
     /// The tasks passing the bytes along; ending them closes both ends.
     tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
+    /// Nothing comes back from the server while this is set.
+    frozen: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TestLink {
@@ -538,6 +541,8 @@ impl TestLink {
         let port = listener.local_addr().expect("address").port();
         let tasks = Arc::new(Mutex::new(tokio::task::JoinSet::new()));
         let spawn_in = Arc::clone(&tasks);
+        let frozen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let frozen_in = Arc::clone(&frozen);
         tokio::spawn(async move {
             while let Ok((client, _)) = listener.accept().await {
                 let server = tokio::net::TcpStream::connect(&target)
@@ -549,23 +554,37 @@ impl TestLink {
                 tasks.spawn(async move {
                     let _ = tokio::io::copy(&mut from_client, &mut to_server).await;
                 });
+                let frozen = Arc::clone(&frozen_in);
                 tasks.spawn(async move {
-                    let Some(bytes_per_second) = bytes_per_second else {
-                        let _ = tokio::io::copy(&mut from_server, &mut to_client).await;
-                        return;
-                    };
-                    // A tenth of a second's worth, every tenth of a second.
-                    let mut buffer = vec![0; bytes_per_second / 10];
+                    // Unlimited: 64 kB at a time; limited: a tenth of a second's worth,
+                    // every tenth of a second.
+                    let mut buffer = vec![0; bytes_per_second.map_or(65_536, |rate| rate / 10)];
                     while let Ok(read @ 1..) = from_server.read(&mut buffer).await {
+                        while frozen.load(std::sync::atomic::Ordering::Relaxed) {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
                         if to_client.write_all(&buffer[..read]).await.is_err() {
                             break;
                         }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        if bytes_per_second.is_some() {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
                     }
                 });
             }
         });
-        Self { port, tasks }
+        Self {
+            port,
+            tasks,
+            frozen,
+        }
+    }
+
+    /// Hold back everything the server sends, keeping the connections open: the server
+    /// seems to stop answering.
+    fn freeze(&self) {
+        self.frozen
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Cut every connection made so far. New ones still get through.
@@ -724,6 +743,76 @@ async fn sftp_download_continues_after_losing_the_connection() {
         pattern(SIZE),
         "the copy differs"
     );
+}
+
+/// Cancel works at once on a download from a server that stopped answering. Before, a
+/// read waited for the server's two-minute timeout, then retried, so Cancel seemed to
+/// do nothing (seen 2026-11-20 on a stalled seedbox).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn cancel_ends_a_download_from_a_server_that_stopped_answering() {
+    // Arrange: a 4 MiB file on the server, downloading at 500 kB/s; 2 s in, the server
+    // stops answering.
+    const SIZE: usize = 4 * 1024 * 1024;
+    let server = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let name = format!("stalled-{stamp}.bin");
+    std::fs::write(temp.path().join(&name), pattern(SIZE)).expect("write");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(temp.path().join(&name))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    let link = TestLink::start(&server, Some(500_000)).await;
+    let linked = link.to(&server).connect().await;
+    let back = temp.path().join("back");
+    std::fs::create_dir(&back).expect("create");
+    let on_server = SidePath::Remote(server.dir.join(&name));
+    let download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![on_server.clone()],
+        SidePath::Local(back.clone()),
+    );
+    let cancel = CancelFlag::default();
+    let downloading = tokio::spawn(run(download, Some(linked), None, cancel.clone(), |_| {}));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    link.freeze();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Act: cancel, and time how long the download takes to end.
+    let started = std::time::Instant::now();
+    cancel.cancel();
+    let down = tokio::time::timeout(Duration::from_secs(30), downloading)
+        .await
+        .expect("the download ended within 30 s")
+        .expect("the download task");
+    let took = started.elapsed();
+    let clean_up = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (deleted, _) = run_job(clean_up, &remote, None).await;
+
+    // Assert: ended at once, cancelled, no partial copy left behind.
+    assert!(took < Duration::from_secs(3), "cancelling took {took:?}");
+    assert_eq!(down.cancelled, 1, "download: {down:?}");
+    assert!(deleted.is_complete(), "clean up: {deleted:?}");
+    let left: Vec<_> = std::fs::read_dir(&back)
+        .expect("list")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert!(left.is_empty(), "left behind: {left:?}");
 }
 
 /// After the connection to an SFTP server is lost, the next action logs in again by

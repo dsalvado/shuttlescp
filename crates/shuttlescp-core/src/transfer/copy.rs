@@ -611,7 +611,11 @@ async fn copy_file(
     let with_server = matches!(src, Endpoint::Remote(_)) || matches!(dst, Endpoint::Remote(_));
     let (mut have, mut tries) = (item.partial, 0);
     let (mut took, offset) = loop {
-        let offset = resume_offset(item, have, src, dst, &partial).await;
+        // Given up when the user asks to end: the copy below then ends at once.
+        let offset = cancel
+            .unless_ended(item.id, resume_offset(item, have, src, dst, &partial))
+            .await
+            .unwrap_or(have);
         if offset > 0 {
             tracing::info!("resuming {} at {offset} of {} bytes", item.dest, item.size);
         } else {
@@ -624,8 +628,13 @@ async fn copy_file(
                 tracing::warn!(
                     "{error}; continuing from the partial copy ({tries} of {PARTWAY_TRIES})"
                 );
-                tokio::time::sleep(PARTWAY_PAUSE).await;
-                have = dst.stat(&partial, false).await.map_or(0, |node| node.size);
+                let pause = tokio::time::sleep(PARTWAY_PAUSE);
+                if cancel.unless_ended(item.id, pause).await.is_some() {
+                    have = cancel
+                        .unless_ended(item.id, dst.stat(&partial, false))
+                        .await
+                        .map_or(have, |node| node.map_or(0, |node| node.size));
+                }
             }
             Err(Unfinished::Partway(error)) => {
                 tracing::warn!("{error}; the partial copy is kept for resuming");
@@ -920,6 +929,23 @@ async fn resume_offset(
     }
 }
 
+/// How a copy ends when the user asked it to while it waited on a server.
+///
+/// # Arguments
+///
+/// * `cancel` - What the user asked
+/// * `item` - The file
+/// * `done` - Bytes in the partial copy that are known to be right
+fn ended(cancel: &CancelFlag, item: &PlanItem, done: u64) -> Unfinished {
+    if cancel.is_cancelled() {
+        ItemOutcome::Cancelled.into()
+    } else if cancel.is_item_stopped(item.id) {
+        ItemOutcome::Stopped.into()
+    } else {
+        Unfinished::End(FileEnd::Paused(done))
+    }
+}
+
 /// Stream a file's bytes from `src` to `partial` starting at `offset`, reporting
 /// progress.
 ///
@@ -944,8 +970,18 @@ async fn copy_contents(
 ) -> Result<FileTimes, Unfinished> {
     let failed = ItemOutcome::Failed;
     let opening = Instant::now();
-    let mut reader = src.open_at(&item.source, offset).await.map_err(failed)?;
-    let mut writer = dst.open_write_at(partial, offset).await.map_err(failed)?;
+    // Each wait on a server gives way when the user cancels, pauses or stops: a stalled
+    // server could otherwise keep the request waiting until its timeout (minutes).
+    let mut reader = cancel
+        .unless_ended(item.id, src.open_at(&item.source, offset))
+        .await
+        .ok_or_else(|| ended(cancel, item, offset))?
+        .map_err(failed)?;
+    let mut writer = cancel
+        .unless_ended(item.id, dst.open_write_at(partial, offset))
+        .await
+        .ok_or_else(|| ended(cancel, item, offset))?
+        .map_err(failed)?;
     let open = opening.elapsed();
     let moving = Instant::now();
     // No read-ahead queue of our own: the SFTP library already keeps several requests in
@@ -985,9 +1021,11 @@ async fn copy_contents(
             sink(TransferEvent::Progress { id: item.id, done });
             return Err(Unfinished::End(FileEnd::Held(done)));
         }
-        let read = match reader.read(&mut buffer).await {
-            Ok(read) => read,
-            Err(error) => {
+        let read = match cancel.unless_ended(item.id, reader.read(&mut buffer)).await {
+            // Asked to end: the checks above end the copy the way that was asked.
+            None => continue,
+            Some(Ok(read)) => read,
+            Some(Err(error)) => {
                 // What was written stays in the partial copy, to continue from.
                 let _ = writer.shutdown().await;
                 let error = crate::i18n::cannot("read", &item.source, &error);
@@ -997,10 +1035,16 @@ async fn copy_contents(
         if read == 0 {
             break;
         }
-        writer
-            .write_all(&buffer[..read])
+        match cancel
+            .unless_ended(item.id, writer.write_all(&buffer[..read]))
             .await
-            .map_err(|error| Unfinished::Partway(crate::i18n::cannot("write", partial, &error)))?;
+        {
+            // Asked to end: the chunk may be partly written; `done` stays before it.
+            None => continue,
+            Some(written) => written.map_err(|error| {
+                Unfinished::Partway(crate::i18n::cannot("write", partial, &error))
+            })?,
+        }
         done += read as u64;
         if reported.elapsed() >= PROGRESS_INTERVAL {
             sink(TransferEvent::Progress { id: item.id, done });

@@ -671,6 +671,7 @@ impl Component for TransferPanel {
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
+        let _watch = crate::watchdog::handling("Transfers", &message);
         match message {
             TransferPanelMsg::Start(job) => self.start(job, None, &sender),
             TransferPanelMsg::Cancel(id) => {
@@ -817,6 +818,7 @@ impl Component for TransferPanel {
         sender: ComponentSender<Self>,
         root: &Self::Root,
     ) {
+        let _watch = crate::watchdog::handling("Transfers", &event);
         let now = Instant::now();
         self.announce_target(id, &event, now, &sender);
         match event {
