@@ -3,7 +3,7 @@
 
 use crate::path::SidePath;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -68,6 +68,8 @@ struct Spare {
     slots: Arc<Semaphore>,
     ticket: Option<Arc<Ticket>>,
     records: Arc<SplitRecords>,
+    /// How many of the job's files wait for a slot: they go before parts joining late.
+    files_waiting: Arc<AtomicUsize>,
 }
 
 /// One extra part's hold on a slot (and a place, under a shared limit); let go when
@@ -78,6 +80,11 @@ struct ExtraPart {
 }
 
 impl Spare {
+    /// Whether no file of the job waits for a slot (one freed may then go to a part).
+    fn nobody_waiting(&self) -> bool {
+        self.files_waiting.load(Ordering::Relaxed) == 0
+    }
+
     /// Up to `wanted` extra parts, only from what is free now: parts never make whole
     /// files wait.
     fn take(&self, wanted: usize) -> Vec<ExtraPart> {
@@ -271,6 +278,8 @@ pub(super) async fn copy_items(
     let ticket = cancel
         .places()
         .map(|places| Arc::new(FilePlaces::join(places)));
+    // Files waiting for a slot, seen by copies in parts before they take one freed.
+    let files_waiting = Arc::new(AtomicUsize::new(0));
     // Without the app's records, a paused copy in parts still continues in this run.
     let records = cancel
         .split_records()
@@ -362,6 +371,7 @@ pub(super) async fn copy_items(
                 slots: Arc::clone(&slots),
                 ticket: ticket.clone(),
                 records: Arc::clone(&records),
+                files_waiting: Arc::clone(&files_waiting),
             });
             running.spawn(async move {
                 // Holding the slot and the place until the copy ends lets the next file
@@ -397,6 +407,7 @@ pub(super) async fn copy_items(
             most_at_once = most_at_once.max(at_once - slots.available_permits());
         }
 
+        files_waiting.store(waiting.len(), Ordering::Relaxed);
         if running.is_empty() && waiting.is_empty() && paused.is_empty() {
             break;
         }
@@ -693,12 +704,11 @@ async fn copy_file(
         let extra = spare.take(wanted.saturating_sub(1));
         // A copy in parts under way continues in parts, even over one connection.
         if resumed.is_some() || !extra.is_empty() {
-            let records = &spare.records;
             let parts = PartsCopy {
                 place,
                 extra,
                 resumed,
-                records,
+                spare,
             };
             return copy_file_in_parts(item, src, dst, parts, &finish, cancel, sink, times).await;
         }
@@ -851,12 +861,13 @@ async fn put_in_place(
 }
 
 /// What a file is copied in parts with: its own place, the extra connections, the
-/// parts of a copy under way if it continues one, and where they are recorded.
+/// parts of a copy under way if it continues one, and the job's room to spare (for
+/// connections freed later, and where the parts are recorded).
 struct PartsCopy<'a> {
     place: Option<&'a Place>,
     extra: Vec<ExtraPart>,
     resumed: Option<Vec<parts::Part>>,
-    records: &'a SplitRecords,
+    spare: &'a Spare,
 }
 
 /// The parts of `item`'s copy in parts under way, if it can be continued: its record
@@ -881,7 +892,8 @@ async fn resumable_parts(
 
 /// Copy a large file in parts, one over each of the extra connections and one over the
 /// file's own (or continue such a copy, as many parts at a time as there are
-/// connections), check it, then finish it as any copy.
+/// connections; connections freed later join in), check it, then finish it as any
+/// copy.
 ///
 /// A copy in parts paused, held back or failing partway is kept with its record, to be
 /// continued; stopped or cancelled, it is deleted.
@@ -900,7 +912,7 @@ async fn copy_file_in_parts(
         place,
         extra,
         resumed,
-        records,
+        spare,
     } = parts;
     let copy = parts_path(&item.dest);
     let run = parts::Copying {
@@ -919,16 +931,16 @@ async fn copy_file_in_parts(
             .map(parts::Part::new)
             .collect()
     });
-    let recorder = parts::Recorder::new(records, item, &parts);
-    let places: Vec<&Place> = place
-        .into_iter()
-        .chain(extra.iter().filter_map(|part| part.place.as_ref()))
-        .collect();
-    let copied =
-        parts::copy_in_parts(&run, parts, fresh, connections, &places, Some(&recorder)).await;
-    // The extra connections are free again for other files, while this one finishes.
-    drop(places);
-    drop(extra);
+    let recorder = parts::Recorder::new(&spare.records, item, &parts);
+    let connections = parts::Connections {
+        own: place,
+        extra,
+        spare: Some(spare),
+        min_part: parts::MIN_PART,
+    };
+    // The extra connections are let go at its end: free again for other files, while
+    // this one finishes.
+    let copied = parts::copy_in_parts(&run, parts, fresh, connections, Some(&recorder)).await;
     let (mut took, mut pieces) = match copied {
         Ok(copied) => copied,
         Err(unfinished) => return give_up_parts(&run, &recorder, unfinished).await,

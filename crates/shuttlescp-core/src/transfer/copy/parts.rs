@@ -11,6 +11,7 @@
 //! How far each part got is recorded as it goes (see [`super::record`]), so a copy
 //! paused, held back or interrupted continues where its parts were.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,8 +24,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::record::{self, SplitRecord, SplitRecords};
 use super::{
-    CHUNK_BYTES, FileEnd, FileTimes, PARTWAY_PAUSE, PARTWAY_TRIES, PROGRESS_INTERVAL,
-    RESUME_CHECK_BYTES, Unfinished, ended,
+    CHUNK_BYTES, ExtraPart, FileEnd, FileTimes, PARTWAY_PAUSE, PARTWAY_TRIES, PROGRESS_INTERVAL,
+    RESUME_CHECK_BYTES, Spare, Unfinished, ended,
 };
 use crate::checksum::Checksum;
 use crate::path::SidePath;
@@ -38,6 +39,9 @@ pub(super) const MIN_PART: u64 = 256 << 20;
 /// How often each part records how far it got. Writing the record costs little; what
 /// it lags behind is copied again when continuing.
 const RECORD_INTERVAL: Duration = Duration::from_secs(5);
+/// How often a file copied in parts looks for a connection freed elsewhere in the job,
+/// to join it late (see [`copy_parts`]).
+const JOIN_POLL: Duration = Duration::from_secs(1);
 
 /// A stretch of the copy whose bytes were hashed as they were copied: `start..end`
 /// holds bytes with this SHA-256 checksum.
@@ -184,14 +188,29 @@ impl<'a> Recorder<'a> {
         }
     }
 
-    /// Record that part `index` is now `part`.
+    /// Record the pieces part `index` has done, `part`'s (only its pieces: its end may
+    /// have moved since, see [`Self::split`]).
     fn reached(&self, index: usize, part: &Part) {
         let Ok(mut record) = self.record.lock() else {
             return;
         };
         if let Some(recorded) = record.parts.get_mut(index) {
-            recorded.clone_from(part);
+            recorded.pieces.clone_from(&part.pieces);
         }
+        self.records.set(&self.key, record.clone());
+    }
+
+    /// Record that part `index` now ends at `at`, and a new part (the next number)
+    /// copies from there to where it ended.
+    fn split(&self, index: usize, at: u64) {
+        let Ok(mut record) = self.record.lock() else {
+            return;
+        };
+        let Some(part) = record.parts.get_mut(index) else {
+            return;
+        };
+        let end = std::mem::replace(&mut part.end, at);
+        record.parts.push(Part::new((at, end)));
         self.records.set(&self.key, record.clone());
     }
 
@@ -223,14 +242,37 @@ impl Progress<'_> {
     }
 }
 
-/// Copy the file in `parts`, up to `connections` of them at a time. A new copy
-/// (`fresh`) is first set to its full size; a continued one has its parts' last bytes
-/// checked against the source first (see [`still_matches`]).
+/// The connections a file is copied in parts over: its own (with its place in the
+/// limit shared by every job), the extra ones it took, and where to take more.
+pub(super) struct Connections<'a> {
+    pub(super) own: Option<&'a Place>,
+    pub(super) extra: Vec<ExtraPart>,
+    /// The job's room to spare, to take connections that free up later; `None` to use
+    /// only these.
+    pub(super) spare: Option<&'a Spare>,
+    /// A part is split for a connection joining late only if each half is at least
+    /// this ([`MIN_PART`], smaller in tests).
+    pub(super) min_part: u64,
+}
+
+impl Connections<'_> {
+    /// Only the file's own connection.
+    pub(super) fn own(place: Option<&Place>) -> Connections<'_> {
+        Connections {
+            own: place,
+            extra: Vec::new(),
+            spare: None,
+            min_part: u64::MAX,
+        }
+    }
+}
+
+/// Copy the file in `parts`, over `connections`. A new copy (`fresh`) is first set to
+/// its full size; a continued one has its parts' last bytes checked against the source
+/// first (see [`still_matches`]).
 ///
 /// # Arguments
 ///
-/// * `places` - The places the parts hold in the limit shared by every job; when one is
-///   held back, the whole file steps back
 /// * `recorder` - Where the parts record how far they got
 ///
 /// # Returns
@@ -245,12 +287,10 @@ pub(super) async fn copy_in_parts(
     run: &Copying<'_>,
     parts: Vec<Part>,
     fresh: bool,
-    connections: usize,
-    places: &[&Place],
+    connections: Connections<'_>,
     recorder: Option<&Recorder<'_>>,
 ) -> Result<(FileTimes, Vec<Piece>), Unfinished> {
     let (item, sink) = (run.item, run.sink);
-    let connections = connections.max(1);
     let opening = Instant::now();
     let parts = if fresh {
         run.dst
@@ -259,8 +299,9 @@ pub(super) async fn copy_in_parts(
             .map_err(ItemOutcome::Failed)?;
         parts
     } else {
+        let at_once = 1 + connections.extra.len();
         let checking = futures_util::stream::iter(parts).map(|part| still_matches(run, part));
-        let parts: Vec<Part> = checking.buffered(connections).collect().await;
+        let parts: Vec<Part> = checking.buffered(at_once).collect().await;
         if let Some(recorder) = recorder {
             for (index, part) in parts.iter().enumerate() {
                 recorder.reached(index, part);
@@ -294,7 +335,7 @@ pub(super) async fn copy_in_parts(
     } else {
         tracing::info!("copying {} in {} parts: {ranges}", item.source, parts.len());
     }
-    let pieces = copy_parts(run, parts, connections, places, done, recorder).await?;
+    let pieces = copy_parts(run, parts, connections, done, recorder).await?;
     Ok((
         FileTimes {
             open,
@@ -337,8 +378,41 @@ async fn still_matches(run: &Copying<'_>, part: Part) -> Part {
     }
 }
 
-/// Copy what is left of `parts` (already full-sized in the copy), up to `connections`
-/// at a time.
+/// Where a part is and where it ends, shared between the part copying it and
+/// [`copy_parts`], which may move the end back for a connection joining late.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    at: u64,
+    end: u64,
+}
+
+/// The part to halve for a connection joining late: the one with the most left, if
+/// each half would be at least `min_part`.
+///
+/// Also never less than a chunk: a part may have read up to a chunk past where it last
+/// said it was, and the new end must lie beyond that.
+///
+/// # Returns
+///
+/// The part's number, and where its second half starts
+fn split_point(spans: &[Span], min_part: u64) -> Option<(usize, u64)> {
+    let least = min_part.max(CHUNK_BYTES as u64);
+    let left = |span: &Span| span.end.saturating_sub(span.at);
+    let (index, span) = spans
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, span)| left(span))?;
+    let half = left(span) / 2;
+    (half >= least).then_some((index, span.at + half))
+}
+
+/// Copy what is left of `parts` (already full-sized in the copy) over `connections`.
+///
+/// Every free connection gets work: first a part not started yet, else the second half
+/// of the part with the most left (late joining, see [`split_point`]); with none for
+/// it, an extra connection is given back to the job's other files. Every
+/// [`JOIN_POLL`], a connection freed elsewhere in the job is taken to join too, when
+/// no whole file of the job waits for it.
 ///
 /// # Arguments
 ///
@@ -354,36 +428,104 @@ async fn still_matches(run: &Copying<'_>, part: Part) -> Part {
 async fn copy_parts(
     run: &Copying<'_>,
     parts: Vec<Part>,
-    connections: usize,
-    places: &[&Place],
+    connections: Connections<'_>,
     done_before: u64,
     recorder: Option<&Recorder<'_>>,
 ) -> Result<Vec<Piece>, Unfinished> {
+    let Connections {
+        own,
+        extra,
+        spare,
+        min_part,
+    } = connections;
     let progress = Progress {
         id: run.item.id,
         done: AtomicU64::new(done_before),
         reported: Mutex::new(Instant::now()),
         sink: run.sink,
     };
-    let held = || places.iter().any(|place| place.is_held());
+    let extra = Mutex::new(extra);
+    // When any connection's place is held back, the whole file steps back.
+    let held = || {
+        own.is_some_and(Place::is_held)
+            || extra.lock().is_ok_and(|extra| {
+                extra
+                    .iter()
+                    .any(|part| part.place.as_ref().is_some_and(Place::is_held))
+            })
+    };
+    let spans: Vec<Span> = parts
+        .iter()
+        .map(|part| Span {
+            at: part.at(),
+            end: part.end,
+        })
+        .collect();
+    let spans = Mutex::new(spans);
     let mut pieces = Vec::new();
-    let mut left = Vec::new();
+    let mut waiting = VecDeque::new();
     for (index, part) in parts.into_iter().enumerate() {
         if part.is_done() {
             pieces.extend(part.pieces);
         } else {
-            left.push((index, part));
+            waiting.push_back((index, part));
         }
     }
-    let mut running = futures_util::stream::iter(left)
-        .map(|(index, part)| copy_part(run, index, part, &held, &progress, recorder))
-        .buffer_unordered(connections.max(1));
-    while let Some(part) = running.next().await {
-        match part {
-            Ok(part) => pieces.extend(part.pieces),
-            // One part failing (or the user ending the copy) ends them all: dropping the
-            // others stops them where they are (each recorded how far it got).
-            Err(unfinished) => return Err(unfinished),
+    let can_split = || {
+        spans
+            .lock()
+            .is_ok_and(|spans| split_point(&spans, min_part).is_some())
+    };
+    let mut running = FuturesUnordered::new();
+    loop {
+        // Parts run within this task, so nothing moves while this looks. A connection
+        // given back is not taken again in the same round, so this always ends.
+        let mut gave_back = false;
+        loop {
+            let connections = 1 + extra.lock().map_or(0, |extra| extra.len());
+            if running.len() < connections {
+                let next = waiting
+                    .pop_front()
+                    .or_else(|| join_late(run, &spans, min_part, recorder));
+                if let Some((index, part)) = next {
+                    running.push(copy_part(
+                        run, index, part, &spans, &held, &progress, recorder,
+                    ));
+                    continue;
+                }
+                // Nothing for this connection: an extra one goes back to the job.
+                if !running.is_empty()
+                    && let Ok(mut extra) = extra.lock()
+                    && extra.pop().is_some()
+                {
+                    gave_back = true;
+                    continue;
+                }
+            } else if !gave_back
+                && waiting.is_empty()
+                && can_split()
+                && let Some(spare) = spare
+                && spare.nobody_waiting()
+                && let Some(more) = spare.take(1).pop()
+                && let Ok(mut extra) = extra.lock()
+            {
+                extra.push(more);
+                continue;
+            }
+            break;
+        }
+        if running.is_empty() {
+            break;
+        }
+        tokio::select! {
+            ended = running.next() => match ended {
+                Some(Ok(part)) => pieces.extend(part.pieces),
+                // One part failing (or the user ending the copy) ends them all: dropping
+                // the others stops them where they are (each recorded how far it got).
+                Some(Err(unfinished)) => return Err(unfinished),
+                None => {}
+            },
+            () = tokio::time::sleep(JOIN_POLL), if spare.is_some() => {}
         }
     }
     let done = progress.done.load(Ordering::Relaxed);
@@ -392,6 +534,33 @@ async fn copy_parts(
         done,
     });
     Ok(pieces)
+}
+
+/// Halve the part with the most left (see [`split_point`]) for a connection joining
+/// late: its end moves back to the middle of what is left, and a new part copies from
+/// there to where it ended.
+///
+/// # Returns
+///
+/// The new part and its number, or `None` if no part is worth halving
+fn join_late(
+    run: &Copying<'_>,
+    spans: &Mutex<Vec<Span>>,
+    min_part: u64,
+    recorder: Option<&Recorder<'_>>,
+) -> Option<(usize, Part)> {
+    let mut spans = spans.lock().ok()?;
+    let (index, at) = split_point(&spans, min_part)?;
+    let end = std::mem::replace(&mut spans[index].end, at);
+    spans.push(Span { at, end });
+    if let Some(recorder) = recorder {
+        recorder.split(index, at);
+    }
+    tracing::info!(
+        "another connection joins in copying {}: {at}..{end} becomes a part of its own",
+        run.item.source
+    );
+    Some((spans.len() - 1, Part::new((at, end))))
 }
 
 /// Copy the `bad` pieces of the file again, one after the other over the file's own
@@ -406,7 +575,6 @@ pub(super) async fn copy_again(
     pieces: &mut Vec<Piece>,
     place: Option<&Place>,
 ) -> Result<(), Unfinished> {
-    let places: Vec<&Place> = place.into_iter().collect();
     for piece in bad {
         let range = (piece.start, piece.end);
         let done_before = run.item.size - (piece.end - piece.start);
@@ -417,7 +585,8 @@ pub(super) async fn copy_again(
             run.item.source
         );
         let part = vec![Part::new(range)];
-        let fresh = copy_parts(run, part, 1, &places, done_before, None).await?;
+        let own = Connections::own(place);
+        let fresh = copy_parts(run, part, own, done_before, None).await?;
         pieces.retain(|kept| (kept.start, kept.end) != range);
         pieces.extend(fresh);
     }
@@ -505,21 +674,23 @@ pub(super) async fn check_pieces(
 
 /// Copy what is left of `part` (number `index` of the file's), hashing the bytes as
 /// they go into a new piece, and recording how far it got every [`RECORD_INTERVAL`]
-/// and when it ends. A connection lost partway is tried again from where the part had
-/// got to, as whole files are ([`PARTWAY_TRIES`]).
+/// and when it ends. Its end is read from `spans` as it goes: a connection joining late
+/// may take its second half. A connection lost partway is tried again from where the
+/// part had got to, as whole files are ([`PARTWAY_TRIES`]).
 ///
 /// # Returns
 ///
-/// The part, done
+/// The part, done (to where it ended up ending)
 async fn copy_part(
     run: &Copying<'_>,
     index: usize,
     part: Part,
+    spans: &Mutex<Vec<Span>>,
     held: &(dyn Fn() -> bool + Sync),
     progress: &Progress<'_>,
     recorder: Option<&Recorder<'_>>,
 ) -> Result<Part, Unfinished> {
-    let (from, end) = (part.at(), part.end);
+    let from = part.at();
     let mut hasher = Sha256::new();
     let mut at = from;
     let record = |at: u64, hasher: &Sha256| {
@@ -529,17 +700,27 @@ async fn copy_part(
     };
     let mut tries = 0;
     loop {
-        let stretch = copy_stretch(run, &mut at, end, &mut hasher, held, progress, &record);
+        let stretch = copy_stretch(
+            run,
+            &mut at,
+            index,
+            spans,
+            &mut hasher,
+            held,
+            progress,
+            &record,
+        );
         match stretch.await {
             Ok(()) => {
                 record(at, &hasher);
-                return Ok(part.with_piece(from, at, &hasher));
+                let mut done = part.with_piece(from, at, &hasher);
+                done.end = at;
+                return Ok(done);
             }
             Err(Unfinished::Partway(error)) if tries < PARTWAY_TRIES => {
                 tries += 1;
                 tracing::warn!(
-                    "{error}; continuing the part {}..{end} at {at} ({tries} of \
-                     {PARTWAY_TRIES})",
+                    "{error}; continuing the part from {} at {at} ({tries} of {PARTWAY_TRIES})",
                     part.start
                 );
                 let pause = tokio::time::sleep(PARTWAY_PAUSE);
@@ -556,13 +737,16 @@ async fn copy_part(
     }
 }
 
-/// Copy from `*at` to `end` over one connection; `*at` and `hasher` move along with
-/// every chunk written, so a retry continues after them. `record` is told how far it
-/// got every [`RECORD_INTERVAL`].
+/// Copy from `*at` to part `index`'s end (read from `spans` before each chunk) over
+/// one connection; `*at`, its span and `hasher` move along with every chunk written,
+/// so a retry continues after them. `record` is told how far it got every
+/// [`RECORD_INTERVAL`].
+#[allow(clippy::too_many_arguments)]
 async fn copy_stretch(
     run: &Copying<'_>,
     at: &mut u64,
-    end: u64,
+    index: usize,
+    spans: &Mutex<Vec<Span>>,
     hasher: &mut Sha256,
     held: &(dyn Fn() -> bool + Sync),
     progress: &Progress<'_>,
@@ -588,7 +772,17 @@ async fn copy_stretch(
         .map_err(Unfinished::Partway)?;
     let mut buffer = vec![0; CHUNK_BYTES];
     let mut recorded = Instant::now();
-    while *at < end {
+    loop {
+        // A poisoned lock (a panic elsewhere) ends the part here; the check that the
+        // pieces cover the file then fails the copy rather than put it in place.
+        let end = spans
+            .lock()
+            .ok()
+            .and_then(|spans| spans.get(index).map(|span| span.end))
+            .unwrap_or(*at);
+        if *at >= end {
+            break;
+        }
         // Paused or held back, the copy is kept and continued from its record; stopped
         // or cancelled, it is deleted (unless the whole job was paused).
         if cancel.is_cancelled() {
@@ -633,6 +827,11 @@ async fn copy_stretch(
         }
         hasher.update(&buffer[..read]);
         *at += read as u64;
+        if let Ok(mut spans) = spans.lock()
+            && let Some(span) = spans.get_mut(index)
+        {
+            span.at = *at;
+        }
         progress.add(read as u64);
         if recorded.elapsed() >= RECORD_INTERVAL {
             // Written, though perhaps not yet on disk: a record a little behind is safe
@@ -756,7 +955,7 @@ mod tests {
                 .map(Part::new)
                 .collect();
             let run = self.run(&cancel, &sink);
-            let copied = copy_in_parts(&run, parts, true, 4, &[], recorder).await;
+            let copied = copy_in_parts(&run, parts, true, connections(4), recorder).await;
             copied.map(|(_, pieces)| pieces)
         }
 
@@ -789,7 +988,7 @@ mod tests {
 
         // Act
         let run = setup.run(&cancel, &sink);
-        let Ok((_, pieces)) = copy_in_parts(&run, parts, true, 3, &[], None).await else {
+        let Ok((_, pieces)) = copy_in_parts(&run, parts, true, connections(3), None).await else {
             panic!("the copy in parts failed")
         };
 
@@ -821,7 +1020,7 @@ mod tests {
             .collect();
 
         let run = setup.run(&cancel, &sink);
-        let copied = copy_in_parts(&run, parts, true, 4, &[], None).await;
+        let copied = copy_in_parts(&run, parts, true, connections(4), None).await;
 
         assert!(matches!(
             copied,
@@ -883,7 +1082,7 @@ mod tests {
 
         // Act: over one connection, fewer than the parts left.
         let run = setup.run(&cancel, &sink);
-        let Ok((_, pieces)) = copy_in_parts(&run, parts, false, 1, &[], None).await else {
+        let Ok((_, pieces)) = copy_in_parts(&run, parts, false, connections(1), None).await else {
             panic!("the continued copy failed")
         };
 
@@ -930,7 +1129,7 @@ mod tests {
         let (cancel, (sink, _)) = (CancelFlag::default(), keeping());
 
         let run = setup.run(&cancel, &sink);
-        let Ok((_, pieces)) = copy_in_parts(&run, parts, false, 2, &[], None).await else {
+        let Ok((_, pieces)) = copy_in_parts(&run, parts, false, connections(2), None).await else {
             panic!("the continued copy failed")
         };
 
@@ -1018,6 +1217,112 @@ mod tests {
             when_stopped.await,
             Err(Unfinished::End(FileEnd::Outcome(ItemOutcome::Stopped)))
         ));
+    }
+
+    /// `count` connections (the file's own and extra ones), joining none late.
+    fn connections(count: usize) -> Connections<'static> {
+        Connections {
+            extra: extra_parts(count - 1),
+            ..Connections::own(None)
+        }
+    }
+
+    /// `count` extra connections, from a limit of their own.
+    fn extra_parts(count: usize) -> Vec<ExtraPart> {
+        let slots = Arc::new(tokio::sync::Semaphore::new(count));
+        (0..count)
+            .map(|_| ExtraPart {
+                _slot: Arc::clone(&slots).try_acquire_owned().expect("a slot"),
+                place: None,
+            })
+            .collect()
+    }
+
+    /// Room to spare in a job with `free` slots and `waiting` files waiting for one.
+    fn spare(free: usize, waiting: usize) -> Spare {
+        Spare {
+            slots: Arc::new(tokio::sync::Semaphore::new(free)),
+            ticket: None,
+            records: Arc::new(SplitRecords::in_memory()),
+            files_waiting: Arc::new(std::sync::atomic::AtomicUsize::new(waiting)),
+        }
+    }
+
+    /// Copy `setup`'s file as one part not started, over `connections`.
+    async fn one_part_over(setup: &Setup, connections: Connections<'_>) -> Vec<Piece> {
+        let (cancel, (sink, _)) = (CancelFlag::default(), keeping());
+        let run = setup.run(&cancel, &sink);
+        let part = vec![Part::new((0, setup.item.size))];
+        let Ok((_, pieces)) = copy_in_parts(&run, part, true, connections, None).await else {
+            panic!("the copy in parts failed")
+        };
+        assert_eq!(setup.copied(), setup.whole);
+        assert!(cover_the_file(&pieces, setup.item.size).is_ok());
+        pieces
+    }
+
+    #[tokio::test]
+    async fn a_free_connection_takes_the_second_half_of_the_part_with_most_left() {
+        let setup = Setup::new(1_000_000);
+        let connections = Connections {
+            extra: extra_parts(1),
+            min_part: 1,
+            ..Connections::own(None)
+        };
+
+        let pieces = one_part_over(&setup, connections).await;
+
+        let mut found: Vec<(u64, u64)> = pieces
+            .iter()
+            .map(|piece| (piece.start, piece.end))
+            .collect();
+        found.sort_unstable();
+        assert_eq!(found, [(0, 500_000), (500_000, 1_000_000)]);
+    }
+
+    #[tokio::test]
+    async fn a_connection_freed_in_the_job_joins_and_is_given_back() {
+        let setup = Setup::new(1_000_000);
+        let spare = spare(1, 0);
+        let connections = Connections {
+            spare: Some(&spare),
+            min_part: 1,
+            ..Connections::own(None)
+        };
+
+        let pieces = one_part_over(&setup, connections).await;
+
+        assert_eq!(pieces.len(), 2, "{pieces:?}");
+        assert_eq!(spare.slots.available_permits(), 1, "given back");
+    }
+
+    #[tokio::test]
+    async fn whole_files_waiting_go_before_joining_late() {
+        let setup = Setup::new(1_000_000);
+        let spare = spare(1, 1);
+        let connections = Connections {
+            spare: Some(&spare),
+            min_part: 1,
+            ..Connections::own(None)
+        };
+
+        let pieces = one_part_over(&setup, connections).await;
+
+        assert_eq!(pieces.len(), 1, "{pieces:?}");
+    }
+
+    #[test]
+    fn the_part_with_most_left_is_halved_only_into_halves_large_enough() {
+        let span = |at, end| Span { at, end };
+        let spans = [span(0, 100), span(150, 1000), span(1000, 1000)];
+        let chunk = CHUNK_BYTES as u64;
+
+        assert_eq!(split_point(&spans, 1), None, "never under a chunk");
+        let big = [span(0, 10 * chunk), span(10 * chunk, 30 * chunk)];
+        assert_eq!(split_point(&big, 1), Some((1, 20 * chunk)));
+        assert_eq!(split_point(&big, 10 * chunk), Some((1, 20 * chunk)));
+        assert_eq!(split_point(&big, 10 * chunk + 1), None);
+        assert_eq!(split_point(&[], 1), None);
     }
 
     #[test]
