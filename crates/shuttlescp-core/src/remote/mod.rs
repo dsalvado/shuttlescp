@@ -488,6 +488,46 @@ impl Remote {
         }
     }
 
+    /// Whether files on this server can be written in parts: a part at any position,
+    /// keeping the rest (SFTP yes; FTP no, it only writes from the start or appends).
+    pub fn can_write_parts(&self) -> bool {
+        matches!(self.0.backend, Backend::Sftp(_))
+    }
+
+    /// Open a file to write one part of it, at `position`: what the file holds before
+    /// and after stays. The file is created if missing. For copying a file in parts,
+    /// each over its own connection, into one copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses, or cannot write in parts (FTP;
+    /// see [`Remote::can_write_parts`])
+    pub async fn open_write_range(
+        &self,
+        path: &RemotePath,
+        position: u64,
+    ) -> Result<RemoteWriter, String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.open_write_range(path, position).await,
+            Backend::Ftp(_) => Err(no_parts_on_ftp(path)),
+        }
+    }
+
+    /// Make a file exactly `size` bytes long, creating it if missing: done first when
+    /// copying a file in parts, so each part writes inside it. Meant for a new copy,
+    /// whose contents do not matter yet. (A server that cannot set sizes gets a byte
+    /// written at the end, which only makes the file longer.)
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses, or cannot write in parts (FTP)
+    pub async fn set_size(&self, path: &RemotePath, size: u64) -> Result<(), String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.set_size(path, size).await,
+            Backend::Ftp(_) => Err(no_parts_on_ftp(path)),
+        }
+    }
+
     /// Rename `from` to `to`. Most servers refuse if `to` exists.
     pub(crate) async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), String> {
         match &self.0.backend {
@@ -622,6 +662,11 @@ impl Remote {
     pub fn can_set_owner(&self) -> bool {
         matches!(self.0.backend, Backend::Sftp(_))
     }
+}
+
+/// Why a file on an FTP server cannot be written in parts.
+fn no_parts_on_ftp(path: &RemotePath) -> String {
+    crate::i18n::cannot("write", path, crate::tr!("error-ftp-no-parts"))
 }
 
 /// A server path as the text the protocols expect.

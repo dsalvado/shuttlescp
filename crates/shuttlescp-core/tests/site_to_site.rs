@@ -1422,3 +1422,64 @@ async fn a_permissions_job_uses_sudo_for_a_whole_folder() {
         .expect("root-file");
     assert_eq!(file.mode(), Some(0o640));
 }
+
+/// Write `whole` onto `remote` at `path` as a copy in parts does: the size set first,
+/// then three parts, the last one first.
+async fn write_in_parts(remote: &Remote, path: &RemotePath, whole: &[u8]) {
+    remote
+        .set_size(path, whole.len() as u64)
+        .await
+        .expect("set the size");
+    let (one, two) = (whole.len() / 3, 2 * whole.len() / 3);
+    for (start, end) in [(two, whole.len()), (0, one), (one, two)] {
+        let mut writer = remote
+            .open_write_range(path, start as u64)
+            .await
+            .expect("open a part");
+        writer.write_all(&whole[start..end]).await.expect("write");
+        writer.shutdown().await.expect("close a part");
+    }
+}
+
+/// SFTP servers take a file written in parts, in any order, at the right size; one with
+/// a shell confirms the bytes by their checksum. FTP refuses, saying why.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn servers_that_can_write_parts_put_them_together() {
+    let whole = pattern(3_000_000);
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = temp.path().join("whole.bin");
+    std::fs::write(&local, &whole).expect("write");
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("local checksum");
+
+    // SFTP without a shell: the file is whole-sized.
+    let sftp = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = sftp.connect().await;
+    assert!(remote.can_write_parts());
+    let path = sftp.dir.join("in-parts.bin");
+    write_in_parts(&remote, &path, &whole).await;
+    let listed = remote.list_dir(&sftp.dir).await.expect("list");
+    let entry = listed
+        .iter()
+        .find(|entry| entry.name() == "in-parts.bin")
+        .expect("the file is there");
+    assert_eq!(entry.size(), whole.len() as u64);
+
+    // SFTP with a shell: the bytes are right.
+    let shell = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = shell.connect().await;
+    let path = shell.dir.join("in-parts.bin");
+    write_in_parts(&remote, &path, &whole).await;
+    assert_eq!(remote.sha256(&path).await.expect("checksum"), here);
+
+    // FTP: refused, before anything is sent.
+    let ftp = Server::from_env("SHUTTLESCP_TEST_FTP");
+    let remote = ftp.connect().await;
+    assert!(!remote.can_write_parts());
+    let path = ftp.dir.join("in-parts.bin");
+    let refused = remote.set_size(&path, 10).await.expect_err("FTP cannot");
+    assert!(refused.contains("in parts"), "{refused}");
+    assert!(remote.open_write_range(&path, 0).await.is_err());
+}

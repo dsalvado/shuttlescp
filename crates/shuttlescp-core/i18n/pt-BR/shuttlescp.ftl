@@ -642,6 +642,7 @@ error-cannot-rename-bare = não é possível renomear { $from } para { $to }
 error-no-such-item = arquivo ou pasta inexistente
 error-sftp-date = { $path } tem uma data que o SFTP não consegue gravar
 error-ftp-no-owner = o FTP não permite alterar o proprietário de um arquivo
+error-ftp-no-parts = o FTP não consegue gravar um arquivo em partes
 error-owner-unknown = o servidor não informou o proprietário atual
 error-mode-unknown = as permissões atuais são desconhecidas: cada caixa precisa ser marcada ou desmarcada
 error-no-such-user = não existe usuário ou grupo { $name }

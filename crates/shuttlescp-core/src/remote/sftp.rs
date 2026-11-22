@@ -25,7 +25,7 @@ use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::fs::Metadata;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use secrecy::{ExposeSecret, SecretString};
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use super::command::{self, Change, CommandError, RunAs, shell_quote};
 use super::{
@@ -400,9 +400,62 @@ impl Sftp {
         path: &RemotePath,
         offset: u64,
     ) -> Result<RemoteWriter, String> {
+        self.open_for_writing(path, offset, offset == 0).await
+    }
+
+    /// Open a file to write one part of it at `position`, keeping all it holds, before
+    /// and after (see `Remote::open_write_range`).
+    pub(super) async fn open_write_range(
+        &self,
+        path: &RemotePath,
+        position: u64,
+    ) -> Result<RemoteWriter, String> {
+        self.open_for_writing(path, position, false).await
+    }
+
+    /// Make a file exactly `size` bytes long (see `Remote::set_size`). Sets the size
+    /// with "setstat"; a server that refuses that gets one byte written at the end
+    /// instead, which can only make the file longer.
+    pub(super) async fn set_size(&self, path: &RemotePath, size: u64) -> Result<(), String> {
+        let text = path_text(path);
+        let attributes = FileAttributes {
+            size: Some(size),
+            ..FileAttributes::empty()
+        };
+        let set = self
+            .run(|link| {
+                let (text, attributes) = (text.clone(), attributes.clone());
+                async move { link.session.set_metadata(text, attributes).await }
+            })
+            .await;
+        let Err(error) = set else {
+            return Ok(());
+        };
+        if size == 0 {
+            return Err(crate::i18n::cannot("write", &text, &error));
+        }
+        tracing::debug!("{text}: setting the size refused ({error}); writing its last byte");
+        let mut file = self.open_for_writing(path, size - 1, false).await?;
+        let written = async {
+            file.write_all(&[0]).await?;
+            file.shutdown().await
+        };
+        written
+            .await
+            .map_err(|error| crate::i18n::cannot("write", &text, &error))
+    }
+
+    /// Open a file for writing at `position`, creating it if missing; `truncate`
+    /// empties it first.
+    async fn open_for_writing(
+        &self,
+        path: &RemotePath,
+        offset: u64,
+        truncate: bool,
+    ) -> Result<RemoteWriter, String> {
         let text = path_text(path);
         let mut flags = OpenFlags::CREATE | OpenFlags::WRITE;
-        if offset == 0 {
+        if truncate {
             flags |= OpenFlags::TRUNCATE;
         }
         let mut file = self

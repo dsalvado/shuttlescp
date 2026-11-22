@@ -580,6 +580,7 @@ error-cannot-rename-bare = 无法将 { $from } 重命名为 { $to }
 error-no-such-item = 没有这个文件或文件夹
 error-sftp-date = { $path } 的日期无法用 SFTP 保存
 error-ftp-no-owner = FTP 无法更改文件的所有者
+error-ftp-no-parts = FTP 无法分段写入文件
 error-owner-unknown = 服务器未告知其当前所有者
 error-mode-unknown = 其当前权限未知，因此每个复选框都必须勾选或取消
 error-no-such-user = 没有名为 { $name } 的用户或组

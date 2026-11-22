@@ -1469,3 +1469,66 @@ async fn a_permissions_job_changes_a_whole_folder_but_not_links() {
     assert_eq!(mode(&site.join("run.sh")), 0o755);
     assert_eq!(mode(&outside), 0o600, "the link's target changed");
 }
+
+/// Write `bytes` into `path` at `position` with [`Endpoint::open_write_range`].
+async fn write_part(path: &SidePath, position: u64, bytes: &[u8]) {
+    use tokio::io::AsyncWriteExt;
+    let mut writer = Endpoint::Local
+        .open_write_range(path, position)
+        .await
+        .expect("open a part");
+    writer.write_all(bytes).await.expect("write a part");
+    writer.shutdown().await.expect("close a part");
+}
+
+#[tokio::test]
+async fn parts_written_in_any_order_make_the_whole_file() {
+    // Arrange: a copy set to the full size first, as a copy in parts starts.
+    assert!(Endpoint::Local.can_write_parts());
+    let temp = tempfile::tempdir().expect("temp dir");
+    let whole = big_content();
+    let copy = local(&temp.path().join("top.txt.filepart"));
+    Endpoint::Local
+        .set_size(&copy, whole.len() as u64)
+        .await
+        .expect("set the size");
+
+    // Act: three parts, the last one first, as connections may finish in any order.
+    let (one, two) = (200_000, 450_000);
+    write_part(&copy, two as u64, &whole[two..]).await;
+    write_part(&copy, 0, &whole[..one]).await;
+    write_part(&copy, one as u64, &whole[one..two]).await;
+
+    // Assert
+    let SidePath::Local(path) = &copy else {
+        unreachable!("a local path")
+    };
+    assert_eq!(std::fs::read(path).expect("read"), whole);
+}
+
+#[tokio::test]
+async fn writing_a_part_keeps_what_follows_it_unlike_continuing_a_copy() {
+    use tokio::io::AsyncWriteExt;
+    // Arrange: a file already holding 1000 bytes.
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("file");
+    let side = local(&path);
+    std::fs::write(&path, vec![7_u8; 1000]).expect("write");
+
+    // Act: a part written at 100 keeps the rest of the file...
+    write_part(&side, 100, &[1; 10]).await;
+    let after_part = std::fs::read(&path).expect("read");
+    // ...while continuing a copy at 100 cuts off what follows (it is redone anyway).
+    let mut writer = Endpoint::Local
+        .open_write_at(&side, 100)
+        .await
+        .expect("open");
+    writer.shutdown().await.expect("close");
+    let after_continue = std::fs::read(&path).expect("read");
+
+    // Assert
+    assert_eq!(after_part.len(), 1000);
+    assert_eq!(&after_part[100..110], &[1; 10]);
+    assert_eq!(&after_part[110..], &[7; 890][..]);
+    assert_eq!(after_continue.len(), 100);
+}

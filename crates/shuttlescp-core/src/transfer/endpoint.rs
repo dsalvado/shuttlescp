@@ -227,6 +227,73 @@ impl Endpoint {
         })
     }
 
+    /// Whether files here can be written in parts (see [`Endpoint::open_write_range`]):
+    /// this computer and SFTP servers can, FTP servers cannot.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by copies in parts, from the next step")
+    )]
+    pub(super) fn can_write_parts(&self) -> bool {
+        match self {
+            Self::Local => true,
+            Self::Remote(remote) => remote.can_write_parts(),
+        }
+    }
+
+    /// Open a file to write one part of it, at `position`, keeping what the file holds
+    /// before and after; it is created if missing. Unlike
+    /// [`Endpoint::open_write_at`], which continues a copy written from the start and
+    /// so cuts off anything past `offset`, this leaves the other parts alone.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by copies in parts, from the next step")
+    )]
+    pub(super) async fn open_write_range(
+        &self,
+        path: &SidePath,
+        position: u64,
+    ) -> Result<Writer, String> {
+        Ok(match self.target(path)? {
+            Target::Local(path) => {
+                let mut file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)
+                    .await
+                    .map_err(|error| crate::i18n::cannot("create", path.display(), &error))?;
+                file.seek(SeekFrom::Start(position))
+                    .await
+                    .map_err(|error| crate::i18n::cannot("write", path.display(), &error))?;
+                Box::pin(file)
+            }
+            Target::Remote(remote, path) => remote.open_write_range(path, position).await?,
+        })
+    }
+
+    /// Make a file exactly `size` bytes long, creating it if missing: the first step of
+    /// a copy in parts, so every part writes inside the file. Meant for a new copy.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by copies in parts, from the next step")
+    )]
+    pub(super) async fn set_size(&self, path: &SidePath, size: u64) -> Result<(), String> {
+        match self.target(path)? {
+            Target::Local(path) => {
+                let failed = |error| crate::i18n::cannot("write", path.display(), &error);
+                let file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)
+                    .await
+                    .map_err(failed)?;
+                file.set_len(size).await.map_err(failed)
+            }
+            Target::Remote(remote, path) => remote.set_size(path, size).await,
+        }
+    }
+
     /// Read `len` bytes starting at `offset`.
     pub(super) async fn read_range(
         &self,
