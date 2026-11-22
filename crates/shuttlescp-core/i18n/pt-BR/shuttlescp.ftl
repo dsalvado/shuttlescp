@@ -659,6 +659,7 @@ checksum-unsupported = o servidor não consegue calcular somas de verificação
 checksum-no-answer = a resposta do servidor não continha nenhuma soma de verificação
 ftp-no-transfer-reply = o servidor não confirmou a transferência em { $seconds } s
 verify-mismatch = a soma de verificação da cópia difere da do original: a cópia não é o que foi copiado
+verify-parts-mismatch = partes da cópia ainda diferem do que foi copiado, mesmo depois de copiá-las de novo
 verify-skipped = ignorada pelo usuário
 item-verifying = Verificando…
 item-verified = { $size } · verificado

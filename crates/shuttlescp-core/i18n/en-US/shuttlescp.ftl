@@ -799,6 +799,7 @@ checksum-unsupported = the server cannot compute checksums
 checksum-no-answer = the server's answer held no checksum
 ftp-no-transfer-reply = the server did not confirm the transfer within { $seconds } s
 verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied
+verify-parts-mismatch = pieces of the copy still differ from what was copied, after copying them again
 verify-skipped = skipped by the user
 item-verifying = Verifying…
 item-verified = { $size } · verified

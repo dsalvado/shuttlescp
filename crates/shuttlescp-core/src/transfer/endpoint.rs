@@ -4,11 +4,13 @@ use std::ffi::OsString;
 use std::io::SeekFrom;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite};
 
-use crate::checksum::{Checksum, local_sha256, sha256_of};
+use crate::checksum::{Checksum, local_range_sha256, local_sha256, sha256_of};
 use crate::path::{RemotePath, SidePath};
 use crate::remote::{Remote, RemoteMeta};
 
@@ -114,6 +116,42 @@ impl Endpoint {
                 .map_err(|error| crate::i18n::cannot("read", path.display(), &error)),
             Target::Remote(remote, path) => remote.sha256(path).await,
         }
+    }
+
+    /// The SHA-256 of the bytes `start..end` of a file: hashed here for this computer;
+    /// for a server's, computed by the server if it can, else read back. `read` is
+    /// added the bytes read as they are (nothing, when the server computes it).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of reading the file
+    pub(super) async fn range_sha256(
+        &self,
+        path: &SidePath,
+        start: u64,
+        end: u64,
+        read: &Arc<AtomicU64>,
+    ) -> Result<Checksum, String> {
+        let (remote, at) = match self.target(path)? {
+            Target::Local(local) => {
+                return local_range_sha256(local.to_owned(), start, end, Arc::clone(read))
+                    .await
+                    .map_err(|error| crate::i18n::cannot("read", local.display(), &error));
+            }
+            Target::Remote(remote, at) => (remote, at),
+        };
+        match remote.range_sha256(at, start, end).await {
+            Ok(checksum) => return Ok(checksum),
+            Err(reason) => tracing::debug!("{path}: {reason}; reading {start}..{end} back"),
+        }
+        let reader = self.open_at(path, start).await?;
+        let mut counted = 0;
+        sha256_of(reader.take(end - start), |done| {
+            read.fetch_add(done - counted, Ordering::Relaxed);
+            counted = done;
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("read", path, &error))
     }
 
     /// The SHA-256 of a file, by reading all of it here (from a server: a second

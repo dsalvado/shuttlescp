@@ -432,6 +432,25 @@ impl Remote {
         }
     }
 
+    /// The SHA-256 of the bytes `start..end` of a file, computed by the server (to check
+    /// a copy made in parts, a part at a time).
+    ///
+    /// # Errors
+    ///
+    /// Returns why there is none: FTP servers cannot (HASH ranges are rarely offered),
+    /// nor can SFTP accounts that may not run commands; or the file cannot be read
+    pub async fn range_sha256(
+        &self,
+        path: &RemotePath,
+        start: u64,
+        end: u64,
+    ) -> Result<Checksum, String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.range_sha256(path, start, end).await,
+            Backend::Ftp(_) => Err(crate::tr!("checksum-unsupported")),
+        }
+    }
+
     /// Details of `path`, following a symbolic link to what it points to.
     pub(crate) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         match &self.0.backend {

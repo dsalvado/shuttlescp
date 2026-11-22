@@ -854,28 +854,9 @@ async fn copy_file_in_parts(
     // The extra connections are free again for other files, while this one finishes.
     drop(places);
     drop(extra);
-    let (took, pieces) = match copied {
+    let (mut took, mut pieces) = match copied {
         Ok(copied) => copied,
-        Err(unfinished) => {
-            let _ = dst.remove_file(&copy).await;
-            return match unfinished {
-                Unfinished::Partway(error) => {
-                    tracing::warn!("{error}; the copy in parts starts over next time");
-                    ItemOutcome::Failed(error).into()
-                }
-                Unfinished::End(FileEnd::Paused(_)) => {
-                    tracing::info!("paused {}; its copy in parts starts over", item.dest);
-                    FileEnd::Paused(0)
-                }
-                Unfinished::End(FileEnd::Held(_)) => FileEnd::Held(0),
-                Unfinished::End(FileEnd::Outcome(outcome)) => {
-                    if outcome == ItemOutcome::Stopped {
-                        tracing::info!("stopped by the user: {}", item.source);
-                    }
-                    outcome.into()
-                }
-            };
-        }
+        Err(unfinished) => return give_up_parts(item, dst, &copy, unfinished).await,
     };
     if let Err(error) = parts::cover_the_file(&pieces, item.size) {
         // Cannot happen unless the parts are wrong: never put such a copy in place.
@@ -883,7 +864,69 @@ async fn copy_file_in_parts(
         let _ = dst.remove_file(&copy).await;
         return ItemOutcome::Failed(error).into();
     }
+    // Always checked, whatever the site's setting: splitting is what could misplace
+    // bytes. A piece that differs is copied again, and checked again, once.
+    let checked = parts::check_pieces(item, dst, &copy, &pieces, cancel, sink).await;
+    let bad = match checked {
+        Ok(bad) => bad,
+        Err(unfinished) => return give_up_parts(item, dst, &copy, unfinished).await,
+    };
+    if !bad.is_empty() {
+        let again = Instant::now();
+        let copied = parts::copy_again(
+            item,
+            src,
+            dst,
+            &copy,
+            &bad,
+            &mut pieces,
+            place,
+            cancel,
+            sink,
+        );
+        if let Err(unfinished) = copied.await {
+            return give_up_parts(item, dst, &copy, unfinished).await;
+        }
+        took.data += again.elapsed();
+        match parts::check_pieces(item, dst, &copy, &pieces, cancel, sink).await {
+            Ok(still) if still.is_empty() => {}
+            Ok(_) => {
+                let error = crate::tr!("verify-parts-mismatch");
+                return give_up_parts(item, dst, &copy, Unfinished::Partway(error)).await;
+            }
+            Err(unfinished) => return give_up_parts(item, dst, &copy, unfinished).await,
+        }
+    }
     put_in_place(item, src, dst, &copy, 0, took, finish, cancel, sink, times).await
+}
+
+/// End a copy in parts that did not complete, for the reason `unfinished`: its copy
+/// (`copy`) is deleted, as it has gaps (or bytes that could not be checked), so the
+/// file starts over next time.
+async fn give_up_parts(
+    item: &PlanItem,
+    dst: &Endpoint,
+    copy: &SidePath,
+    unfinished: Unfinished,
+) -> FileEnd {
+    let _ = dst.remove_file(copy).await;
+    match unfinished {
+        Unfinished::Partway(error) => {
+            tracing::warn!("{error}; the copy in parts starts over next time");
+            ItemOutcome::Failed(error).into()
+        }
+        Unfinished::End(FileEnd::Paused(_)) => {
+            tracing::info!("paused {}; its copy in parts starts over", item.dest);
+            FileEnd::Paused(0)
+        }
+        Unfinished::End(FileEnd::Held(_)) => FileEnd::Held(0),
+        Unfinished::End(FileEnd::Outcome(outcome)) => {
+            if outcome == ItemOutcome::Stopped {
+                tracing::info!("stopped by the user: {}", item.source);
+            }
+            outcome.into()
+        }
+    }
 }
 
 /// Check the copy at `item.dest` against `item.source` by their SHA-256 checksums

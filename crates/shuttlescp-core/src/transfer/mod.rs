@@ -672,6 +672,13 @@ pub enum TransferEvent {
         /// Bytes read back so far.
         done: u64,
     },
+    /// A file copied in parts has had its pieces checked (after [`Self::Verifying`]):
+    /// whether they matched shows in how the file ends. It may be checked against its
+    /// source next, as any copy.
+    PartsChecked {
+        /// Item id.
+        id: usize,
+    },
     /// A copied file was checked against its source (before [`Self::ItemFinished`]).
     Verified {
         /// Item id.

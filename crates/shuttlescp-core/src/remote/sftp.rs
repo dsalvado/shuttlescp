@@ -284,8 +284,34 @@ impl Sftp {
     /// accounts), none of the tools is there, or the file cannot be read
     pub(super) async fn sha256(&self, path: &RemotePath) -> Result<Checksum, String> {
         let file = shell_quote(path.as_str());
-        let command =
-            format!("sha256sum -b -- {file} || shasum -a 256 -b -- {file} || sha256 -q -- {file}");
+        self.checksum_by_command(format!(
+            "sha256sum -b -- {file} || shasum -a 256 -b -- {file} || sha256 -q -- {file}"
+        ))
+        .await
+    }
+
+    /// The SHA-256 of the bytes `start..end` of a file, computed by the server: `tail`
+    /// skips to `start` (seeking, for a file), `head` stops at `end`, and the hash
+    /// tools are tried as for [`Self::sha256`]. Run by `sh`, whatever the account's own
+    /// shell is.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::sha256`]; also when the file cannot be read (checked first, as a
+    /// pipeline's failure would otherwise go unseen, giving the checksum of nothing)
+    pub(super) async fn range_sha256(
+        &self,
+        path: &RemotePath,
+        start: u64,
+        end: u64,
+    ) -> Result<Checksum, String> {
+        self.checksum_by_command(range_sha256_command(path.as_str(), start, end))
+            .await
+    }
+
+    /// Run `command` on a second channel of the SSH connection, and find the checksum
+    /// it prints.
+    async fn checksum_by_command(&self, command: String) -> Result<Checksum, String> {
         let link = self.link().await;
         let ask = async {
             let mut channel = link
@@ -1278,6 +1304,19 @@ fn plausible_host_name(text: &str) -> Option<String> {
     valid.then(|| name.to_owned())
 }
 
+/// The command printing the SHA-256 of the bytes `start..end` of `file` (see
+/// [`Sftp::range_sha256`]). `tail -c +N` counts from 1, so it starts at `start + 1`.
+fn range_sha256_command(file: &str, start: u64, end: u64) -> String {
+    let (from, length) = (start + 1, end.saturating_sub(start));
+    let script = format!(
+        "f={}; [ -f \"$f\" ] && [ -r \"$f\" ] || {{ echo \"cannot read $f\" >&2; exit 1; }}; \
+         r() {{ tail -c +{from} -- \"$f\" | head -c {length}; }}; \
+         r | sha256sum -b || r | shasum -a 256 -b || r | sha256 -q",
+        shell_quote(file)
+    );
+    format!("sh -c {}", shell_quote(&script))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1287,6 +1326,57 @@ mod tests {
     use crate::remote::Prompter;
 
     use super::*;
+
+    /// Run `command` as an SSH server would, through a shell here.
+    fn run_here(command: &str) -> std::process::Output {
+        std::process::Command::new("sh")
+            .args(["-c", command])
+            .output()
+            .expect("run sh")
+    }
+
+    #[test]
+    fn the_range_command_hashes_just_that_range() {
+        // Arrange: a name a shell would misread, and bytes that differ along the file.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("it's a $file");
+        let bytes: Vec<u8> = (0..100_000_u32).map(|at| (at % 251) as u8).collect();
+        std::fs::write(&path, &bytes).expect("write");
+        let file = path.to_str().expect("utf-8");
+
+        for (start, end) in [(0, 100_000), (1, 2), (40_000, 70_001), (99_999, 100_000)] {
+            // Act
+            let output = run_here(&range_sha256_command(file, start, end));
+
+            // Assert
+            let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+            sha2::Digest::update(&mut hasher, &bytes[start as usize..end as usize]);
+            assert_eq!(
+                first_checksum_in(&String::from_utf8_lossy(&output.stdout)),
+                Some(Checksum::from_hasher(hasher)),
+                "{start}..{end}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_range_command_fails_for_a_missing_file_rather_than_hash_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("missing");
+
+        let output = run_here(&range_sha256_command(
+            missing.to_str().expect("utf-8"),
+            0,
+            10,
+        ));
+
+        assert!(!output.status.success());
+        assert_eq!(
+            first_checksum_in(&String::from_utf8_lossy(&output.stdout)),
+            None
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("cannot read"));
+    }
 
     #[test]
     fn only_plausible_host_names_are_taken() {

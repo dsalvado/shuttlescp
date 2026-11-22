@@ -1467,13 +1467,27 @@ async fn servers_that_can_write_parts_put_them_together() {
         .find(|entry| entry.name() == "in-parts.bin")
         .expect("the file is there");
     assert_eq!(entry.size(), whole.len() as u64);
+    // Without a shell, a range's checksum cannot be computed there (so a copy in parts
+    // is read back to check it).
+    assert!(remote.range_sha256(&path, 0, 1000).await.is_err());
 
-    // SFTP with a shell: the bytes are right.
+    // SFTP with a shell: the bytes are right, and so is a range's checksum.
     let shell = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
     let remote = shell.connect().await;
     let path = shell.dir.join("in-parts.bin");
     write_in_parts(&remote, &path, &whole).await;
     assert_eq!(remote.sha256(&path).await.expect("checksum"), here);
+    let range = temp.path().join("range.bin");
+    std::fs::write(&range, &whole[1_000_001..2_500_000]).expect("write");
+    assert_eq!(
+        remote
+            .range_sha256(&path, 1_000_001, 2_500_000)
+            .await
+            .expect("range checksum"),
+        shuttlescp_core::checksum::local_sha256(range)
+            .await
+            .expect("local checksum")
+    );
 
     // FTP: refused, before anything is sent.
     let ftp = Server::from_env("SHUTTLESCP_TEST_FTP");

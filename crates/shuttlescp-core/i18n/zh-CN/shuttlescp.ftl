@@ -597,6 +597,7 @@ checksum-unsupported = 服务器无法计算校验和
 checksum-no-answer = 服务器的回复中没有校验和
 ftp-no-transfer-reply = 服务器未在 { $seconds } 秒内确认传输
 verify-mismatch = 副本的校验和与原文件不同：副本与所复制的内容不一致
+verify-parts-mismatch = 重新复制后，副本中仍有部分与所复制的内容不一致
 verify-skipped = 已被用户跳过
 item-verifying = 正在验证…
 item-verified = { $size } · 已验证

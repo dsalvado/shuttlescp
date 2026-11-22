@@ -833,6 +833,10 @@ impl Component for TransferPanel {
                 id: item,
                 verification,
             } => self.set_verification(id, item, false, Some(verification), now),
+            // Its own "Checking parts" bar comes later; for now, the usual "Verifying…".
+            TransferEvent::PartsChecked { id: item } => {
+                self.set_verification(id, item, false, None, now);
+            }
             TransferEvent::Held { id: item } => {
                 let mut shared = self.shared.borrow_mut();
                 if let Some(state) = shared
