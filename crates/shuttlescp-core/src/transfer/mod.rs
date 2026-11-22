@@ -35,7 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-pub use copy::SplitRecords;
+pub use copy::{SPLIT_FROM, SplitRecords};
 pub use meter::{RateMeter, fraction, percent};
 pub use ops::{
     check_name, check_same_side, create_folder, rename, windows_name_problem,

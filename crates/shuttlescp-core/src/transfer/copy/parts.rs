@@ -32,8 +32,9 @@ use crate::path::SidePath;
 use crate::transfer::endpoint::Endpoint;
 use crate::transfer::{CancelFlag, ItemOutcome, Place, PlanItem, Sink, TransferEvent};
 
-/// Files smaller than this are copied whole.
-pub(in crate::transfer) const SPLIT_FROM: u64 = 1 << 30;
+/// Files smaller than this are copied whole (and the menu offers copying in parts only
+/// for files at least this large).
+pub const SPLIT_FROM: u64 = 1 << 30;
 /// No part is smaller than this (so a 1 GiB file has at most 4).
 pub(super) const MIN_PART: u64 = 256 << 20;
 /// How often each part records how far it got. Writing the record costs little; what

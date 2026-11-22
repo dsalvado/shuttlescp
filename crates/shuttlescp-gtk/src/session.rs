@@ -434,10 +434,12 @@ impl Session {
             Some(left) => Peer {
                 name: left.host.clone(),
                 is_server: true,
+                writes_in_parts: left.remote.can_write_parts(),
             },
             None => Peer {
                 name: tr!("this-computer"),
                 is_server: false,
+                writes_in_parts: true,
             },
         })));
         self.set_right(pane.widget());
@@ -458,6 +460,7 @@ impl Session {
         self.local_pane.emit(FilePaneMsg::Peer(Some(Peer {
             name: remote.host().to_owned(),
             is_server: true,
+            writes_in_parts: remote.can_write_parts(),
         })));
         tracing::info!("session {id}: connected to {}", site.display_name());
         self.connection = Some(Connection {
@@ -870,11 +873,12 @@ fn pane_message(session: SessionId, side: Side, output: FilePaneOutput) -> AppMs
             (SidePath::Remote(dir), Side::Local) => AppMsg::LeftDirChanged { session, dir },
             (SidePath::Remote(dir), Side::Remote) => AppMsg::RemoteDirChanged { session, dir },
         },
-        FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
+        FilePaneOutput::Request { kind, paths, split } => AppMsg::PaneRequest {
             session,
             side,
             kind,
             paths,
+            split,
         },
         FilePaneOutput::ColumnsChanged(hidden) => AppMsg::ColumnsChanged(hidden),
         FilePaneOutput::PermissionsJob { paths, change } => AppMsg::PermissionsJob {

@@ -22,7 +22,7 @@ use crate::format::format_size;
 mod parts;
 mod record;
 
-pub(super) use parts::SPLIT_FROM;
+pub use parts::SPLIT_FROM;
 pub use record::SplitRecords;
 
 /// Bytes read and written per step of a file copy.

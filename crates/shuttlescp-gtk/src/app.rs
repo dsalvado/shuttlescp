@@ -256,6 +256,8 @@ pub enum AppMsg {
         kind: JobKind,
         /// The selected items.
         paths: Vec<SidePath>,
+        /// Copy large files in parts ([`Job::split`]).
+        split: bool,
     },
     /// The user showed or hid a file pane column: these are hidden now, in every pane.
     ColumnsChanged(Vec<String>),
@@ -1155,8 +1157,9 @@ impl SimpleComponent for App {
                 side,
                 kind,
                 paths,
+                split,
             } => {
-                self.request_job(session, side, kind, paths, &sender);
+                self.request_job(session, side, (kind, split), paths, &sender);
             }
             AppMsg::ColumnsChanged(hidden) => {
                 for session in &self.sessions {
@@ -1781,14 +1784,15 @@ impl App {
     ///
     /// * `session` - The session of the pane
     /// * `side` - The pane the items are in
-    /// * `kind` - Copy, move or delete
+    /// * `(kind, split)` - Copy, move or delete; and whether to copy large files in
+    ///   parts ([`Job::split`])
     /// * `paths` - The selected items
     /// * `sender` - Receives the confirmed delete
     fn request_job(
         &self,
         session: SessionId,
         side: Side,
-        kind: JobKind,
+        (kind, split): (JobKind, bool),
         paths: Vec<SidePath>,
         sender: &ComponentSender<Self>,
     ) {
@@ -1806,7 +1810,7 @@ impl App {
             return;
         };
         let job = Job {
-            split: false,
+            split,
             permissions: None,
             kind,
             side,

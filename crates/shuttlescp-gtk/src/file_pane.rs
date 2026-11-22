@@ -162,6 +162,8 @@ pub enum FilePaneMsg {
     },
     /// Copy, move or delete the selected items (from the context menu or a key).
     Request(JobKind),
+    /// Copy the selected items, large files in parts ("Download to … in Parts").
+    RequestInParts,
     /// The other pane, which copies go to (`None`: nowhere to copy to, e.g. the local
     /// pane before a server is connected). Names the menu's Upload / Move items.
     Peer(Option<Peer>),
@@ -284,6 +286,8 @@ pub enum FilePaneOutput {
         kind: JobKind,
         /// The selected files and folders.
         paths: Vec<SidePath>,
+        /// Copy large files in parts (see [`transfer::Job::split`]).
+        split: bool,
     },
     /// Items were dropped on this pane, and the user chose to copy or move them.
     Dropped {
@@ -459,6 +463,8 @@ pub struct FilePane {
     actions: PaneActions,
     /// Whether there is somewhere to copy to (for the local pane: a connected server).
     peer_available: bool,
+    /// Whether files can be written there in parts ([`Peer::writes_in_parts`]).
+    peer_writes_parts: bool,
     /// What the last operation did, shown with the next listing's item count.
     notice: Option<String>,
     /// Whether a listing has been shown yet (the start folder is not listed until then).
@@ -482,6 +488,8 @@ pub struct FilePane {
 /// The actions of the right-click menu.
 struct PaneActions {
     copy: gio::SimpleAction,
+    /// "Download to … in Parts": hidden while disabled, so it shows only where it helps.
+    copy_in_parts: gio::SimpleAction,
     move_: gio::SimpleAction,
     delete: gio::SimpleAction,
     rename: gio::SimpleAction,
@@ -497,6 +505,9 @@ pub struct Peer {
     pub name: String,
     /// It is a server (so a server pane copies to it, rather than downloading).
     pub is_server: bool,
+    /// Files can be written there in parts, one part at any position (this computer
+    /// and SFTP servers can): what copying in parts needs of the destination.
+    pub writes_in_parts: bool,
 }
 
 /// The menu's copy and move items: "Upload to <server>", "Download to this computer",
@@ -508,16 +519,10 @@ pub struct Peer {
 /// * `this_is_server` - This pane shows a server
 /// * `peer` - The other pane
 fn transfer_labels(this_is_server: bool, peer: Option<&Peer>) -> (String, String) {
-    let kind = match (this_is_server, peer.is_some_and(|peer| peer.is_server)) {
-        (false, _) => "upload",
-        (true, false) => "download",
-        (true, true) => "copy",
-    };
+    let kind = transfer_kind(this_is_server, peer);
     match peer {
-        // An underscore marks the keyboard shortcut letter: one in a name is doubled to
-        // show as itself.
         Some(peer) => {
-            let name = peer.name.replace('_', "__");
+            let name = menu_name(peer);
             (
                 tr!("pane-transfer-to", kind = kind, name = name.clone()),
                 tr!("pane-move-to", name = name),
@@ -527,10 +532,65 @@ fn transfer_labels(this_is_server: bool, peer: Option<&Peer>) -> (String, String
     }
 }
 
-/// Fill the menu's transfer section with its copy and move items.
-fn fill_transfer_section(section: &gio::Menu, labels: &(String, String)) {
+/// The menu's "in parts" item: "Download to this computer in Parts", "Copy to <server>
+/// in Parts" and the like. Only with somewhere to copy to.
+fn in_parts_label(this_is_server: bool, peer: Option<&Peer>) -> Option<String> {
+    let kind = transfer_kind(this_is_server, peer);
+    peer.map(|peer| {
+        tr!(
+            "pane-transfer-in-parts",
+            kind = kind,
+            name = menu_name(peer)
+        )
+    })
+}
+
+/// Which copy the menu names: an upload, a download, or server to server a copy.
+fn transfer_kind(this_is_server: bool, peer: Option<&Peer>) -> &'static str {
+    match (this_is_server, peer.is_some_and(|peer| peer.is_server)) {
+        (false, _) => "upload",
+        (true, false) => "download",
+        (true, true) => "copy",
+    }
+}
+
+/// The other pane's name as a menu item shows it: an underscore marks the keyboard
+/// shortcut letter, so one in a name is doubled to show as itself.
+fn menu_name(peer: &Peer) -> String {
+    peer.name.replace('_', "__")
+}
+
+/// Whether the menu offers copying the selection in parts: this pane's server reads
+/// faster over several connections, the other side can write a file in parts, and
+/// at least one selected file is large enough to be split (folders do not count, see
+/// `docs/design/split-downloads.md`).
+///
+/// # Arguments
+///
+/// * `selected` - Each selected item's kind and size
+fn offers_parts(
+    reads_in_parts: bool,
+    peer_writes_parts: bool,
+    selected: impl IntoIterator<Item = (EntryKind, u64)>,
+) -> bool {
+    reads_in_parts
+        && peer_writes_parts
+        && selected
+            .into_iter()
+            .any(|(kind, size)| kind == EntryKind::File && size >= transfer::SPLIT_FROM)
+}
+
+/// Fill the menu's transfer section with its copy and move items, and the copy in parts
+/// (`in_parts`) between them.
+fn fill_transfer_section(section: &gio::Menu, labels: &(String, String), in_parts: Option<&str>) {
     section.remove_all();
     section.append(Some(&labels.0), Some("pane.copy"));
+    if let Some(label) = in_parts {
+        let item = gio::MenuItem::new(Some(label), Some("pane.copy-in-parts"));
+        // Shown only while it is enabled, which is where it helps (see `offers_parts`).
+        item.set_attribute_value("hidden-when", Some(&"action-disabled".to_variant()));
+        section.append_item(&item);
+    }
     section.append(Some(&labels.1), Some("pane.move"));
 }
 
@@ -602,6 +662,7 @@ impl FilePane {
         self.actions
             .move_
             .set_enabled(self.peer_available && selected > 0);
+        self.actions.copy_in_parts.set_enabled(self.offers_parts());
         self.actions.delete.set_enabled(selected > 0);
         self.actions.rename.set_enabled(selected == 1);
         // Windows' own files have no Unix permissions.
@@ -609,6 +670,19 @@ impl FilePane {
         self.actions
             .permissions
             .set_enabled(has_permissions && selected > 0);
+    }
+
+    /// Whether the menu offers copying the selection in parts (see [`offers_parts`]).
+    fn offers_parts(&self) -> bool {
+        let reads_in_parts = self
+            .remote
+            .as_ref()
+            .is_some_and(Remote::reads_faster_in_parts);
+        let selected = self.selected_entries();
+        let selected = selected
+            .iter()
+            .map(|(_, entry)| (entry.kind(), entry.size()));
+        self.peer_available && offers_parts(reads_in_parts, self.peer_writes_parts, selected)
     }
 
     /// The selected items with what their listing says about them.
@@ -1271,6 +1345,7 @@ impl Component for FilePane {
             actions,
             // The local pane has nowhere to copy to until a server is connected.
             peer_available: side == Side::Remote,
+            peer_writes_parts: false,
             notice: None,
         };
         model.request_listing(start_dir, &sender);
@@ -1293,6 +1368,7 @@ impl Component for FilePane {
                     | FilePaneMsg::ContextMenu { .. }
                     | FilePaneMsg::Dropped(_)
                     | FilePaneMsg::Request(_)
+                    | FilePaneMsg::RequestInParts
                     | FilePaneMsg::Rename
                     | FilePaneMsg::NewFolder
                     | FilePaneMsg::Permissions
@@ -1423,8 +1499,23 @@ impl Component for FilePane {
                     return;
                 }
                 tracing::debug!("{kind:?} requested for {} items", paths.len());
-                let _ = sender.output(FilePaneOutput::Request { kind, paths });
+                let _ = sender.output(FilePaneOutput::Request {
+                    kind,
+                    paths,
+                    split: false,
+                });
             }
+            // Checked again: the selection may have changed since the menu was opened.
+            FilePaneMsg::RequestInParts if self.offers_parts() => {
+                let paths = self.selected_paths();
+                tracing::debug!("a copy in parts requested for {} items", paths.len());
+                let _ = sender.output(FilePaneOutput::Request {
+                    kind: JobKind::Copy,
+                    paths,
+                    split: true,
+                });
+            }
+            FilePaneMsg::RequestInParts => {}
             FilePaneMsg::ServerName(name) => {
                 // Not when the site already says it ("me@docker01" and "docker01").
                 let site_host = self.title.rsplit('@').next().unwrap_or_default();
@@ -1435,9 +1526,12 @@ impl Component for FilePane {
             }
             FilePaneMsg::Peer(peer) => {
                 self.peer_available = peer.is_some();
+                self.peer_writes_parts = peer.as_ref().is_some_and(|peer| peer.writes_in_parts);
+                let this_is_server = self.remote.is_some();
                 fill_transfer_section(
                     &self.actions.transfer_section,
-                    &transfer_labels(self.remote.is_some(), peer.as_ref()),
+                    &transfer_labels(this_is_server, peer.as_ref()),
+                    in_parts_label(this_is_server, peer.as_ref()).as_deref(),
                 );
             }
             FilePaneMsg::NewFolder => Self::ask_name(
@@ -1763,9 +1857,11 @@ fn context_menu(
     fill_transfer_section(
         &transfer_section,
         &transfer_labels(side == Side::Remote, None),
+        None,
     );
     let actions = PaneActions {
         copy: add("copy", || FilePaneMsg::Request(JobKind::Copy)),
+        copy_in_parts: add("copy-in-parts", || FilePaneMsg::RequestInParts),
         move_: add("move", || FilePaneMsg::Request(JobKind::Move)),
         delete: add("delete", || FilePaneMsg::Request(JobKind::Delete)),
         rename: add("rename", || FilePaneMsg::Rename),
@@ -2807,10 +2903,12 @@ mod tests {
         let server = |name: &str| Peer {
             name: name.to_owned(),
             is_server: true,
+            writes_in_parts: true,
         };
         let computer = Peer {
             name: String::from("this computer"),
             is_server: false,
+            writes_in_parts: true,
         };
         let labels = |a: &str, b: &str| (a.to_owned(), b.to_owned());
         assert_eq!(
@@ -2831,6 +2929,31 @@ mod tests {
             "_Copy to db__01"
         );
         assert_eq!(transfer_labels(false, None), labels("_Upload", "_Move"));
+        assert_eq!(
+            in_parts_label(true, Some(&computer)).as_deref(),
+            Some("Download to this computer in _Parts")
+        );
+        assert_eq!(
+            in_parts_label(true, Some(&server("db_01"))).as_deref(),
+            Some("Copy to db__01 in _Parts")
+        );
+        assert_eq!(in_parts_label(true, None), None);
+    }
+
+    #[test]
+    fn parts_are_offered_only_where_they_help() {
+        let big = (EntryKind::File, transfer::SPLIT_FROM);
+        let small = (EntryKind::File, transfer::SPLIT_FROM - 1);
+        let folder = (EntryKind::Directory, transfer::SPLIT_FROM * 4);
+        // A large file among others is enough.
+        assert!(offers_parts(true, true, [small, big, folder]));
+        // Small files and folders, however large, are not.
+        assert!(!offers_parts(true, true, [small, folder]));
+        assert!(!offers_parts(true, true, []));
+        // Nor where the source would not read faster, or the other side cannot write
+        // in parts.
+        assert!(!offers_parts(false, true, [big]));
+        assert!(!offers_parts(true, false, [big]));
     }
     use shuttlescp_core::path::RemotePath;
 

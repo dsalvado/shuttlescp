@@ -344,6 +344,12 @@ pane-transfer-to =
         [download] _Download to { $name }
        *[copy] _Copy to { $name }
     }
+pane-transfer-in-parts =
+    { $kind ->
+        [upload] Upload to { $name } in _Parts
+        [download] Download to { $name } in _Parts
+       *[copy] Copy to { $name } in _Parts
+    }
 pane-move = _Move
 pane-move-to = _Move to { $name }
 pane-menu-new-folder = _New Folder…

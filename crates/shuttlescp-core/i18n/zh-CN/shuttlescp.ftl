@@ -250,6 +250,12 @@ pane-transfer-to =
         [download] 下载到 { $name }(_D)
        *[copy] 复制到 { $name }(_C)
     }
+pane-transfer-in-parts =
+    { $kind ->
+        [upload] 分段上传到 { $name }(_P)
+        [download] 分段下载到 { $name }(_P)
+       *[copy] 分段复制到 { $name }(_P)
+    }
 pane-move = 移动(_M)
 pane-move-to = 移动到 { $name }(_M)
 pane-menu-new-folder = 新建文件夹(_N)…
