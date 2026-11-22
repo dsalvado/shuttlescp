@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use shuttlescp_core::transfer::{
-    CancelFlag, FilePlaces, ItemOutcome, Job, JobKind, JobSummary, Side, TransferEvent,
-    Verification, Verify, run,
+    CancelFlag, FilePlaces, ItemOutcome, Job, JobKind, JobSummary, Side, SplitRecords,
+    TransferEvent, Verification, Verify, run,
 };
 
 /// A test server, from `SHUTTLESCP_TEST_SFTP` or `SHUTTLESCP_TEST_FTP`.
@@ -1500,7 +1500,8 @@ async fn servers_that_can_write_parts_put_them_together() {
 }
 
 /// A large file from an FTP server is copied in parts, each over a connection of its
-/// own, and comes out whole; nothing of the copy in parts is left behind.
+/// own; paused partway, it continues where its parts were, even with the records read
+/// back from their file. It comes out whole; nothing of the copy in parts is left.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
 async fn a_large_file_from_ftp_is_copied_in_parts() {
@@ -1529,7 +1530,8 @@ async fn a_large_file_from_ftp_is_copied_in_parts() {
     let (up, up_errors) = run_job(upload, &remote, None).await;
     assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
 
-    // Act: download it in parts.
+    // Act: download it in parts, pause the job partway (as when closing the app),
+    // then run it again with the records read back from their file.
     let down = temp.path().join("down");
     std::fs::create_dir(&down).expect("create");
     let mut download = job(
@@ -1539,29 +1541,67 @@ async fn a_large_file_from_ftp_is_copied_in_parts() {
         SidePath::Local(down.clone()),
     );
     download.split = true;
+    let records_file = temp.path().join("split-copies.json");
+    let records = Arc::new(SplitRecords::load(&records_file));
+    let first = CancelFlag::default().with_split_records(Arc::clone(&records));
     let announced = Arc::new(Mutex::new(None));
-    let seen = Arc::clone(&announced);
+    let (seen, pausing) = (Arc::clone(&announced), first.clone());
+    let paused = run(
+        download.clone(),
+        Some(remote.clone()),
+        None,
+        first,
+        move |event| match event {
+            TransferEvent::InParts { ranges, .. } => *seen.lock().expect("lock") = Some(ranges),
+            TransferEvent::Progress { done, .. } if done > (2 << 30) / 5 => pausing.pause(),
+            _ => {}
+        },
+    )
+    .await;
+    let kept = std::fs::metadata(down.join("big.bin.fileparts")).map(|kept| kept.len());
+    drop(records);
+    let resumed_from = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&resumed_from);
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    let failed = Arc::clone(&failures);
+    let again =
+        CancelFlag::default().with_split_records(Arc::new(SplitRecords::load(&records_file)));
     let summary = run(
         download,
         Some(remote.clone()),
         None,
-        CancelFlag::default(),
-        move |event| {
-            if let TransferEvent::InParts { ranges, .. } = event {
-                *seen.lock().expect("lock") = Some(ranges);
-            }
+        again,
+        move |event| match event {
+            TransferEvent::Resumed { from, .. } => *seen.lock().expect("lock") = Some(from),
+            TransferEvent::ItemFinished {
+                outcome: ItemOutcome::Failed(error),
+                ..
+            } => failed.lock().expect("lock").push(error),
+            _ => {}
         },
     )
     .await;
 
-    // Assert: 4 parts of at least 256 MiB, the bytes right, no copy in parts left.
-    assert!(summary.is_complete(), "download: {summary:?}");
+    // Assert: 4 parts of at least 256 MiB; paused with the copy kept at full size;
+    // continued from where the parts were; the bytes right; nothing of it left.
+    assert!(!paused.is_complete(), "paused: {paused:?}");
+    assert_eq!(kept.ok(), Some(size as u64), "the copy in parts is kept");
+    assert!(
+        summary.is_complete(),
+        "download: {summary:?}, failed: {:?}",
+        failures.lock().expect("lock")
+    );
     let ranges = announced
         .lock()
         .expect("lock")
         .clone()
         .expect("copied in parts");
     assert_eq!(ranges.len(), 4, "{ranges:?}");
+    let from = resumed_from.lock().expect("lock").expect("continued");
+    assert!(
+        from > (1 << 30) / 10 && from < size as u64,
+        "continued from {from}"
+    );
     let here = shuttlescp_core::checksum::local_sha256(local)
         .await
         .expect("checksum");

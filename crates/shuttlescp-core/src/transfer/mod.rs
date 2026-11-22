@@ -35,6 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+pub use copy::SplitRecords;
 pub use meter::{RateMeter, fraction, percent};
 pub use ops::{
     check_name, check_same_side, create_folder, rename, windows_name_problem,
@@ -712,6 +713,9 @@ pub struct CancelFlag {
     /// The limit on files copied at once that the job shares with every other one;
     /// `None` for no shared limit.
     places: Option<Arc<FilePlaces>>,
+    /// Where copies in parts record how far they have got, to be continued after the
+    /// app was closed; `None` keeps that for the job's run only.
+    split_records: Option<Arc<SplitRecords>>,
     /// Start now was asked for: the job goes first in the shared limit's line.
     start_now: Arc<AtomicBool>,
     /// Wakes whatever waits on a slow server when the user cancels, pauses or stops,
@@ -772,6 +776,19 @@ impl CancelFlag {
     /// The shared limit, if the job has one.
     pub(super) fn places(&self) -> Option<&Arc<FilePlaces>> {
         self.places.as_ref()
+    }
+
+    /// Record how far copies in parts have got in `records` (shared by every job), so
+    /// they continue where they were even after the app was closed.
+    #[must_use]
+    pub fn with_split_records(mut self, records: Arc<SplitRecords>) -> Self {
+        self.split_records = Some(records);
+        self
+    }
+
+    /// Where copies in parts record how far they have got, if the job was given that.
+    pub(super) fn split_records(&self) -> Option<&Arc<SplitRecords>> {
+        self.split_records.as_ref()
     }
 
     /// Ask for the job to go first in the shared limit's line ("Start now"): its next

@@ -7,19 +7,24 @@
 //! ([`Endpoint::open_write_range`]), so nothing is joined afterwards. Each part hashes
 //! the bytes it copies, so the copy can be checked range by range without reading the
 //! source again.
+//!
+//! How far each part got is recorded as it goes (see [`super::record`]), so a copy
+//! paused, held back or interrupted continues where its parts were.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use super::record::{self, SplitRecord, SplitRecords};
 use super::{
-    CHUNK_BYTES, FileEnd, FileTimes, PARTWAY_PAUSE, PARTWAY_TRIES, PROGRESS_INTERVAL, Unfinished,
-    ended,
+    CHUNK_BYTES, FileEnd, FileTimes, PARTWAY_PAUSE, PARTWAY_TRIES, PROGRESS_INTERVAL,
+    RESUME_CHECK_BYTES, Unfinished, ended,
 };
 use crate::checksum::Checksum;
 use crate::path::SidePath;
@@ -30,10 +35,13 @@ use crate::transfer::{CancelFlag, ItemOutcome, Place, PlanItem, Sink, TransferEv
 pub(in crate::transfer) const SPLIT_FROM: u64 = 1 << 30;
 /// No part is smaller than this (so a 1 GiB file has at most 4).
 pub(super) const MIN_PART: u64 = 256 << 20;
+/// How often each part records how far it got. Writing the record costs little; what
+/// it lags behind is copied again when continuing.
+const RECORD_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A stretch of the copy whose bytes were hashed as they were copied: `start..end`
 /// holds bytes with this SHA-256 checksum.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Piece {
     pub(super) start: u64,
     pub(super) end: u64,
@@ -96,6 +104,103 @@ pub(super) fn cover_the_file(pieces: &[Piece], size: u64) -> Result<(), String> 
     }
 }
 
+/// One part of a file copied in parts: the range `start..end` it copies, and the
+/// pieces of it done so far, in order from `start` (more than one when it was
+/// continued). It has got to the end of the last one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Part {
+    pub(super) start: u64,
+    pub(super) end: u64,
+    pub(super) pieces: Vec<Piece>,
+}
+
+impl Part {
+    /// A part of `range` with nothing done yet.
+    pub(super) fn new((start, end): (u64, u64)) -> Self {
+        Self {
+            start,
+            end,
+            pieces: Vec::new(),
+        }
+    }
+
+    /// Where it has got to.
+    pub(super) fn at(&self) -> u64 {
+        self.pieces.last().map_or(self.start, |piece| piece.end)
+    }
+
+    /// Bytes of it done.
+    pub(super) fn done(&self) -> u64 {
+        self.at() - self.start
+    }
+
+    /// Whether all of it is done.
+    pub(super) fn is_done(&self) -> bool {
+        self.at() >= self.end
+    }
+
+    /// This part with one more piece: `from..at`, hashed by `hasher` (nothing, when it
+    /// is empty).
+    fn with_piece(&self, from: u64, at: u64, hasher: &Sha256) -> Self {
+        let mut part = self.clone();
+        if at > from {
+            part.pieces.push(Piece {
+                start: from,
+                end: at,
+                sha256: Checksum::from_hasher(hasher.clone()),
+            });
+        }
+        part
+    }
+}
+
+/// What every part of one file's copy shares: the file, where it is copied from and
+/// into (`copy`, its partial copy), and the job's requests and events.
+pub(super) struct Copying<'a> {
+    pub(super) item: &'a PlanItem,
+    pub(super) src: &'a Endpoint,
+    pub(super) dst: &'a Endpoint,
+    pub(super) copy: &'a SidePath,
+    pub(super) cancel: &'a CancelFlag,
+    pub(super) sink: &'a Sink,
+}
+
+/// Keeps a file's record (see [`super::record`]) up to date as its parts go.
+pub(super) struct Recorder<'a> {
+    records: &'a SplitRecords,
+    key: String,
+    record: Mutex<SplitRecord>,
+}
+
+impl<'a> Recorder<'a> {
+    /// Start recording `item`'s copy in `parts` in `records` (saved at once).
+    pub(super) fn new(records: &'a SplitRecords, item: &PlanItem, parts: &[Part]) -> Self {
+        let (key, record) = (record::key(item), SplitRecord::new(item, parts.to_vec()));
+        records.set(&key, record.clone());
+        Self {
+            records,
+            key,
+            record: Mutex::new(record),
+        }
+    }
+
+    /// Record that part `index` is now `part`.
+    fn reached(&self, index: usize, part: &Part) {
+        let Ok(mut record) = self.record.lock() else {
+            return;
+        };
+        if let Some(recorded) = record.parts.get_mut(index) {
+            recorded.clone_from(part);
+        }
+        self.records.set(&self.key, record.clone());
+    }
+
+    /// Forget the record: the copy is done, or gone.
+    pub(super) fn forget(&self) {
+        self.records.forget(&self.key);
+    }
+}
+
 /// The file's progress, summed over its parts, reported at most every
 /// [`PROGRESS_INTERVAL`].
 struct Progress<'a> {
@@ -118,12 +223,15 @@ impl Progress<'_> {
     }
 }
 
-/// Copy `item` into `copy` in the parts `ranges`, all at once.
+/// Copy the file in `parts`, up to `connections` of them at a time. A new copy
+/// (`fresh`) is first set to its full size; a continued one has its parts' last bytes
+/// checked against the source first (see [`still_matches`]).
 ///
 /// # Arguments
 ///
 /// * `places` - The places the parts hold in the limit shared by every job; when one is
 ///   held back, the whole file steps back
+/// * `recorder` - Where the parts record how far they got
 ///
 /// # Returns
 ///
@@ -132,40 +240,61 @@ impl Progress<'_> {
 ///
 /// # Errors
 ///
-/// Returns why the copy did not complete. Then the copy holds gaps: whatever ended it,
-/// it cannot be continued as a whole-file partial copy (resuming parts comes later).
-#[allow(clippy::too_many_arguments)]
+/// Returns why the copy did not complete. What was done is recorded, to continue it.
 pub(super) async fn copy_in_parts(
-    item: &PlanItem,
-    src: &Endpoint,
-    dst: &Endpoint,
-    copy: &SidePath,
-    ranges: &[(u64, u64)],
+    run: &Copying<'_>,
+    parts: Vec<Part>,
+    fresh: bool,
+    connections: usize,
     places: &[&Place],
-    cancel: &CancelFlag,
-    sink: &Sink,
+    recorder: Option<&Recorder<'_>>,
 ) -> Result<(FileTimes, Vec<Piece>), Unfinished> {
+    let (item, sink) = (run.item, run.sink);
+    let connections = connections.max(1);
     let opening = Instant::now();
-    dst.set_size(copy, item.size)
-        .await
-        .map_err(ItemOutcome::Failed)?;
+    let parts = if fresh {
+        run.dst
+            .set_size(run.copy, item.size)
+            .await
+            .map_err(ItemOutcome::Failed)?;
+        parts
+    } else {
+        let checking = futures_util::stream::iter(parts).map(|part| still_matches(run, part));
+        let parts: Vec<Part> = checking.buffered(connections).collect().await;
+        if let Some(recorder) = recorder {
+            for (index, part) in parts.iter().enumerate() {
+                recorder.reached(index, part);
+            }
+        }
+        parts
+    };
     let open = opening.elapsed();
     let moving = Instant::now();
     sink(TransferEvent::InParts {
         id: item.id,
-        ranges: ranges.to_vec(),
+        ranges: parts.iter().map(|part| (part.start, part.end)).collect(),
     });
-    tracing::info!(
-        "copying {} in {} parts: {}",
-        item.source,
-        ranges.len(),
-        ranges
-            .iter()
-            .map(|(start, end)| format!("{start}..{end}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    let pieces = copy_ranges(item, src, dst, copy, ranges, places, 0, cancel, sink).await?;
+    let done: u64 = parts.iter().map(Part::done).sum();
+    let ranges = parts
+        .iter()
+        .map(|part| format!("{}..{} (at {})", part.start, part.end, part.at()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if done > 0 {
+        tracing::info!(
+            "resuming {} at {done} of {} bytes, in {} parts: {ranges}",
+            item.dest,
+            item.size,
+            parts.len()
+        );
+        sink(TransferEvent::Resumed {
+            id: item.id,
+            from: done,
+        });
+    } else {
+        tracing::info!("copying {} in {} parts: {ranges}", item.source, parts.len());
+    }
+    let pieces = copy_parts(run, parts, connections, places, done, recorder).await?;
     Ok((
         FileTimes {
             open,
@@ -176,7 +305,40 @@ pub(super) async fn copy_in_parts(
     ))
 }
 
-/// Copy the `ranges` of `item` into `copy` (already its full size), all at once.
+/// A part being continued, as it can be: unchanged if its last bytes (up to
+/// [`RESUME_CHECK_BYTES`]) are still the source's, else started over (only that part).
+/// Given up (unchanged) if the user ends the file meanwhile: the copy then ends at once.
+async fn still_matches(run: &Copying<'_>, part: Part) -> Part {
+    let at = part.at();
+    if at == part.start {
+        return part;
+    }
+    let check = RESUME_CHECK_BYTES.min(at - part.start);
+    // Bounded by RESUME_CHECK_BYTES, so it always fits a `usize`.
+    let len = usize::try_from(check).unwrap_or(0);
+    let reading = async {
+        tokio::join!(
+            run.src.read_range(&run.item.source, at - check, len),
+            run.dst.read_range(run.copy, at - check, len),
+        )
+    };
+    match run.cancel.unless_ended(run.item.id, reading).await {
+        None => part,
+        Some((Ok(source), Ok(copy))) if source == copy => part,
+        Some(_) => {
+            tracing::info!(
+                "{}..{} of {} does not match its source; that part starts over",
+                part.start,
+                at,
+                run.copy
+            );
+            Part::new((part.start, part.end))
+        }
+    }
+}
+
+/// Copy what is left of `parts` (already full-sized in the copy), up to `connections`
+/// at a time.
 ///
 /// # Arguments
 ///
@@ -184,88 +346,78 @@ pub(super) async fn copy_in_parts(
 ///
 /// # Returns
 ///
-/// The pieces copied, in no particular order
+/// The pieces of every part, in no particular order
 ///
 /// # Errors
 ///
 /// Returns why the copy did not complete
-#[allow(clippy::too_many_arguments)]
-async fn copy_ranges(
-    item: &PlanItem,
-    src: &Endpoint,
-    dst: &Endpoint,
-    copy: &SidePath,
-    ranges: &[(u64, u64)],
+async fn copy_parts(
+    run: &Copying<'_>,
+    parts: Vec<Part>,
+    connections: usize,
     places: &[&Place],
     done_before: u64,
-    cancel: &CancelFlag,
-    sink: &Sink,
+    recorder: Option<&Recorder<'_>>,
 ) -> Result<Vec<Piece>, Unfinished> {
     let progress = Progress {
-        id: item.id,
+        id: run.item.id,
         done: AtomicU64::new(done_before),
         reported: Mutex::new(Instant::now()),
-        sink,
+        sink: run.sink,
     };
     let held = || places.iter().any(|place| place.is_held());
-    let mut running: FuturesUnordered<_> = ranges
-        .iter()
-        .map(|&(start, end)| copy_part(item, src, dst, copy, start, end, cancel, &held, &progress))
-        .collect();
-    let mut pieces = Vec::with_capacity(ranges.len());
+    let mut pieces = Vec::new();
+    let mut left = Vec::new();
+    for (index, part) in parts.into_iter().enumerate() {
+        if part.is_done() {
+            pieces.extend(part.pieces);
+        } else {
+            left.push((index, part));
+        }
+    }
+    let mut running = futures_util::stream::iter(left)
+        .map(|(index, part)| copy_part(run, index, part, &held, &progress, recorder))
+        .buffer_unordered(connections.max(1));
     while let Some(part) = running.next().await {
         match part {
-            Ok(piece) => pieces.push(piece),
+            Ok(part) => pieces.extend(part.pieces),
             // One part failing (or the user ending the copy) ends them all: dropping the
-            // others stops them where they are.
+            // others stops them where they are (each recorded how far it got).
             Err(unfinished) => return Err(unfinished),
         }
     }
     let done = progress.done.load(Ordering::Relaxed);
-    sink(TransferEvent::Progress { id: item.id, done });
+    run.sink.as_ref()(TransferEvent::Progress {
+        id: run.item.id,
+        done,
+    });
     Ok(pieces)
 }
 
-/// Copy the `bad` pieces of `item` into `copy` again, one after the other over the
-/// file's own connection (the extra ones were given back), replacing them in `pieces`.
+/// Copy the `bad` pieces of the file again, one after the other over the file's own
+/// connection (the extra ones were given back), replacing them in `pieces`.
 ///
 /// # Errors
 ///
 /// Returns why the copy did not complete
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn copy_again(
-    item: &PlanItem,
-    src: &Endpoint,
-    dst: &Endpoint,
-    copy: &SidePath,
+    run: &Copying<'_>,
     bad: &[Piece],
     pieces: &mut Vec<Piece>,
     place: Option<&Place>,
-    cancel: &CancelFlag,
-    sink: &Sink,
 ) -> Result<(), Unfinished> {
     let places: Vec<&Place> = place.into_iter().collect();
     for piece in bad {
         let range = (piece.start, piece.end);
-        let done_before = item.size - (piece.end - piece.start);
+        let done_before = run.item.size - (piece.end - piece.start);
         tracing::warn!(
             "copying {}..{} of {} again",
             piece.start,
             piece.end,
-            item.source
+            run.item.source
         );
-        let fresh = copy_ranges(
-            item,
-            src,
-            dst,
-            copy,
-            &[range],
-            &places,
-            done_before,
-            cancel,
-            sink,
-        )
-        .await?;
+        let part = vec![Part::new(range)];
+        let fresh = copy_parts(run, part, 1, &places, done_before, None).await?;
         pieces.retain(|kept| (kept.start, kept.end) != range);
         pieces.extend(fresh);
     }
@@ -351,76 +503,79 @@ pub(super) async fn check_pieces(
     Ok(bad)
 }
 
-/// Copy the range `start..end` of `item` into `copy`, hashing the bytes as they go.
-/// A connection lost partway is tried again from where the part had got to, as whole
-/// files are ([`PARTWAY_TRIES`]).
-#[allow(clippy::too_many_arguments)]
+/// Copy what is left of `part` (number `index` of the file's), hashing the bytes as
+/// they go into a new piece, and recording how far it got every [`RECORD_INTERVAL`]
+/// and when it ends. A connection lost partway is tried again from where the part had
+/// got to, as whole files are ([`PARTWAY_TRIES`]).
+///
+/// # Returns
+///
+/// The part, done
 async fn copy_part(
-    item: &PlanItem,
-    src: &Endpoint,
-    dst: &Endpoint,
-    copy: &SidePath,
-    start: u64,
-    end: u64,
-    cancel: &CancelFlag,
+    run: &Copying<'_>,
+    index: usize,
+    part: Part,
     held: &(dyn Fn() -> bool + Sync),
     progress: &Progress<'_>,
-) -> Result<Piece, Unfinished> {
+    recorder: Option<&Recorder<'_>>,
+) -> Result<Part, Unfinished> {
+    let (from, end) = (part.at(), part.end);
     let mut hasher = Sha256::new();
-    let mut at = start;
+    let mut at = from;
+    let record = |at: u64, hasher: &Sha256| {
+        if let Some(recorder) = recorder {
+            recorder.reached(index, &part.with_piece(from, at, hasher));
+        }
+    };
     let mut tries = 0;
     loop {
-        let stretch = copy_stretch(
-            item,
-            src,
-            dst,
-            copy,
-            &mut at,
-            end,
-            &mut hasher,
-            cancel,
-            held,
-            progress,
-        );
+        let stretch = copy_stretch(run, &mut at, end, &mut hasher, held, progress, &record);
         match stretch.await {
             Ok(()) => {
-                return Ok(Piece {
-                    start,
-                    end,
-                    sha256: Checksum::from_hasher(hasher),
-                });
+                record(at, &hasher);
+                return Ok(part.with_piece(from, at, &hasher));
             }
             Err(Unfinished::Partway(error)) if tries < PARTWAY_TRIES => {
                 tries += 1;
                 tracing::warn!(
-                    "{error}; continuing the part {start}..{end} at {at} ({tries} of \
-                     {PARTWAY_TRIES})"
+                    "{error}; continuing the part {}..{end} at {at} ({tries} of \
+                     {PARTWAY_TRIES})",
+                    part.start
                 );
                 let pause = tokio::time::sleep(PARTWAY_PAUSE);
-                if cancel.unless_ended(item.id, pause).await.is_none() {
-                    return Err(ended(cancel, item, 0));
+                if run.cancel.unless_ended(run.item.id, pause).await.is_none() {
+                    record(at, &hasher);
+                    return Err(ended(run.cancel, run.item, 0));
                 }
             }
-            Err(unfinished) => return Err(unfinished),
+            Err(unfinished) => {
+                record(at, &hasher);
+                return Err(unfinished);
+            }
         }
     }
 }
 
 /// Copy from `*at` to `end` over one connection; `*at` and `hasher` move along with
-/// every chunk written, so a retry continues after them.
-#[allow(clippy::too_many_arguments)]
+/// every chunk written, so a retry continues after them. `record` is told how far it
+/// got every [`RECORD_INTERVAL`].
 async fn copy_stretch(
-    item: &PlanItem,
-    src: &Endpoint,
-    dst: &Endpoint,
-    copy: &SidePath,
+    run: &Copying<'_>,
     at: &mut u64,
     end: u64,
     hasher: &mut Sha256,
-    cancel: &CancelFlag,
     held: &(dyn Fn() -> bool + Sync),
     progress: &Progress<'_>,
+    record: &(dyn Fn(u64, &Sha256) + Sync),
 ) -> Result<(), Unfinished> {
+    let Copying {
+        item,
+        src,
+        dst,
+        copy,
+        cancel,
+        ..
+    } = *run;
     let mut reader = cancel
         .unless_ended(item.id, src.open_at(&item.source, *at))
         .await
@@ -432,8 +587,10 @@ async fn copy_stretch(
         .ok_or_else(|| ended(cancel, item, 0))?
         .map_err(Unfinished::Partway)?;
     let mut buffer = vec![0; CHUNK_BYTES];
+    let mut recorded = Instant::now();
     while *at < end {
-        // However the user ends it, a copy in parts starts over next time (for now).
+        // Paused or held back, the copy is kept and continued from its record; stopped
+        // or cancelled, it is deleted (unless the whole job was paused).
         if cancel.is_cancelled() {
             return Err(ItemOutcome::Cancelled.into());
         }
@@ -477,6 +634,12 @@ async fn copy_stretch(
         hasher.update(&buffer[..read]);
         *at += read as u64;
         progress.add(read as u64);
+        if recorded.elapsed() >= RECORD_INTERVAL {
+            // Written, though perhaps not yet on disk: a record a little behind is safe
+            // (those bytes are copied again), and the check catches the rest.
+            record(*at, hasher);
+            recorded = Instant::now();
+        }
     }
     // Stops reading here, before the source's end: for FTP that closes the connection,
     // as the server is still sending the rest of the file.
@@ -518,10 +681,10 @@ mod tests {
     }
 
     /// A sink that keeps the events.
-    fn keeping() -> (Sink, std::sync::Arc<Mutex<Vec<TransferEvent>>>) {
-        let events = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let kept = std::sync::Arc::clone(&events);
-        let sink: Sink = std::sync::Arc::new(move |event| {
+    fn keeping() -> (Sink, Arc<Mutex<Vec<TransferEvent>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&events);
+        let sink: Sink = Arc::new(move |event| {
             if let Ok(mut events) = kept.lock() {
                 events.push(event);
             }
@@ -529,44 +692,112 @@ mod tests {
         (sink, events)
     }
 
+    /// The SHA-256 of `bytes`.
+    fn sha256(bytes: &[u8]) -> Checksum {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        Checksum::from_hasher(hasher)
+    }
+
+    /// A piece `start..end` of `whole`, as copying it would have hashed it.
+    fn piece_of(whole: &[u8], start: u64, end: u64) -> Piece {
+        let range = usize::try_from(start).expect("small")..usize::try_from(end).expect("small");
+        Piece {
+            start,
+            end,
+            sha256: sha256(&whole[range]),
+        }
+    }
+
+    /// A file of `size` bytes here, to be copied into `dst.fileparts` beside it.
+    struct Setup {
+        _temp: tempfile::TempDir,
+        item: PlanItem,
+        src: std::path::PathBuf,
+        copy: SidePath,
+        whole: Vec<u8>,
+    }
+
+    impl Setup {
+        fn new(size: usize) -> Self {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let whole = content(size);
+            let (src, dst) = (temp.path().join("src"), temp.path().join("dst"));
+            std::fs::write(&src, &whole).expect("write");
+            Self {
+                item: item(&src, &dst, whole.len() as u64),
+                copy: SidePath::Local(temp.path().join("dst.fileparts")),
+                _temp: temp,
+                src,
+                whole,
+            }
+        }
+
+        fn run<'a>(&'a self, cancel: &'a CancelFlag, sink: &'a Sink) -> Copying<'a> {
+            Copying {
+                item: &self.item,
+                src: &Endpoint::Local,
+                dst: &Endpoint::Local,
+                copy: &self.copy,
+                cancel,
+                sink,
+            }
+        }
+
+        /// Copy it afresh in `parts`, all at once.
+        async fn copy_in(
+            &self,
+            parts: usize,
+            recorder: Option<&Recorder<'_>>,
+        ) -> Result<Vec<Piece>, Unfinished> {
+            let (cancel, (sink, _)) = (CancelFlag::default(), keeping());
+            let parts = ranges(self.item.size, parts)
+                .into_iter()
+                .map(Part::new)
+                .collect();
+            let run = self.run(&cancel, &sink);
+            let copied = copy_in_parts(&run, parts, true, 4, &[], recorder).await;
+            copied.map(|(_, pieces)| pieces)
+        }
+
+        /// The copy's bytes.
+        fn copied(&self) -> Vec<u8> {
+            let SidePath::Local(path) = &self.copy else {
+                unreachable!("a local path")
+            };
+            std::fs::read(path).expect("read")
+        }
+
+        /// Change one byte of the copy, at `at`.
+        fn damage(&self, at: usize) {
+            let SidePath::Local(path) = &self.copy else {
+                unreachable!("a local path")
+            };
+            let mut bytes = std::fs::read(path).expect("read");
+            bytes[at] ^= 0xff;
+            std::fs::write(path, bytes).expect("write");
+        }
+    }
+
     #[tokio::test]
     async fn parts_copied_at_once_make_the_file_and_hash_their_ranges() {
         // Arrange: a file not evenly divisible by its 3 parts.
-        let temp = tempfile::tempdir().expect("temp dir");
-        let whole = content(1_000_003);
-        let (src, dst) = (temp.path().join("src"), temp.path().join("dst"));
-        std::fs::write(&src, &whole).expect("write");
-        let item = item(&src, &dst, whole.len() as u64);
-        let copy = SidePath::Local(temp.path().join("dst.fileparts"));
-        let ranges = ranges(item.size, 3);
-        let (sink, events) = keeping();
+        let setup = Setup::new(1_000_003);
+        let (cancel, (sink, events)) = (CancelFlag::default(), keeping());
+        let ranges = ranges(setup.item.size, 3);
+        let parts = ranges.iter().copied().map(Part::new).collect();
 
         // Act
-        let (_, pieces) = copy_in_parts(
-            &item,
-            &Endpoint::Local,
-            &Endpoint::Local,
-            &copy,
-            &ranges,
-            &[],
-            &CancelFlag::default(),
-            &sink,
-        )
-        .await
-        .unwrap_or_else(|_| panic!("the copy in parts failed"));
+        let run = setup.run(&cancel, &sink);
+        let Ok((_, pieces)) = copy_in_parts(&run, parts, true, 3, &[], None).await else {
+            panic!("the copy in parts failed")
+        };
 
         // Assert: the bytes, each piece's checksum, and the parts announced.
-        let SidePath::Local(copied) = &copy else {
-            unreachable!("a local path")
-        };
-        assert_eq!(std::fs::read(copied).expect("read"), whole);
-        assert!(cover_the_file(&pieces, item.size).is_ok());
+        assert_eq!(setup.copied(), setup.whole);
+        assert!(cover_the_file(&pieces, setup.item.size).is_ok());
         for piece in &pieces {
-            let range = usize::try_from(piece.start).expect("small")
-                ..usize::try_from(piece.end).expect("small");
-            let mut hasher = Sha256::new();
-            hasher.update(&whole[range]);
-            assert_eq!(piece.sha256, Checksum::from_hasher(hasher));
+            assert_eq!(*piece, piece_of(&setup.whole, piece.start, piece.end));
         }
         let announced = events
             .lock()
@@ -581,27 +812,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_stopped_file_ends_every_part() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let whole = content(300_000);
-        let (src, dst) = (temp.path().join("src"), temp.path().join("dst"));
-        std::fs::write(&src, &whole).expect("write");
-        let item = item(&src, &dst, whole.len() as u64);
-        let copy = SidePath::Local(temp.path().join("dst.fileparts"));
-        let cancel = CancelFlag::default();
-        cancel.stop_item(item.id);
-        let (sink, _) = keeping();
+        let setup = Setup::new(300_000);
+        let (cancel, (sink, _)) = (CancelFlag::default(), keeping());
+        cancel.stop_item(setup.item.id);
+        let parts = ranges(setup.item.size, 4)
+            .into_iter()
+            .map(Part::new)
+            .collect();
 
-        let copied = copy_in_parts(
-            &item,
-            &Endpoint::Local,
-            &Endpoint::Local,
-            &copy,
-            &ranges(item.size, 4),
-            &[],
-            &cancel,
-            &sink,
-        )
-        .await;
+        let run = setup.run(&cancel, &sink);
+        let copied = copy_in_parts(&run, parts, true, 4, &[], None).await;
 
         assert!(matches!(
             copied,
@@ -609,61 +829,139 @@ mod tests {
         ));
     }
 
-    /// A file of `size` bytes copied in `parts` here; the source path, the copy, the
-    /// file and its pieces.
-    async fn copied_in_parts(
-        temp: &tempfile::TempDir,
-        size: usize,
-        parts: usize,
-    ) -> (PlanItem, SidePath, Vec<u8>, Vec<Piece>) {
-        let whole = content(size);
-        let (src, dst) = (temp.path().join("src"), temp.path().join("dst"));
-        std::fs::write(&src, &whole).expect("write");
-        let item = item(&src, &dst, whole.len() as u64);
-        let copy = SidePath::Local(temp.path().join("dst.fileparts"));
-        let (sink, _) = keeping();
-        let (ranges, cancel) = (ranges(item.size, parts), CancelFlag::default());
-        let copied = copy_in_parts(
-            &item,
-            &Endpoint::Local,
-            &Endpoint::Local,
-            &copy,
-            &ranges,
-            &[],
-            &cancel,
-            &sink,
+    #[tokio::test]
+    async fn the_record_follows_the_parts_to_the_end() {
+        let setup = Setup::new(400_000);
+        let records = SplitRecords::in_memory();
+        let parts: Vec<Part> = ranges(setup.item.size, 2)
+            .into_iter()
+            .map(Part::new)
+            .collect();
+        let recorder = Recorder::new(&records, &setup.item, &parts);
+        let key = record::key(&setup.item);
+        let at_first = records.get(&key);
+
+        let copied = setup.copy_in(2, Some(&recorder)).await;
+
+        assert!(copied.is_ok());
+        assert_eq!(at_first.map(|record| record.parts), Some(parts));
+        let recorded = records.get(&key).expect("recorded").parts;
+        assert!(recorded.iter().all(Part::is_done), "{recorded:?}");
+        assert_eq!(
+            recorded[1].pieces,
+            [piece_of(&setup.whole, 200_000, 400_000)]
         );
-        let Ok((_, pieces)) = copied.await else {
-            panic!("the copy in parts failed")
-        };
-        (item, copy, whole, pieces)
+        recorder.forget();
+        assert!(records.get(&key).is_none());
     }
 
-    /// Change one byte of the local file `copy`, at `at`.
-    fn damage(copy: &SidePath, at: usize) {
-        let SidePath::Local(path) = copy else {
-            unreachable!("a local path")
+    #[tokio::test]
+    async fn a_continued_copy_copies_only_what_was_not_done() {
+        // Arrange: copied once; then recorded as if the first part were done and the
+        // second half done. A byte of the source changed early in the first part
+        // (outside what continuing compares) shows whether it is copied again.
+        let mut setup = Setup::new(600_000);
+        assert!(setup.copy_in(3, None).await.is_ok());
+        let parts = vec![
+            Part {
+                start: 0,
+                end: 200_000,
+                pieces: vec![piece_of(&setup.whole, 0, 200_000)],
+            },
+            Part {
+                start: 200_000,
+                end: 400_000,
+                pieces: vec![piece_of(&setup.whole, 200_000, 300_000)],
+            },
+            Part::new((400_000, 600_000)),
+        ];
+        setup.whole[10] ^= 0xff;
+        std::fs::write(&setup.src, &setup.whole).expect("write");
+        setup.damage(350_000);
+        setup.damage(500_000);
+        let (cancel, (sink, events)) = (CancelFlag::default(), keeping());
+
+        // Act: over one connection, fewer than the parts left.
+        let run = setup.run(&cancel, &sink);
+        let Ok((_, pieces)) = copy_in_parts(&run, parts, false, 1, &[], None).await else {
+            panic!("the continued copy failed")
         };
-        let mut bytes = std::fs::read(path).expect("read");
-        bytes[at] ^= 0xff;
-        std::fs::write(path, bytes).expect("write");
+
+        // Assert: the first part untouched, the rest copied, in 4 pieces.
+        let copied = setup.copied();
+        assert_eq!(
+            copied[10],
+            setup.whole[10] ^ 0xff,
+            "the done part was not copied"
+        );
+        assert_eq!(copied[11..], setup.whole[11..]);
+        assert!(cover_the_file(&pieces, setup.item.size).is_ok());
+        assert_eq!(pieces.len(), 4);
+        assert!(pieces.contains(&piece_of(&setup.whole, 300_000, 400_000)));
+        let resumed = events
+            .lock()
+            .expect("events")
+            .iter()
+            .find_map(|event| match event {
+                TransferEvent::Resumed { from, .. } => Some(*from),
+                _ => None,
+            });
+        assert_eq!(resumed, Some(300_000));
+    }
+
+    #[tokio::test]
+    async fn a_part_whose_last_bytes_differ_from_the_source_starts_over() {
+        let setup = Setup::new(400_000);
+        assert!(setup.copy_in(2, None).await.is_ok());
+        let parts = vec![
+            Part {
+                start: 0,
+                end: 200_000,
+                pieces: vec![piece_of(&setup.whole, 0, 150_000)],
+            },
+            Part {
+                start: 200_000,
+                end: 400_000,
+                pieces: vec![piece_of(&setup.whole, 200_000, 300_000)],
+            },
+        ];
+        // Just before where the second part got to: continuing compares that.
+        setup.damage(299_000);
+        let (cancel, (sink, _)) = (CancelFlag::default(), keeping());
+
+        let run = setup.run(&cancel, &sink);
+        let Ok((_, pieces)) = copy_in_parts(&run, parts, false, 2, &[], None).await else {
+            panic!("the continued copy failed")
+        };
+
+        assert_eq!(setup.copied(), setup.whole);
+        assert!(
+            pieces.contains(&piece_of(&setup.whole, 200_000, 400_000)),
+            "{pieces:?}"
+        );
+        assert!(
+            pieces.contains(&piece_of(&setup.whole, 0, 150_000)),
+            "kept: {pieces:?}"
+        );
+    }
+
+    /// A file of `size` bytes copied in `parts` here, and its pieces.
+    async fn copied_in_parts(size: usize, parts: usize) -> (Setup, Vec<Piece>) {
+        let setup = Setup::new(size);
+        let Ok(pieces) = setup.copy_in(parts, None).await else {
+            panic!("the copy in parts failed")
+        };
+        (setup, pieces)
     }
 
     #[tokio::test]
     async fn a_right_copy_passes_its_check_and_the_check_shows() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let (item, copy, _, pieces) = copied_in_parts(&temp, 500_001, 3).await;
+        let (setup, pieces) = copied_in_parts(500_001, 3).await;
         let (sink, events) = keeping();
+        let (item, copy) = (&setup.item, &setup.copy);
 
-        let checked = check_pieces(
-            &item,
-            &Endpoint::Local,
-            &copy,
-            &pieces,
-            &CancelFlag::default(),
-            &sink,
-        )
-        .await;
+        let cancel = CancelFlag::default();
+        let checked = check_pieces(item, &Endpoint::Local, copy, &pieces, &cancel, &sink).await;
 
         assert!(matches!(checked, Ok(bad) if bad.is_empty()));
         let events = events.lock().expect("events");
@@ -680,54 +978,40 @@ mod tests {
     #[tokio::test]
     async fn only_the_piece_holding_a_changed_byte_fails_and_copying_it_again_mends_it() {
         // Arrange: a byte changed in the copy's second part, after copying.
-        let temp = tempfile::tempdir().expect("temp dir");
-        let (item, copy, whole, mut pieces) = copied_in_parts(&temp, 600_000, 3).await;
-        damage(&copy, 250_000);
+        let (setup, mut pieces) = copied_in_parts(600_000, 3).await;
+        setup.damage(250_000);
         let (cancel, (sink, _)) = (CancelFlag::default(), keeping());
+        let (item, copy) = (&setup.item, &setup.copy);
 
         // Act: check, copy what differs again, and check again.
-        let check = || check_pieces(&item, &Endpoint::Local, &copy, &pieces, &cancel, &sink);
-        let Ok(bad) = check().await else {
+        let local = &Endpoint::Local;
+        let Ok(bad) = check_pieces(item, local, copy, &pieces, &cancel, &sink).await else {
             panic!("the check failed")
         };
-        let again = copy_again(
-            &item,
-            &Endpoint::Local,
-            &Endpoint::Local,
-            &copy,
-            &bad,
-            &mut pieces,
-            None,
-            &cancel,
-            &sink,
-        );
-        assert!(again.await.is_ok(), "copying again failed");
-        let check = || check_pieces(&item, &Endpoint::Local, &copy, &pieces, &cancel, &sink);
-        let rechecked = check().await;
+        let run = setup.run(&cancel, &sink);
+        assert!(copy_again(&run, &bad, &mut pieces, None).await.is_ok());
+        let rechecked = check_pieces(item, local, copy, &pieces, &cancel, &sink).await;
 
         // Assert
         let found: Vec<(u64, u64)> = bad.iter().map(|piece| (piece.start, piece.end)).collect();
         assert_eq!(found, [(200_000, 400_000)]);
         assert!(matches!(rechecked, Ok(still) if still.is_empty()));
         assert!(cover_the_file(&pieces, item.size).is_ok());
-        let SidePath::Local(path) = &copy else {
-            unreachable!("a local path")
-        };
-        assert_eq!(std::fs::read(path).expect("read"), whole);
+        assert_eq!(setup.copied(), setup.whole);
     }
 
     #[tokio::test]
     async fn stopping_the_file_ends_its_check_but_pausing_it_does_not() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let (item, copy, _, pieces) = copied_in_parts(&temp, 300_000, 2).await;
+        let (setup, pieces) = copied_in_parts(300_000, 2).await;
         let (sink, _) = keeping();
+        let (item, copy) = (&setup.item, &setup.copy);
         let paused = CancelFlag::default();
         paused.pause_item(item.id);
         let stopped = CancelFlag::default();
         stopped.stop_item(item.id);
 
-        let when_paused = check_pieces(&item, &Endpoint::Local, &copy, &pieces, &paused, &sink);
-        let when_stopped = check_pieces(&item, &Endpoint::Local, &copy, &pieces, &stopped, &sink);
+        let when_paused = check_pieces(item, &Endpoint::Local, copy, &pieces, &paused, &sink);
+        let when_stopped = check_pieces(item, &Endpoint::Local, copy, &pieces, &stopped, &sink);
 
         assert!(matches!(when_paused.await, Ok(bad) if bad.is_empty()));
         assert!(matches!(

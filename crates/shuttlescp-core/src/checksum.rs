@@ -51,6 +51,20 @@ impl fmt::Display for Checksum {
     }
 }
 
+/// Saved as `sha256sum` shows it (64 hex digits), to be read back the same.
+impl serde::Serialize for Checksum {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Checksum {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::from_hex(&text).ok_or_else(|| serde::de::Error::custom("not a SHA-256 checksum"))
+    }
+}
+
 /// The checksum in a server's answer: its first word that is one. Answers differ:
 /// `sha256sum` prints "<checksum>  <name>" (with a `\` before it when the name holds a
 /// `\` or a line break), FTP's HASH "213 SHA-256 0-100 <checksum> <name>".

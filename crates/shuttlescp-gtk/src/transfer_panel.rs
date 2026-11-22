@@ -975,8 +975,11 @@ impl TransferPanel {
             }
             _ => None,
         };
-        // Its files wait for places within the limit shared by every job.
-        let cancel = CancelFlag::default().with_places(Arc::clone(&self.places));
+        // Its files wait for places within the limit shared by every job; its copies in
+        // parts record how far they got, to continue after the app was closed.
+        let cancel = CancelFlag::default()
+            .with_places(Arc::clone(&self.places))
+            .with_split_records(transfer::SplitRecords::shared());
         self.shared.borrow_mut().jobs.insert(
             id,
             JobState {

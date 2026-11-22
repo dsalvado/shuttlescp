@@ -20,8 +20,10 @@ use crate::checksum::Checksum;
 use crate::format::format_size;
 
 mod parts;
+mod record;
 
 pub(super) use parts::SPLIT_FROM;
+pub use record::SplitRecords;
 
 /// Bytes read and written per step of a file copy.
 const CHUNK_BYTES: usize = 256 * 1024;
@@ -61,10 +63,11 @@ const PARTWAY_TRIES: u32 = 3;
 const PARTWAY_PAUSE: Duration = Duration::from_secs(2);
 
 /// Room a job has to spare for copying a file in parts: its free slots, and free places
-/// in the limit shared by every job.
+/// in the limit shared by every job; and where copies in parts record how far they got.
 struct Spare {
     slots: Arc<Semaphore>,
     ticket: Option<Arc<Ticket>>,
+    records: Arc<SplitRecords>,
 }
 
 /// One extra part's hold on a slot (and a place, under a shared limit); let go when
@@ -268,6 +271,11 @@ pub(super) async fn copy_items(
     let ticket = cancel
         .places()
         .map(|places| Arc::new(FilePlaces::join(places)));
+    // Without the app's records, a paused copy in parts still continues in this run.
+    let records = cancel
+        .split_records()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(SplitRecords::in_memory()));
     let forget = |item: &PlanItem| {
         if let Some(ticket) = &ticket {
             ticket.forget(item.id);
@@ -301,6 +309,7 @@ pub(super) async fn copy_items(
                 let _ = dst.remove_file(&partial_path(&item.dest)).await;
                 if job.split && item.size >= parts::SPLIT_FROM {
                     let _ = dst.remove_file(&parts_path(&item.dest)).await;
+                    records.forget(&record::key(&item));
                 }
             }
             finish(&mut outcomes, item.id, end);
@@ -352,6 +361,7 @@ pub(super) async fn copy_items(
             let spare = job.split.then(|| Spare {
                 slots: Arc::clone(&slots),
                 ticket: ticket.clone(),
+                records: Arc::clone(&records),
             });
             running.spawn(async move {
                 // Holding the slot and the place until the copy ends lets the next file
@@ -675,12 +685,26 @@ async fn copy_file(
     if let Some(spare) = spare
         && splittable
     {
-        let extra = spare.take(parts::parts_for(item.size, usize::MAX) - 1);
-        if !extra.is_empty() {
-            return copy_file_in_parts(item, src, dst, place, extra, &finish, cancel, sink, times)
-                .await;
+        let resumed = resumable_parts(item, dst, &spare.records).await;
+        let wanted = resumed.as_ref().map_or_else(
+            || parts::parts_for(item.size, usize::MAX),
+            |parts| parts.iter().filter(|part| !part.is_done()).count(),
+        );
+        let extra = spare.take(wanted.saturating_sub(1));
+        // A copy in parts under way continues in parts, even over one connection.
+        if resumed.is_some() || !extra.is_empty() {
+            let records = &spare.records;
+            let parts = PartsCopy {
+                place,
+                extra,
+                resumed,
+                records,
+            };
+            return copy_file_in_parts(item, src, dst, parts, &finish, cancel, sink, times).await;
         }
         tracing::debug!("no connection free to copy {} in parts", item.source);
+        // Copied whole after all: a copy in parts left without a record is no use.
+        let _ = dst.remove_file(&parts_path(&item.dest)).await;
     }
     let partial = partial_path(&item.dest);
     let with_server = matches!(src, Endpoint::Remote(_)) || matches!(dst, Endpoint::Remote(_));
@@ -826,107 +850,174 @@ async fn put_in_place(
     outcome.into()
 }
 
-/// Copy a large file in parts, one over each of `extra`'s connections and one over
-/// the file's own, then finish it as any copy.
+/// What a file is copied in parts with: its own place, the extra connections, the
+/// parts of a copy under way if it continues one, and where they are recorded.
+struct PartsCopy<'a> {
+    place: Option<&'a Place>,
+    extra: Vec<ExtraPart>,
+    resumed: Option<Vec<parts::Part>>,
+    records: &'a SplitRecords,
+}
+
+/// The parts of `item`'s copy in parts under way, if it can be continued: its record
+/// is for the source as it is now, and the copy is there at full size. A record that
+/// cannot be used is forgotten.
+async fn resumable_parts(
+    item: &PlanItem,
+    dst: &Endpoint,
+    records: &SplitRecords,
+) -> Option<Vec<parts::Part>> {
+    let key = record::key(item);
+    let record = records.get(&key)?;
+    let copy = parts_path(&item.dest);
+    let there = dst.stat(&copy, false).await.ok();
+    if record.fits(item) && there.is_some_and(|node| node.size == item.size) {
+        return Some(record.parts);
+    }
+    tracing::info!("{copy} cannot be continued (gone, or its source changed); starting over");
+    records.forget(&key);
+    None
+}
+
+/// Copy a large file in parts, one over each of the extra connections and one over the
+/// file's own (or continue such a copy, as many parts at a time as there are
+/// connections), check it, then finish it as any copy.
 ///
-/// For now, a copy in parts that does not complete (paused, held back, failed or
-/// stopped) is deleted, and starts over next time: it has gaps, so it cannot be
-/// continued as a whole-file partial copy. Resuming parts comes later.
+/// A copy in parts paused, held back or failing partway is kept with its record, to be
+/// continued; stopped or cancelled, it is deleted.
 #[allow(clippy::too_many_arguments)]
 async fn copy_file_in_parts(
     item: &PlanItem,
     src: &Endpoint,
     dst: &Endpoint,
-    place: Option<&Place>,
-    extra: Vec<ExtraPart>,
+    parts: PartsCopy<'_>,
     finish: &Finish,
     cancel: &CancelFlag,
     sink: &Sink,
     times: &Mutex<JobTimes>,
 ) -> FileEnd {
+    let PartsCopy {
+        place,
+        extra,
+        resumed,
+        records,
+    } = parts;
     let copy = parts_path(&item.dest);
-    let ranges = parts::ranges(item.size, 1 + extra.len());
+    let run = parts::Copying {
+        item,
+        src,
+        dst,
+        copy: &copy,
+        cancel,
+        sink,
+    };
+    let connections = 1 + extra.len();
+    let fresh = resumed.is_none();
+    let parts = resumed.unwrap_or_else(|| {
+        parts::ranges(item.size, connections)
+            .into_iter()
+            .map(parts::Part::new)
+            .collect()
+    });
+    let recorder = parts::Recorder::new(records, item, &parts);
     let places: Vec<&Place> = place
         .into_iter()
         .chain(extra.iter().filter_map(|part| part.place.as_ref()))
         .collect();
-    let copied = parts::copy_in_parts(item, src, dst, &copy, &ranges, &places, cancel, sink).await;
+    let copied =
+        parts::copy_in_parts(&run, parts, fresh, connections, &places, Some(&recorder)).await;
     // The extra connections are free again for other files, while this one finishes.
     drop(places);
     drop(extra);
     let (mut took, mut pieces) = match copied {
         Ok(copied) => copied,
-        Err(unfinished) => return give_up_parts(item, dst, &copy, unfinished).await,
+        Err(unfinished) => return give_up_parts(&run, &recorder, unfinished).await,
     };
     if let Err(error) = parts::cover_the_file(&pieces, item.size) {
         // Cannot happen unless the parts are wrong: never put such a copy in place.
         tracing::error!("{}: {error}", item.dest);
-        let _ = dst.remove_file(&copy).await;
-        return ItemOutcome::Failed(error).into();
+        return discard_parts(&run, &recorder, error).await;
     }
     // Always checked, whatever the site's setting: splitting is what could misplace
     // bytes. A piece that differs is copied again, and checked again, once.
     let checked = parts::check_pieces(item, dst, &copy, &pieces, cancel, sink).await;
     let bad = match checked {
         Ok(bad) => bad,
-        Err(unfinished) => return give_up_parts(item, dst, &copy, unfinished).await,
+        Err(unfinished) => return give_up_parts(&run, &recorder, unfinished).await,
     };
     if !bad.is_empty() {
         let again = Instant::now();
-        let copied = parts::copy_again(
-            item,
-            src,
-            dst,
-            &copy,
-            &bad,
-            &mut pieces,
-            place,
-            cancel,
-            sink,
-        );
-        if let Err(unfinished) = copied.await {
-            return give_up_parts(item, dst, &copy, unfinished).await;
+        if let Err(unfinished) = parts::copy_again(&run, &bad, &mut pieces, place).await {
+            return give_up_parts(&run, &recorder, unfinished).await;
         }
         took.data += again.elapsed();
         match parts::check_pieces(item, dst, &copy, &pieces, cancel, sink).await {
             Ok(still) if still.is_empty() => {}
             Ok(_) => {
-                let error = crate::tr!("verify-parts-mismatch");
-                return give_up_parts(item, dst, &copy, Unfinished::Partway(error)).await;
+                return discard_parts(&run, &recorder, crate::tr!("verify-parts-mismatch")).await;
             }
-            Err(unfinished) => return give_up_parts(item, dst, &copy, unfinished).await,
+            Err(unfinished) => return give_up_parts(&run, &recorder, unfinished).await,
         }
     }
+    recorder.forget();
     put_in_place(item, src, dst, &copy, 0, took, finish, cancel, sink, times).await
 }
 
-/// End a copy in parts that did not complete, for the reason `unfinished`: its copy
-/// (`copy`) is deleted, as it has gaps (or bytes that could not be checked), so the
-/// file starts over next time.
+/// End a copy in parts that did not complete, for the reason `unfinished`. Paused,
+/// held back, or failing partway, the copy and its record are kept, to continue it;
+/// the file ends with nothing in a whole-file partial copy. Stopped or cancelled
+/// (unless the whole job was paused), the copy is deleted.
 async fn give_up_parts(
-    item: &PlanItem,
-    dst: &Endpoint,
-    copy: &SidePath,
+    run: &parts::Copying<'_>,
+    recorder: &parts::Recorder<'_>,
     unfinished: Unfinished,
 ) -> FileEnd {
-    let _ = dst.remove_file(copy).await;
+    let item = run.item;
     match unfinished {
         Unfinished::Partway(error) => {
-            tracing::warn!("{error}; the copy in parts starts over next time");
+            tracing::warn!("{error}; the copy in parts is kept for resuming");
             ItemOutcome::Failed(error).into()
         }
         Unfinished::End(FileEnd::Paused(_)) => {
-            tracing::info!("paused {}; its copy in parts starts over", item.dest);
+            tracing::info!("paused {}, copied in parts", item.dest);
             FileEnd::Paused(0)
         }
         Unfinished::End(FileEnd::Held(_)) => FileEnd::Held(0),
-        Unfinished::End(FileEnd::Outcome(outcome)) => {
+        Unfinished::End(FileEnd::Outcome(ItemOutcome::Cancelled)) if run.cancel.is_paused() => {
+            tracing::info!("paused {}, copied in parts", item.dest);
+            ItemOutcome::Cancelled.into()
+        }
+        Unfinished::End(FileEnd::Outcome(
+            outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped),
+        )) => {
+            // Cancelling (or stopping this file) means the user wants the copy gone.
+            let _ = run.dst.remove_file(run.copy).await;
+            recorder.forget();
             if outcome == ItemOutcome::Stopped {
                 tracing::info!("stopped by the user: {}", item.source);
             }
             outcome.into()
         }
+        Unfinished::End(FileEnd::Outcome(outcome)) => {
+            if let ItemOutcome::Failed(error) = &outcome {
+                tracing::warn!("{error}; the copy in parts is kept for resuming");
+            }
+            outcome.into()
+        }
     }
+}
+
+/// Fail a copy in parts that cannot be right (`error` says why): it is deleted with
+/// its record, so the file starts over next time.
+async fn discard_parts(
+    run: &parts::Copying<'_>,
+    recorder: &parts::Recorder<'_>,
+    error: String,
+) -> FileEnd {
+    tracing::warn!("{error}; the copy in parts starts over next time");
+    let _ = run.dst.remove_file(run.copy).await;
+    recorder.forget();
+    ItemOutcome::Failed(error).into()
 }
 
 /// Check the copy at `item.dest` against `item.source` by their SHA-256 checksums
