@@ -227,12 +227,18 @@ impl Endpoint {
         })
     }
 
+    /// Whether reading a file from here in parts, each over a connection of its own, is
+    /// faster than reading it whole (see [`Remote::reads_faster_in_parts`]). Not this
+    /// computer: its disk is not what is slow.
+    pub(super) fn reads_faster_in_parts(&self) -> bool {
+        match self {
+            Self::Local => false,
+            Self::Remote(remote) => remote.reads_faster_in_parts(),
+        }
+    }
+
     /// Whether files here can be written in parts (see [`Endpoint::open_write_range`]):
     /// this computer and SFTP servers can, FTP servers cannot.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by copies in parts, from the next step")
-    )]
     pub(super) fn can_write_parts(&self) -> bool {
         match self {
             Self::Local => true,
@@ -244,10 +250,6 @@ impl Endpoint {
     /// before and after; it is created if missing. Unlike
     /// [`Endpoint::open_write_at`], which continues a copy written from the start and
     /// so cuts off anything past `offset`, this leaves the other parts alone.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by copies in parts, from the next step")
-    )]
     pub(super) async fn open_write_range(
         &self,
         path: &SidePath,
@@ -273,10 +275,6 @@ impl Endpoint {
 
     /// Make a file exactly `size` bytes long, creating it if missing: the first step of
     /// a copy in parts, so every part writes inside the file. Meant for a new copy.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by copies in parts, from the next step")
-    )]
     pub(super) async fn set_size(&self, path: &SidePath, size: u64) -> Result<(), String> {
         match self.target(path)? {
             Target::Local(path) => {
@@ -397,6 +395,14 @@ impl Endpoint {
 pub(super) fn partial_path(dest: &SidePath) -> SidePath {
     let mut name = dest.file_name().map(OsString::from).unwrap_or_default();
     name.push(super::PARTIAL_SUFFIX);
+    dest.with_file_name(name)
+}
+
+/// Where a file is copied in parts before it gets its real name (see
+/// [`super::PARTS_SUFFIX`]).
+pub(super) fn parts_path(dest: &SidePath) -> SidePath {
+    let mut name = dest.file_name().map(OsString::from).unwrap_or_default();
+    name.push(super::PARTS_SUFFIX);
     dest.with_file_name(name)
 }
 

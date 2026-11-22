@@ -43,6 +43,7 @@ fn remote(path: &str) -> SidePath {
 /// A job whose sources and destination are all local folders, as the engine tests run.
 fn job(kind: JobKind, sources: Vec<PathBuf>, dest_dir: &Path) -> Job {
     Job {
+        split: false,
         permissions: None,
         kind,
         side: Side::Local,
@@ -614,6 +615,7 @@ async fn files_of_every_size_copy_whole() {
 #[test]
 fn site_to_site_jobs_go_to_the_server_and_say_so() {
     let job = Job {
+        split: false,
         permissions: None,
         kind: JobKind::Copy,
         side: Side::Remote,
@@ -649,6 +651,7 @@ fn site_to_site_jobs_go_to_the_server_and_say_so() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_site_to_site_job_without_its_destination_does_not_start() {
     let job = Job {
+        split: false,
         permissions: None,
         kind: JobKind::Copy,
         side: Side::Remote,
@@ -691,6 +694,7 @@ async fn giving_up_a_job_deletes_its_partial_files_only() {
 #[test]
 fn jobs_writing_the_same_files_conflict() {
     let upload = |sources: &[&str], dest: &str| Job {
+        split: false,
         permissions: None,
         kind: JobKind::Copy,
         side: Side::Local,
@@ -897,6 +901,7 @@ fn job_titles_name_the_direction() {
     );
     assert_eq!(one.title(), "Upload report.pdf to /srv");
     let many = Job {
+        split: false,
         permissions: None,
         kind: JobKind::Delete,
         side: Side::Remote,

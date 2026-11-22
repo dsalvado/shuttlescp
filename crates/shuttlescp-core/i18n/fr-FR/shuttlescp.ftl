@@ -643,6 +643,7 @@ error-no-such-item = aucun fichier ou dossier de ce nom
 error-sftp-date = { $path } a une date que SFTP ne peut pas enregistrer
 error-ftp-no-owner = FTP ne permet pas de changer le propriétaire d'un fichier
 error-ftp-no-parts = FTP ne peut pas écrire un fichier en plusieurs parties
+error-source-ended-early = { $path } s'est terminé avant sa taille prévue
 error-owner-unknown = le serveur n'a pas indiqué son propriétaire actuel
 error-mode-unknown = ses droits actuels sont inconnus : chaque case doit être cochée ou décochée
 error-no-such-user = il n'y a pas d'utilisateur ou de groupe { $name }

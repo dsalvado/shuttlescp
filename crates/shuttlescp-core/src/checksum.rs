@@ -12,6 +12,12 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 pub struct Checksum([u8; 32]);
 
 impl Checksum {
+    /// The checksum of everything `hasher` was fed (for hashing bytes as they are
+    /// copied).
+    pub(crate) fn from_hasher(hasher: Sha256) -> Self {
+        Self(hasher.finalize().into())
+    }
+
     /// Read a checksum written as 64 hex digits (either case), as `sha256sum` and FTP
     /// servers answer.
     ///

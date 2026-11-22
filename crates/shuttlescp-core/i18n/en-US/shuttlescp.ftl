@@ -782,6 +782,7 @@ error-no-such-item = no such file or folder
 error-sftp-date = { $path } has a date SFTP cannot store
 error-ftp-no-owner = FTP cannot change who owns a file
 error-ftp-no-parts = FTP cannot write a file in parts
+error-source-ended-early = { $path } ended before its expected size
 error-owner-unknown = the server did not say who owns it now
 error-mode-unknown = its permissions now are unknown, so every box must be ticked or cleared
 error-no-such-user = there is no user or group { $name }

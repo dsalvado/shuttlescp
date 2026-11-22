@@ -965,6 +965,7 @@ mod tests {
     /// A job as a pane makes it: `pane` holds the sources.
     fn pane_job(kind: JobKind, pane: Side, same_side: bool) -> Job {
         Job {
+            split: false,
             permissions: None,
             kind,
             side: pane,

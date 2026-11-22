@@ -1188,6 +1188,7 @@ impl SimpleComponent for App {
                     left_server: false,
                     resume: false,
                     verify: Verify::default(),
+                    split: false,
                     permissions: Some(change),
                 };
                 self.start_job(session, job);
@@ -1205,6 +1206,7 @@ impl SimpleComponent for App {
                 self.start_job(
                     session,
                     Job {
+                        split: false,
                         permissions: None,
                         kind,
                         side: source_side,
@@ -1804,6 +1806,7 @@ impl App {
             return;
         };
         let job = Job {
+            split: false,
             permissions: None,
             kind,
             side,

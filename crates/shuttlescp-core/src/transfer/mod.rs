@@ -60,6 +60,12 @@ pub const FILES_AT_ONCE: usize = 4;
 /// once complete. The same convention as WinSCP.
 pub const PARTIAL_SUFFIX: &str = ".filepart";
 
+/// Added to a file's name while it is being copied in parts. Different from
+/// [`PARTIAL_SUFFIX`] on purpose: a copy in parts has gaps until every part is done, so
+/// it must never be taken for a whole-file partial copy, whose length tells how much is
+/// done.
+pub const PARTS_SUFFIX: &str = ".fileparts";
+
 /// Where files are: this computer or the connected server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,6 +147,10 @@ pub struct Job {
     /// What a [`JobKind::Permissions`] job changes; `None` for other jobs. Such jobs
     /// are never saved to resume (they may hold a sudo password).
     pub permissions: Option<crate::permissions::PermissionsJob>,
+    /// Copy large files in parts, each over a connection of its own, where that is
+    /// faster (see [`copy`]'s `parts_for`). Chosen with "Download in Parts" and the
+    /// like; saved, so a resumed job splits again.
+    pub split: bool,
 }
 
 /// Whether and how copies are checked against their sources once made: by comparing
@@ -375,6 +385,8 @@ struct JobRecord {
     left_server: bool,
     #[serde(default)]
     resume: bool,
+    #[serde(default)]
+    split: bool,
 }
 
 impl JobRecord {
@@ -408,6 +420,7 @@ impl From<JobRecord> for Job {
             resume: record.resume,
             verify: Verify::default(),
             permissions: None,
+            split: record.split,
         };
         job.sources = record
             .sources
@@ -430,6 +443,7 @@ impl From<Job> for JobRecord {
             between_servers: job.between_servers,
             left_server: job.left_server,
             resume: job.resume,
+            split: job.split,
         }
     }
 }
@@ -614,6 +628,14 @@ pub enum TransferEvent {
         incoming: FileInfo,
         /// Where the answer goes.
         reply: ConflictReply,
+    },
+    /// A file is copied in parts, all at once: one for each of these byte ranges, which
+    /// cover it from start to end.
+    InParts {
+        /// Item id.
+        id: usize,
+        /// Each part's `start..end`.
+        ranges: Vec<(u64, u64)>,
     },
     /// A file continues an earlier, interrupted copy: its first `from` bytes were
     /// copied before (they count as done, but not towards the current speed).
@@ -1003,6 +1025,18 @@ pub async fn discard_partials(
                 removed += 1;
             }
             Err(error) => tracing::warn!("{error}"),
+        }
+    }
+    // Copies in parts, which the plan does not see (they are named apart): only where
+    // one could be, and quietly, as most such files are not there.
+    let could_be_split = |item: &&PlanItem| {
+        job.split && item.kind == ItemKind::File && item.size >= copy::SPLIT_FROM
+    };
+    for item in items.iter().filter(could_be_split) {
+        let copy = endpoint::parts_path(&item.dest);
+        if dst.remove_file(&copy).await.is_ok() {
+            tracing::info!("deleted the copy in parts {copy}");
+            removed += 1;
         }
     }
     Ok(removed)

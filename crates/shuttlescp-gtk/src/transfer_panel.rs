@@ -851,6 +851,8 @@ impl Component for TransferPanel {
                     now,
                 );
             }
+            // Shown as one bar for now; a bar per part comes later.
+            TransferEvent::InParts { .. } => {}
             TransferEvent::Resumed { id: item, from } => {
                 let mut shared = self.shared.borrow_mut();
                 // Continuing after being held back by the limit.
@@ -2862,6 +2864,7 @@ mod tests {
             site_id: String::from("site"),
             left_site_id: None,
             job: Job {
+                split: false,
                 permissions: None,
                 kind: JobKind::Copy,
                 side: Side::Local,
