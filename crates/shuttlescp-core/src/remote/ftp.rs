@@ -38,6 +38,20 @@ use crate::sites::{FtpEncryption, Site};
 const BROWSING_CONNECTIONS: usize = 2;
 /// How long active mode waits for the server to connect back.
 const ACTIVE_MODE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long to wait for the server's reply once a file's bytes have all been sent
+/// ("226 Transfer complete"). It normally comes at once; when it does not, the control
+/// connection was most likely lost while the file was moving, and would never bring it.
+const TRANSFER_REPLY_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(60)
+};
+/// The control connection is silent while a file moves, possibly for hours; routers and
+/// servers drop connections idle for long. TCP keepalive probes after this long idle keep
+/// it open, and tell when it was lost anyway.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+/// Between keepalive probes that went unanswered.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// One FTP connection (with or without TLS; the type is the same).
 type Connection = AsyncRustlsFtpStream;
@@ -87,6 +101,10 @@ struct Lease {
     _slot: OwnedSemaphorePermit,
     /// Came from the pool (so it may have been closed by the server meanwhile).
     reused: bool,
+    /// A file transfer on it has not been seen to the end: the server's reply to it is
+    /// still due, and might never come, so the connection is not trusted with another
+    /// command and is closed instead of going back to the pool.
+    owes_reply: bool,
 }
 
 impl Lease {
@@ -103,6 +121,10 @@ impl Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
+        if self.owes_reply {
+            tracing::debug!("closing an FTP connection whose transfer was not finished");
+            return;
+        }
         if let (Some(connection), Ok(mut idle)) = (self.connection.take(), self.pool.idle.lock()) {
             idle.push(connection);
         }
@@ -247,6 +269,7 @@ async fn open(settings: &Settings) -> Result<Connection, ConnectError> {
             .await?
             .map_err(network)?,
     };
+    keep_alive(&connection, &settings.host).await;
     if settings.encryption == FtpEncryption::ImplicitTls {
         // Explicit TLS negotiates data-channel protection while switching to TLS; with
         // implicit TLS it must be asked for, or files would travel unencrypted (or the
@@ -287,6 +310,18 @@ async fn open(settings: &Settings) -> Result<Connection, ConnectError> {
         connection = connection.active_mode(ACTIVE_MODE_TIMEOUT);
     }
     Ok(connection)
+}
+
+/// Turn on TCP keepalive for the control connection (see [`KEEPALIVE_IDLE`]). Without
+/// it, the connection still works; only a long transfer may lose it.
+async fn keep_alive(connection: &Connection, host: &str) {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL);
+    let socket = connection.get_ref().await;
+    if let Err(error) = socket2::SockRef::from(&*socket).set_tcp_keepalive(&keepalive) {
+        tracing::debug!("{host}: cannot turn on keepalive: {error}");
+    }
 }
 
 /// Wait for `future`, giving up after [`CONNECT_TIMEOUT`].
@@ -381,6 +416,7 @@ impl Ftp {
             pool: Arc::clone(&self.pool),
             _slot: slot,
             reused,
+            owes_reply: false,
         }
     }
 
@@ -547,6 +583,7 @@ impl Ftp {
             }
             Err(error) => return Err(crate::i18n::cannot("open", &text, describe(&error))),
         };
+        lease.owes_reply = true;
         Ok(Box::pin(FtpReader {
             stream: Some(stream),
             lease: Some(lease),
@@ -572,6 +609,7 @@ impl Ftp {
             }
             Err(error) => return Err(crate::i18n::cannot("write", &text, describe(&error))),
         };
+        lease.owes_reply = true;
         Ok(Box::pin(FtpWriter {
             stream: Some(stream),
             lease: Some(lease),
@@ -904,9 +942,44 @@ fn to_usize(offset: u64) -> Result<usize, FtpError> {
     })
 }
 
+/// End a transfer whose data connection is done: wait for the server's reply, for at
+/// most [`TRANSFER_REPLY_TIMEOUT`]. Only once the reply came does the connection go back
+/// to the pool; otherwise it is closed.
+///
+/// # Errors
+///
+/// Returns the server's refusal, a lost connection, or that the reply did not come
+async fn finish_transfer(
+    stream: TransferStream<AsyncRustlsStream>,
+    lease: Option<Lease>,
+) -> io::Result<()> {
+    let mut lease = lease;
+    let result = tokio::time::timeout(TRANSFER_REPLY_TIMEOUT, stream.finish()).await;
+    let replied = match &result {
+        Ok(Ok(())) => true,
+        // A refusal (e.g. 426, the transfer failed) is a reply too.
+        Ok(Err(error)) => !is_broken(error),
+        Err(_) => false,
+    };
+    if let Some(lease) = lease.as_mut() {
+        lease.owes_reply = !replied;
+    }
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(io::Error::other(describe(&error))),
+        Err(_) => {
+            let seconds = TRANSFER_REPLY_TIMEOUT.as_secs().to_string();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                crate::tr!("ftp-no-transfer-reply", seconds = seconds),
+            ))
+        }
+    }
+}
+
 /// A file being downloaded. At the end of the file it reads the server's "transfer
 /// complete" reply before the connection goes back to the pool. (If it is dropped
-/// earlier, the connection reads that reply before its next command.)
+/// earlier, the connection is closed: see [`Lease::owes_reply`].)
 struct FtpReader {
     stream: Option<TransferStream<AsyncRustlsStream>>,
     /// Keeps the connection out of the pool until the transfer ends.
@@ -937,11 +1010,7 @@ impl AsyncRead for FtpReader {
             return Poll::Ready(Ok(()));
         };
         let mut finishing: Pin<Box<dyn Future<Output = io::Result<()>> + Send>> =
-            Box::pin(async move {
-                let result = stream.finish().await;
-                drop(lease);
-                result.map_err(|error| io::Error::other(describe(&error)))
-            });
+            Box::pin(finish_transfer(stream, lease));
         let poll = finishing.as_mut().poll(cx);
         self.finishing = Some(finishing);
         poll
@@ -989,12 +1058,7 @@ impl AsyncWrite for FtpWriter {
             let (Some(stream), lease) = (self.stream.take(), self.lease.take()) else {
                 return Poll::Ready(Ok(()));
             };
-            self.finishing = Some(Box::pin(async move {
-                let result = stream.finish().await;
-                // Back to the pool only once the transfer is complete.
-                drop(lease);
-                result.map_err(|error| io::Error::other(describe(&error)))
-            }));
+            self.finishing = Some(Box::pin(finish_transfer(stream, lease)));
         }
         match self.finishing.as_mut() {
             Some(finishing) => finishing.as_mut().poll(cx),
@@ -1006,7 +1070,146 @@ impl AsyncWrite for FtpWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sites::{FtpOptions, SiteVerify, SshAuth};
     use suppaftp::types::Response;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    /// The file the fake server sends.
+    const FILE: &[u8] = b"all of the file's bytes";
+
+    /// A plain FTP server on this computer that serves [`FILE`] for any RETR. On its
+    /// first connection it sends the file but never the "226 Transfer complete" after
+    /// it, as when the control connection was lost while the file moved; its other
+    /// connections behave. Returns its port and a count of connections made to it.
+    async fn server_losing_first_reply() -> (u16, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("address").port();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&connections);
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let number = counted.fetch_add(1, Ordering::SeqCst) + 1;
+                tokio::spawn(serve(socket, number > 1));
+            }
+        });
+        (port, connections)
+    }
+
+    /// One control connection of [`server_losing_first_reply`].
+    async fn serve(socket: tokio::net::TcpStream, replies: bool) {
+        let (read, mut write) = socket.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let _ = write.write_all(b"220 ready\r\n").await;
+        let mut data: Option<TcpListener> = None;
+        while let Ok(Some(line)) = lines.next_line().await {
+            let command = line.split(' ').next().unwrap_or("").to_ascii_uppercase();
+            let reply = match command.as_str() {
+                "USER" => "331 password please".to_owned(),
+                "PASS" => "230 logged in".to_owned(),
+                "PWD" => "257 \"/\" is the current folder".to_owned(),
+                "TYPE" | "OPTS" | "NOOP" => "200 ok".to_owned(),
+                "REST" => "350 restarting".to_owned(),
+                "PASV" => {
+                    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+                    let port = listener.local_addr().expect("address").port();
+                    data = Some(listener);
+                    format!("227 passive (127,0,0,1,{},{})", port / 256, port % 256)
+                }
+                "RETR" => {
+                    let _ = write.write_all(b"150 sending\r\n").await;
+                    if let Some(listener) = data.take()
+                        && let Ok((mut socket, _)) = listener.accept().await
+                    {
+                        let _ = socket.write_all(FILE).await;
+                        let _ = socket.shutdown().await;
+                    }
+                    if !replies {
+                        // Lost: nothing more ever comes on this connection.
+                        continue;
+                    }
+                    "226 transfer complete".to_owned()
+                }
+                "QUIT" => return,
+                _ => "502 not implemented".to_owned(),
+            };
+            let _ = write.write_all(format!("{reply}\r\n").as_bytes()).await;
+        }
+    }
+
+    /// Log in to the fake server on `port`.
+    async fn connect_to(port: u16) -> Ftp {
+        let site = Site {
+            id: "fake".to_owned(),
+            protocol: crate::sites::Protocol::Ftp,
+            host: "127.0.0.1".to_owned(),
+            port,
+            user: "alex".to_owned(),
+            password_saved: false,
+            ftp: FtpOptions {
+                encryption: FtpEncryption::None,
+                passive: true,
+            },
+            ssh: SshAuth {
+                key_file: None,
+                use_agent: false,
+                passphrase_saved: false,
+            },
+            files_at_once: 1,
+            alias: String::new(),
+            description: String::new(),
+            folder: String::new(),
+            verify: SiteVerify::default(),
+        };
+        let (ftp, _) = connect(&site, Some(SecretString::from("secret")))
+            .await
+            .expect("connect");
+        ftp
+    }
+
+    #[tokio::test]
+    async fn a_download_whose_end_is_never_confirmed_fails_and_its_connection_is_closed() {
+        let (port, connections) = server_losing_first_reply().await;
+        let ftp = connect_to(port).await;
+        let path = RemotePath::new("/file");
+        let mut reader = ftp.open_at(&path, 0).await.expect("open");
+        let mut read = Vec::new();
+        let ended = tokio::time::timeout(Duration::from_secs(10), reader.read_to_end(&mut read))
+            .await
+            .expect("waited for the lost reply without end");
+        let error = ended.expect_err("an unconfirmed download is not complete");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(read, FILE, "the bytes themselves all arrived");
+        drop(reader);
+
+        // The next download does not inherit the lost reply: a new connection serves it.
+        let mut reader = ftp.open_at(&path, 0).await.expect("open again");
+        let mut read = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), reader.read_to_end(&mut read))
+            .await
+            .expect("the second download hung")
+            .expect("the second download");
+        assert_eq!(read, FILE);
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_download_given_up_partway_does_not_hold_up_the_next_command() {
+        let (port, connections) = server_losing_first_reply().await;
+        let ftp = connect_to(port).await;
+        let path = RemotePath::new("/file");
+        let mut reader = ftp.open_at(&path, 0).await.expect("open");
+        let mut first = [0; 3];
+        reader.read_exact(&mut first).await.expect("read");
+        // Paused or cancelled: the reply to this download is still due, and never comes.
+        drop(reader);
+        let next = tokio::time::timeout(Duration::from_secs(10), ftp.open_at(&path, 0)).await;
+        assert!(
+            next.expect("the next download waited for the lost reply")
+                .is_ok()
+        );
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn reads_rights_letters_including_special_bits() {

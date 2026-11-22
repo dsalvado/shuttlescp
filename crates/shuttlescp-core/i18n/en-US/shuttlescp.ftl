@@ -795,6 +795,7 @@ command-sudo-terminal = the server's sudo only works from a terminal
 command-no-answer = the server did not answer in time
 checksum-unsupported = the server cannot compute checksums
 checksum-no-answer = the server's answer held no checksum
+ftp-no-transfer-reply = the server did not confirm the transfer within { $seconds } s
 verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied
 verify-skipped = skipped by the user
 item-verifying = Verifying…

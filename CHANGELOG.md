@@ -7,6 +7,17 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- A long FTP download no longer stays at 100% for good. While a file moves, the FTP
+  control connection is silent, and routers or servers can drop it; the server's "transfer
+  complete" then never arrives. ShuttleSCP now keeps that connection alive while the file
+  moves. If the confirmation still has not come 60 seconds after the last byte, the
+  connection is closed, and the copy finishes from the partial file, which is complete.
+- Resuming a paused or cancelled FTP transfer no longer hangs. The connection that still
+  owed the server's reply to the interrupted transfer was reused for the next command,
+  which then waited for that reply. Such connections are now closed instead.
+
 ## [0.27.1] - 2026-11-21
 
 ### Added

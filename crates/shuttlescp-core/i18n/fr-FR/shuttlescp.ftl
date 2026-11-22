@@ -655,6 +655,7 @@ command-sudo-terminal = le sudo du serveur ne fonctionne que depuis un terminal
 command-no-answer = le serveur n'a pas répondu à temps
 checksum-unsupported = le serveur ne peut pas calculer de sommes de contrôle
 checksum-no-answer = la réponse du serveur ne contenait aucune somme de contrôle
+ftp-no-transfer-reply = le serveur n'a pas confirmé le transfert en { $seconds } s
 verify-mismatch = la somme de contrôle de la copie diffère de celle de l'original : la copie n'est pas ce qui a été copié
 verify-skipped = ignorée par l'utilisateur
 item-verifying = Vérification…

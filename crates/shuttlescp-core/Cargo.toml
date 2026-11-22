@@ -22,6 +22,8 @@ russh-sftp = "3"
 # FTP and FTPS (explicit and implicit TLS), async on tokio, TLS by rustls with ring.
 # ("deprecated" enables implicit FTPS, which suppaftp marks as old-fashioned.)
 suppaftp = { version = "12", features = ["deprecated", "tokio-rustls-ring"] }
+# TCP keepalive on FTP control connections (already used by tokio).
+socket2 = "0.6"
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 sha2 = "0.11"
