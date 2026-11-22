@@ -277,6 +277,30 @@ async fn partial_copy_is_continued_where_it_stopped() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_partial_copy_holding_every_byte_is_finished() {
+    // Arrange: an interrupted copy got all of top.txt, but not to the end of the job
+    // (the server never confirmed it).
+    let (_temp, src, dst) = setup();
+    std::fs::write(dst.join("top.txt.filepart"), big_content()).expect("write");
+
+    // Act
+    let (summary, events) = run_local(job(JobKind::Copy, vec![src.join("top.txt")], &dst)).await;
+
+    // Assert: put in place as it is, continued from its very end.
+    assert!(summary.is_complete());
+    assert_eq!(
+        std::fs::read(dst.join("top.txt")).expect("read"),
+        big_content()
+    );
+    assert!(!dst.join("top.txt.filepart").exists());
+    let resumed_from = events.iter().find_map(|event| match event {
+        TransferEvent::Resumed { from, .. } => Some(*from),
+        _ => None,
+    });
+    assert_eq!(resumed_from, Some(big_content().len() as u64));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn partial_copy_that_does_not_match_is_started_over() {
     let (_temp, src, dst) = setup();
     std::fs::write(dst.join("top.txt.filepart"), vec![0_u8; 300_000]).expect("write");

@@ -655,6 +655,7 @@ command-sudo-terminal = sudo funktioniert auf diesem Server nur in einem Termina
 command-no-answer = Der Server hat nicht rechtzeitig geantwortet
 checksum-unsupported = der Server kann keine Prüfsummen berechnen
 checksum-no-answer = die Antwort des Servers enthielt keine Prüfsumme
+ftp-no-transfer-reply = der Server hat die Übertragung nicht innerhalb von { $seconds } s bestätigt
 verify-mismatch = die Prüfsumme der Kopie weicht von der des Originals ab: die Kopie entspricht nicht dem Kopierten
 verify-skipped = vom Benutzer übersprungen
 item-verifying = Wird geprüft…

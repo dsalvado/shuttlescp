@@ -877,7 +877,8 @@ fn describe_checksum(
 fn log_copied(item: &PlanItem, offset: u64, took: Duration, parts: FileTimes, moved: bool) {
     let sent = item.size.saturating_sub(offset);
     let seconds = took.as_secs_f64();
-    let speed = if seconds > 0.0 {
+    // Nothing sent (a resumed copy that already had every byte): no speed to speak of.
+    let speed = if seconds > 0.0 && sent > 0 {
         // Rounded to whole bytes for display.
         format!(", {}/s", format_size((sent as f64 / seconds) as u64))
     } else {
@@ -968,6 +969,19 @@ async fn copy_contents(
     cancel: &CancelFlag,
     sink: &Sink,
 ) -> Result<FileTimes, Unfinished> {
+    if offset > 0 && offset == item.size {
+        // An interrupted copy got every byte (it only missed the end): nothing is left
+        // to move, and asking a server for none can fail.
+        sink(TransferEvent::Resumed {
+            id: item.id,
+            from: offset,
+        });
+        sink(TransferEvent::Progress {
+            id: item.id,
+            done: offset,
+        });
+        return Ok(FileTimes::default());
+    }
     let failed = ItemOutcome::Failed;
     let opening = Instant::now();
     // Each wait on a server gives way when the user cancels, pauses or stops: a stalled
