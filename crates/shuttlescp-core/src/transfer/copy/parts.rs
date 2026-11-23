@@ -37,6 +37,36 @@ use crate::transfer::{
 /// Files smaller than this are copied whole (and the menu offers copying in parts only
 /// for files at least this large).
 pub const SPLIT_FROM: u64 = 1 << 30;
+
+/// One end of a copy, as far as copying in parts goes (see [`faster_in_parts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartsHost {
+    /// This computer.
+    ThisComputer,
+    /// An FTP server: it serves each connection separately, and can write a file only
+    /// from its start (or by appending).
+    Ftp,
+    /// An SFTP server: it can write a part at any position.
+    Sftp,
+}
+
+/// Whether copying a large file from `from` to `to` in parts, each over a connection
+/// of its own, is faster than copying it whole (the destination must also be able to
+/// write a part at any position, which an FTP server cannot):
+///
+/// * From an FTP server: servers often limit each connection's speed (measured on a
+///   seedbox: about 1 MiB/s per connection, 3.3 MiB/s with four).
+/// * From this computer to an SFTP server: one file moves at a fraction of the line's
+///   speed (measured on a LAN: 14 to 26 MiB/s per file, 65 MiB/s for four at once).
+///
+/// Not yet from an SFTP server: whether parts help there is still to be measured.
+pub fn faster_in_parts(from: PartsHost, to: PartsHost) -> bool {
+    use PartsHost::{Ftp, Sftp, ThisComputer};
+    matches!(
+        (from, to),
+        (Ftp, ThisComputer | Sftp) | (ThisComputer, Sftp)
+    )
+}
 /// No part is smaller than this (so a 1 GiB file has at most 4).
 pub(super) const MIN_PART: u64 = 256 << 20;
 /// How often each part records how far it got. Writing the record costs little; what
@@ -1389,6 +1419,21 @@ mod tests {
         assert_eq!(split_point(&big, 10 * chunk), Some((1, 20 * chunk)));
         assert_eq!(split_point(&big, 10 * chunk + 1), None);
         assert_eq!(split_point(&[], 1), None);
+    }
+
+    #[test]
+    fn parts_are_used_from_ftp_and_for_uploads_to_sftp() {
+        use PartsHost::{Ftp, Sftp, ThisComputer};
+        assert!(faster_in_parts(Ftp, ThisComputer));
+        assert!(faster_in_parts(Ftp, Sftp));
+        assert!(faster_in_parts(ThisComputer, Sftp));
+        // An FTP server cannot write a part at any position.
+        assert!(!faster_in_parts(ThisComputer, Ftp));
+        assert!(!faster_in_parts(Ftp, Ftp));
+        // Not measured yet.
+        assert!(!faster_in_parts(Sftp, ThisComputer));
+        assert!(!faster_in_parts(Sftp, Sftp));
+        assert!(!faster_in_parts(ThisComputer, ThisComputer));
     }
 
     #[test]

@@ -1620,3 +1620,90 @@ async fn a_large_file_from_ftp_is_copied_in_parts() {
         .collect();
     assert_eq!(left, vec![std::ffi::OsString::from("big.bin")]);
 }
+
+/// A large file uploaded to an SFTP server is copied in parts, its pieces checked by
+/// the server itself (`sha256sum` over its shell); it comes out whole, with nothing of
+/// the copy in parts left.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_large_file_uploaded_to_sftp_is_copied_in_parts() {
+    use std::io::Write;
+    // Arrange: just over 1 GiB here, in chunks that keep the pattern's place.
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = temp.path().join("big-up.bin");
+    let chunk = pattern(251 * 4096);
+    let mut file = std::io::BufWriter::new(std::fs::File::create(&local).expect("create"));
+    let mut size = 0;
+    while size < (1 << 30) {
+        file.write_all(&chunk).expect("write");
+        size += chunk.len();
+    }
+    file.flush().expect("flush");
+    drop(file);
+    let mut upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    upload.split = true;
+
+    // Act
+    let seen = Arc::new(Mutex::new((None, false, Vec::new())));
+    let events = Arc::clone(&seen);
+    let summary = run(
+        upload,
+        Some(remote.clone()),
+        None,
+        CancelFlag::default(),
+        move |event| {
+            let mut events = events.lock().expect("lock");
+            match event {
+                TransferEvent::Parts { parts, .. } => {
+                    events.0.get_or_insert(parts.len());
+                }
+                TransferEvent::PartsChecked { .. } => events.1 = true,
+                TransferEvent::ItemFinished {
+                    outcome: ItemOutcome::Failed(error),
+                    ..
+                } => events.2.push(error),
+                _ => {}
+            }
+        },
+    )
+    .await;
+
+    // Assert
+    let (parts, checked, failures) = seen.lock().expect("lock").clone();
+    assert!(
+        summary.is_complete(),
+        "upload: {summary:?}, failed: {failures:?}"
+    );
+    assert_eq!(parts, Some(4), "copied in 4 parts");
+    assert!(checked, "its parts were checked");
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("checksum");
+    let there = remote
+        .sha256(&server.dir.join("big-up.bin"))
+        .await
+        .expect("checksum on the server");
+    assert_eq!(there, here);
+    let listed = remote.list_dir(&server.dir).await.expect("list");
+    assert!(
+        !listed
+            .iter()
+            .any(|entry| entry.name().to_string_lossy().contains("big-up.bin.")),
+        "nothing of the copy in parts left: {listed:?}"
+    );
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![SidePath::Remote(server.dir.join("big-up.bin"))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (removed, _) = run_job(remove, &remote, None).await;
+    assert!(removed.is_complete(), "clean up: {removed:?}");
+}

@@ -27,7 +27,7 @@ use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteVerify};
-use shuttlescp_core::transfer::{FilePlaces, Job, Side, Verify};
+use shuttlescp_core::transfer::{FilePlaces, Job, PartsHost, Side, Verify};
 
 use crate::app::{App, AppMsg, not_connected};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
@@ -434,12 +434,12 @@ impl Session {
             Some(left) => Peer {
                 name: left.host.clone(),
                 is_server: true,
-                writes_in_parts: left.remote.can_write_parts(),
+                host: left.remote.parts_host(),
             },
             None => Peer {
                 name: tr!("this-computer"),
                 is_server: false,
-                writes_in_parts: true,
+                host: PartsHost::ThisComputer,
             },
         })));
         self.set_right(pane.widget());
@@ -460,7 +460,7 @@ impl Session {
         self.local_pane.emit(FilePaneMsg::Peer(Some(Peer {
             name: remote.host().to_owned(),
             is_server: true,
-            writes_in_parts: remote.can_write_parts(),
+            host: remote.parts_host(),
         })));
         tracing::info!("session {id}: connected to {}", site.display_name());
         self.connection = Some(Connection {

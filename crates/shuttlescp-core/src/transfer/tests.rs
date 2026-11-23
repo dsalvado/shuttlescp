@@ -1489,7 +1489,6 @@ async fn write_part(path: &SidePath, position: u64, bytes: &[u8]) {
 #[tokio::test]
 async fn parts_written_in_any_order_make_the_whole_file() {
     // Arrange: a copy set to the full size first, as a copy in parts starts.
-    assert!(Endpoint::Local.can_write_parts());
     let temp = tempfile::tempdir().expect("temp dir");
     let whole = big_content();
     let copy = local(&temp.path().join("top.txt.filepart"));

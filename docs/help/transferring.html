@@ -147,13 +147,15 @@ once</span> (under <span class="ui">Advanced</span> in the Login dialog), for se
 refuse many connections.</p>
 
 <h2 id="parts">Large files in parts</h2>
-<p>Many FTP servers limit how fast each connection goes. A large file then downloads much
-faster over several connections at once, each copying its own part of the file. To do that,
-right-click the file and choose <span class="ui">Download to this computer in Parts</span>
-(or <span class="ui">Copy to … in Parts</span> to another server).</p>
+<p>Many FTP servers limit how fast each connection goes, and over SFTP one file uses only
+part of what the network can carry. A large file then goes much faster in parts, each
+copied at the same time as the others. To do that, right-click the file and choose <span
+class="ui">Download to this computer in Parts</span> (or <span class="ui">Upload to … in
+Parts</span>, <span class="ui">Copy to … in Parts</span>).</p>
 <ul>
-  <li>The item is there only where it helps: for a file of 1&nbsp;GiB or more, on an FTP
-    server, copied to this computer or to an SFTP server. Other files in the selection, and
+  <li>The item is there only where it helps: for a file of 1&nbsp;GiB or more, copied from
+    an FTP server (to this computer or to an SFTP server), or uploaded from this computer to
+    an SFTP server. Other files in the selection, and
     folders, are copied as usual. Dragging and the plain <span class="ui">Download</span>
     always copy whole files.</li>
   <li>The parts use the places of <a href="#limit">Files at once</a>: a file in parts never

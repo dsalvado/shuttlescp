@@ -32,7 +32,7 @@ use shuttlescp_core::permissions::{
     self, ApplyError, PermissionEdit, PermissionsJob, SudoPassword,
 };
 use shuttlescp_core::remote::{CommandError, Remote, RunAs};
-use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, Side};
+use shuttlescp_core::transfer::{self, JobKind, PARTIAL_SUFFIX, PartsHost, Side};
 
 use crate::confirm_dialog::{self, Confirmation};
 use crate::dialog::{self, Dialog};
@@ -463,8 +463,8 @@ pub struct FilePane {
     actions: PaneActions,
     /// Whether there is somewhere to copy to (for the local pane: a connected server).
     peer_available: bool,
-    /// Whether files can be written there in parts ([`Peer::writes_in_parts`]).
-    peer_writes_parts: bool,
+    /// What the other pane is ([`Peer::host`]), for offering copies in parts.
+    peer_host: Option<PartsHost>,
     /// What the last operation did, shown with the next listing's item count.
     notice: Option<String>,
     /// Whether a listing has been shown yet (the start folder is not listed until then).
@@ -505,9 +505,8 @@ pub struct Peer {
     pub name: String,
     /// It is a server (so a server pane copies to it, rather than downloading).
     pub is_server: bool,
-    /// Files can be written there in parts, one part at any position (this computer
-    /// and SFTP servers can): what copying in parts needs of the destination.
-    pub writes_in_parts: bool,
+    /// What it is, for deciding whether copying there in parts is faster.
+    pub host: PartsHost,
 }
 
 /// The menu's copy and move items: "Upload to <server>", "Download to this computer",
@@ -560,21 +559,20 @@ fn menu_name(peer: &Peer) -> String {
     peer.name.replace('_', "__")
 }
 
-/// Whether the menu offers copying the selection in parts: this pane's server reads
-/// faster over several connections, the other side can write a file in parts, and
-/// at least one selected file is large enough to be split (folders do not count, see
+/// Whether the menu offers copying the selection in parts: a copy from this pane to
+/// the other is faster in parts ([`transfer::faster_in_parts`]), and at least one
+/// selected file is large enough to be split (folders do not count, see
 /// `docs/design/split-downloads.md`).
 ///
 /// # Arguments
 ///
 /// * `selected` - Each selected item's kind and size
 fn offers_parts(
-    reads_in_parts: bool,
-    peer_writes_parts: bool,
+    from: PartsHost,
+    to: PartsHost,
     selected: impl IntoIterator<Item = (EntryKind, u64)>,
 ) -> bool {
-    reads_in_parts
-        && peer_writes_parts
+    transfer::faster_in_parts(from, to)
         && selected
             .into_iter()
             .any(|(kind, size)| kind == EntryKind::File && size >= transfer::SPLIT_FROM)
@@ -674,15 +672,18 @@ impl FilePane {
 
     /// Whether the menu offers copying the selection in parts (see [`offers_parts`]).
     fn offers_parts(&self) -> bool {
-        let reads_in_parts = self
+        let Some(to) = self.peer_host.filter(|_| self.peer_available) else {
+            return false;
+        };
+        let from = self
             .remote
             .as_ref()
-            .is_some_and(Remote::reads_faster_in_parts);
+            .map_or(PartsHost::ThisComputer, Remote::parts_host);
         let selected = self.selected_entries();
         let selected = selected
             .iter()
             .map(|(_, entry)| (entry.kind(), entry.size()));
-        self.peer_available && offers_parts(reads_in_parts, self.peer_writes_parts, selected)
+        offers_parts(from, to, selected)
     }
 
     /// The selected items with what their listing says about them.
@@ -1345,7 +1346,7 @@ impl Component for FilePane {
             actions,
             // The local pane has nowhere to copy to until a server is connected.
             peer_available: side == Side::Remote,
-            peer_writes_parts: false,
+            peer_host: None,
             notice: None,
         };
         model.request_listing(start_dir, &sender);
@@ -1526,7 +1527,7 @@ impl Component for FilePane {
             }
             FilePaneMsg::Peer(peer) => {
                 self.peer_available = peer.is_some();
-                self.peer_writes_parts = peer.as_ref().is_some_and(|peer| peer.writes_in_parts);
+                self.peer_host = peer.as_ref().map(|peer| peer.host);
                 let this_is_server = self.remote.is_some();
                 fill_transfer_section(
                     &self.actions.transfer_section,
@@ -2903,12 +2904,12 @@ mod tests {
         let server = |name: &str| Peer {
             name: name.to_owned(),
             is_server: true,
-            writes_in_parts: true,
+            host: PartsHost::Sftp,
         };
         let computer = Peer {
             name: String::from("this computer"),
             is_server: false,
-            writes_in_parts: true,
+            host: PartsHost::ThisComputer,
         };
         let labels = |a: &str, b: &str| (a.to_owned(), b.to_owned());
         assert_eq!(
@@ -2942,18 +2943,19 @@ mod tests {
 
     #[test]
     fn parts_are_offered_only_where_they_help() {
+        use PartsHost::{Ftp, Sftp, ThisComputer};
         let big = (EntryKind::File, transfer::SPLIT_FROM);
         let small = (EntryKind::File, transfer::SPLIT_FROM - 1);
         let folder = (EntryKind::Directory, transfer::SPLIT_FROM * 4);
-        // A large file among others is enough.
-        assert!(offers_parts(true, true, [small, big, folder]));
+        // A large file among others is enough: a download from FTP, an upload to SFTP.
+        assert!(offers_parts(Ftp, ThisComputer, [small, big, folder]));
+        assert!(offers_parts(ThisComputer, Sftp, [big]));
         // Small files and folders, however large, are not.
-        assert!(!offers_parts(true, true, [small, folder]));
-        assert!(!offers_parts(true, true, []));
-        // Nor where the source would not read faster, or the other side cannot write
-        // in parts.
-        assert!(!offers_parts(false, true, [big]));
-        assert!(!offers_parts(true, false, [big]));
+        assert!(!offers_parts(Ftp, ThisComputer, [small, folder]));
+        assert!(!offers_parts(Ftp, ThisComputer, []));
+        // Nor where parts would not be faster (or could not be written).
+        assert!(!offers_parts(Sftp, ThisComputer, [big]));
+        assert!(!offers_parts(ThisComputer, Ftp, [big]));
     }
     use shuttlescp_core::path::RemotePath;
 

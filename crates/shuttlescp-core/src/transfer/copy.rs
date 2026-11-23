@@ -22,7 +22,7 @@ use crate::format::format_size;
 mod parts;
 mod record;
 
-pub use parts::SPLIT_FROM;
+pub use parts::{PartsHost, SPLIT_FROM, faster_in_parts};
 pub use record::SplitRecords;
 
 /// Bytes read and written per step of a file copy.
@@ -691,8 +691,7 @@ async fn copy_file(
     // A whole-file partial copy from an earlier run is continued as it is.
     let splittable = item.partial == 0
         && item.size >= parts::SPLIT_FROM
-        && src.reads_faster_in_parts()
-        && dst.can_write_parts();
+        && parts::faster_in_parts(src.parts_host(), dst.parts_host());
     if let Some(spare) = spare
         && splittable
     {

@@ -507,13 +507,13 @@ impl Remote {
         }
     }
 
-    /// Whether reading a file in parts is faster here: true for FTP, where each part
-    /// gets a connection of its own, and servers often limit each connection's speed
-    /// (measured on a seedbox: about 1 MiB/s per connection, 3.3 MiB/s with four). Not
-    /// yet for SFTP, whose parallel transfers share one connection; whether parts help
-    /// there is still to be measured.
-    pub fn reads_faster_in_parts(&self) -> bool {
-        matches!(self.0.backend, Backend::Ftp(_))
+    /// What this server is, for deciding whether a copy is faster in parts (see
+    /// [`crate::transfer::faster_in_parts`]).
+    pub fn parts_host(&self) -> crate::transfer::PartsHost {
+        match self.0.backend {
+            Backend::Sftp(_) => crate::transfer::PartsHost::Sftp,
+            Backend::Ftp(_) => crate::transfer::PartsHost::Ftp,
+        }
     }
 
     /// Whether files on this server can be written in parts: a part at any position,

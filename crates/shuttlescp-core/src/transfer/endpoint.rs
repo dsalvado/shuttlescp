@@ -265,22 +265,12 @@ impl Endpoint {
         })
     }
 
-    /// Whether reading a file from here in parts, each over a connection of its own, is
-    /// faster than reading it whole (see [`Remote::reads_faster_in_parts`]). Not this
-    /// computer: its disk is not what is slow.
-    pub(super) fn reads_faster_in_parts(&self) -> bool {
+    /// What this end is, for deciding whether to copy in parts (see
+    /// [`super::faster_in_parts`]).
+    pub(super) fn parts_host(&self) -> super::PartsHost {
         match self {
-            Self::Local => false,
-            Self::Remote(remote) => remote.reads_faster_in_parts(),
-        }
-    }
-
-    /// Whether files here can be written in parts (see [`Endpoint::open_write_range`]):
-    /// this computer and SFTP servers can, FTP servers cannot.
-    pub(super) fn can_write_parts(&self) -> bool {
-        match self {
-            Self::Local => true,
-            Self::Remote(remote) => remote.can_write_parts(),
+            Self::Local => super::PartsHost::ThisComputer,
+            Self::Remote(remote) => remote.parts_host(),
         }
     }
 
