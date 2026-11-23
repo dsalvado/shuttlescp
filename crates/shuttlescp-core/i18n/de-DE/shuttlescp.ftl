@@ -276,9 +276,9 @@ pane-transfer-to =
     }
 pane-transfer-in-parts =
     { $kind ->
-        [upload] Hochladen nach { $name } in _Teilen
-        [download] Herunterladen auf { $name } in _Teilen
-       *[copy] Kopieren nach { $name } in _Teilen
+        [upload] Mehr_teilig hochladen nach { $name }
+        [download] Mehr_teilig herunterladen auf { $name }
+       *[copy] Mehr_teilig kopieren nach { $name }
     }
 pane-move = _Verschieben
 pane-move-to = _Verschieben nach { $name }

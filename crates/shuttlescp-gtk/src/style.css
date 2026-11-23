@@ -392,6 +392,12 @@ popover.menu.pane-menu {
 popover.menu.pane-menu modelbutton {
     min-height: 19px;
 }
+/* "Multi-part Download to …": a different kind of copy, so it stands out, in the accent
+   colour as the update notice (file_pane.rs marks it). */
+popover.menu.pane-menu label.multi-part {
+    color: @theme_selected_bg_color;
+    font-weight: bold;
+}
 
 /* Dragging files: the folder row a drop would go into is highlighted as a whole, rather
    than the theme's outline around the single cell under the pointer. */

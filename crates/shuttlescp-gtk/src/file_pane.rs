@@ -162,7 +162,7 @@ pub enum FilePaneMsg {
     },
     /// Copy, move or delete the selected items (from the context menu or a key).
     Request(JobKind),
-    /// Copy the selected items, large files in parts ("Download to … in Parts").
+    /// Copy the selected items, large files in parts ("Multi-part Download to …").
     RequestInParts,
     /// The other pane, which copies go to (`None`: nowhere to copy to, e.g. the local
     /// pane before a server is connected). Names the menu's Upload / Move items.
@@ -465,6 +465,8 @@ pub struct FilePane {
     peer_available: bool,
     /// What the other pane is ([`Peer::host`]), for offering copies in parts.
     peer_host: Option<PartsHost>,
+    /// The menu's multi-part item, as labelled now: it is marked to stand out.
+    multi_part_label: Option<String>,
     /// What the last operation did, shown with the next listing's item count.
     notice: Option<String>,
     /// Whether a listing has been shown yet (the start folder is not listed until then).
@@ -488,7 +490,7 @@ pub struct FilePane {
 /// The actions of the right-click menu.
 struct PaneActions {
     copy: gio::SimpleAction,
-    /// "Download to … in Parts": hidden while disabled, so it shows only where it helps.
+    /// "Multi-part Download to …": hidden while disabled, so it shows only where it helps.
     copy_in_parts: gio::SimpleAction,
     move_: gio::SimpleAction,
     delete: gio::SimpleAction,
@@ -531,8 +533,8 @@ fn transfer_labels(this_is_server: bool, peer: Option<&Peer>) -> (String, String
     }
 }
 
-/// The menu's "in parts" item: "Download to this computer in Parts", "Copy to <server>
-/// in Parts" and the like. Only with somewhere to copy to.
+/// The menu's multi-part item: "Multi-part Download to this computer", "Multi-part
+/// Copy to <server>" and the like. Only with somewhere to copy to.
 fn in_parts_label(this_is_server: bool, peer: Option<&Peer>) -> Option<String> {
     let kind = transfer_kind(this_is_server, peer);
     peer.map(|peer| {
@@ -576,6 +578,26 @@ fn offers_parts(
         && selected
             .into_iter()
             .any(|(kind, size)| kind == EntryKind::File && size >= transfer::SPLIT_FROM)
+}
+
+/// Mark the menu's multi-part item, labelled `label`, so it stands out as a different
+/// kind of copy (style.css). Items built from a menu model take no CSS class of their
+/// own and do not show their action, so it is found by its label (with or without the
+/// underscore that marks its shortcut letter).
+fn mark_multi_part(menu: &gtk::PopoverMenu, label: &str) {
+    fn visit(widget: &gtk::Widget, wanted: &str) {
+        if let Some(text) = widget.downcast_ref::<gtk::Label>()
+            && text.label().replace('_', "") == wanted
+        {
+            text.add_css_class("multi-part");
+        }
+        let mut child = widget.first_child();
+        while let Some(next) = child {
+            visit(&next, wanted);
+            child = next.next_sibling();
+        }
+    }
+    visit(menu.upcast_ref(), &label.replace('_', ""));
 }
 
 /// Fill the menu's transfer section with its copy and move items, and the copy in parts
@@ -1347,6 +1369,7 @@ impl Component for FilePane {
             // The local pane has nowhere to copy to until a server is connected.
             peer_available: side == Side::Remote,
             peer_host: None,
+            multi_part_label: None,
             notice: None,
         };
         model.request_listing(start_dir, &sender);
@@ -1458,6 +1481,9 @@ impl Component for FilePane {
                     }
                 }
                 self.update_actions();
+                if let Some(label) = &self.multi_part_label {
+                    mark_multi_part(&self.context_menu, label);
+                }
                 self.popup_at(&self.context_menu, root, x, y);
             }
             FilePaneMsg::Dropped(dropped) => {
@@ -1529,10 +1555,11 @@ impl Component for FilePane {
                 self.peer_available = peer.is_some();
                 self.peer_host = peer.as_ref().map(|peer| peer.host);
                 let this_is_server = self.remote.is_some();
+                self.multi_part_label = in_parts_label(this_is_server, peer.as_ref());
                 fill_transfer_section(
                     &self.actions.transfer_section,
                     &transfer_labels(this_is_server, peer.as_ref()),
-                    in_parts_label(this_is_server, peer.as_ref()).as_deref(),
+                    self.multi_part_label.as_deref(),
                 );
             }
             FilePaneMsg::NewFolder => Self::ask_name(
@@ -2932,11 +2959,11 @@ mod tests {
         assert_eq!(transfer_labels(false, None), labels("_Upload", "_Move"));
         assert_eq!(
             in_parts_label(true, Some(&computer)).as_deref(),
-            Some("Download to this computer in _Parts")
+            Some("Multi-_part Download to this computer")
         );
         assert_eq!(
             in_parts_label(true, Some(&server("db_01"))).as_deref(),
-            Some("Copy to db__01 in _Parts")
+            Some("Multi-_part Copy to db__01")
         );
         assert_eq!(in_parts_label(true, None), None);
     }

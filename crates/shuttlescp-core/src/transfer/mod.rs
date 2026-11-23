@@ -149,7 +149,7 @@ pub struct Job {
     /// are never saved to resume (they may hold a sudo password).
     pub permissions: Option<crate::permissions::PermissionsJob>,
     /// Copy large files in parts, each over a connection of its own, where that is
-    /// faster (see [`copy`]'s `parts_for`). Chosen with "Download in Parts" and the
+    /// faster (see [`copy`]'s `parts_for`). Chosen with "Multi-part Download" and the
     /// like; saved, so a resumed job splits again.
     pub split: bool,
 }

@@ -276,9 +276,9 @@ pane-transfer-to =
     }
 pane-transfer-in-parts =
     { $kind ->
-        [upload] Envoyer vers { $name } en _parties
-        [download] Télécharger vers { $name } en _parties
-       *[copy] Copier vers { $name } en _parties
+        [upload] Envoi multi_partie vers { $name }
+        [download] Téléchargement multi_partie vers { $name }
+       *[copy] Copie multi_partie vers { $name }
     }
 pane-move = _Déplacer
 pane-move-to = _Déplacer vers { $name }

@@ -11,8 +11,8 @@ becomes its release notes on GitHub.
 
 - Large files can be copied in parts, all at the same time: from FTP servers, which often
   limit each connection's speed, and uploads to SFTP servers, where one file uses only
-  part of the network. Right-click a file of 1 GiB or more and choose "Download to this
-  computer in Parts" (or "Upload to … in Parts", "Copy to … in Parts"). The parts share the transfer limit; a connection that frees up joins in,
+  part of the network. Right-click a file of 1 GiB or more and choose "Multi-part
+  Download to this computer" (or "Multi-part Upload to …", "Multi-part Copy to …"). The parts share the transfer limit; a connection that frees up joins in,
   taking half of the part with the most left. The file's bar shows a piece per part.
 - A copy in parts is always checked, part by part, against checksums taken as it arrived;
   a part that differs is copied again. A paused or interrupted copy in parts continues
