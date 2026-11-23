@@ -27,8 +27,8 @@ use shuttlescp_core::pending::{PendingJob, PendingTransfers};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{SiteVerify, new_site_id};
 use shuttlescp_core::transfer::{
-    self, CancelFlag, FilePlaces, ItemKind, ItemOutcome, Job, JobKind, JobSummary, PlanItem,
-    RateMeter, Side, TransferEvent, Verification, Verify,
+    self, CancelFlag, FilePlaces, ItemKind, ItemOutcome, Job, JobKind, JobSummary, PartProgress,
+    PlanItem, RateMeter, Side, TransferEvent, Verification, Verify,
 };
 
 use crate::conflict_dialog;
@@ -39,6 +39,8 @@ use shuttlescp_core::tr;
 const EXPAND_LIMIT: usize = 200;
 /// Width of the progress bars, in pixels.
 const BAR_WIDTH: i32 = 160;
+/// Gap between the bars of a file copied in parts, in pixels.
+const PART_GAP: i32 = 2;
 /// Indent of each tree level, in pixels.
 const INDENT: i32 = 18;
 /// Width of the slot at the end of each line for the result icon (or a job's Cancel /
@@ -306,6 +308,10 @@ pub enum TransferPanelMsg {
     /// them, forget their records and delete their partial files; then report
     /// [`TransferPanelOutput::Discarded`].
     DiscardAll,
+    /// Development aid for the UI gallery: show a made-up download of files copied in
+    /// parts (nothing is copied).
+    #[cfg(debug_assertions)]
+    GalleryParts,
 }
 
 /// Notifications sent to the main window.
@@ -383,6 +389,9 @@ struct ItemState {
     verify_done: Option<u64>,
     /// What checking its copy found.
     verification: Option<Verification>,
+    /// Copied in parts: where each part has got to (empty for a file copied whole). Its
+    /// bar shows them, until they are checked.
+    parts: Vec<PartProgress>,
 }
 
 /// One job in the list.
@@ -441,6 +450,8 @@ struct RowWidgets {
     icon: gtk::Image,
     name: gtk::Label,
     bar: gtk::ProgressBar,
+    /// A file copied in parts: a bar per part, in place of `bar`.
+    part_bars: gtk::Box,
     info: gtk::Label,
     status: gtk::Image,
     pause: gtk::Button,
@@ -674,6 +685,8 @@ impl Component for TransferPanel {
         let _watch = crate::watchdog::handling("Transfers", &message);
         match message {
             TransferPanelMsg::Start(job) => self.start(job, None, &sender),
+            #[cfg(debug_assertions)]
+            TransferPanelMsg::GalleryParts => self.gallery_parts(&sender),
             TransferPanelMsg::Cancel(id) => {
                 let forget = {
                     let mut shared = self.shared.borrow_mut();
@@ -833,8 +846,10 @@ impl Component for TransferPanel {
                 id: item,
                 verification,
             } => self.set_verification(id, item, false, Some(verification), now),
-            // Its own "Checking parts" bar comes later; for now, the usual "Verifying…".
+            // The parts are checked: the bar is the file's again, for a check against
+            // its source that may follow.
             TransferEvent::PartsChecked { id: item } => {
+                self.set_parts(id, item, Vec::new(), now);
                 self.set_verification(id, item, false, None, now);
             }
             TransferEvent::Held { id: item } => {
@@ -855,8 +870,7 @@ impl Component for TransferPanel {
                     now,
                 );
             }
-            // Shown as one bar for now; a bar per part comes later.
-            TransferEvent::InParts { .. } => {}
+            TransferEvent::Parts { id: item, parts } => self.set_parts(id, item, parts, now),
             TransferEvent::Resumed { id: item, from } => {
                 let mut shared = self.shared.borrow_mut();
                 // Continuing after being held back by the limit.
@@ -980,6 +994,36 @@ impl TransferPanel {
         let cancel = CancelFlag::default()
             .with_places(Arc::clone(&self.places))
             .with_split_records(transfer::SplitRecords::shared());
+        self.add_job(id, &job, pending_key, &cancel, route);
+
+        if let Some(other) = blocked_by {
+            tracing::warn!(
+                "not starting {}: {other} is using the same files",
+                job.title()
+            );
+            self.job_finished(
+                id,
+                JobSummary {
+                    error: Some(tr!("transfers-blocked", other = other)),
+                    ..JobSummary::default()
+                },
+                sender,
+            );
+            return;
+        }
+
+        self.launch(id, job, remote, dest_remote, cancel, sender);
+    }
+
+    /// Add a job to the Queue, not started (it has no plan yet).
+    fn add_job(
+        &mut self,
+        id: u64,
+        job: &Job,
+        pending_key: Option<String>,
+        cancel: &CancelFlag,
+        route: Option<(String, String)>,
+    ) {
         self.shared.borrow_mut().jobs.insert(
             id,
             JobState {
@@ -1012,24 +1056,103 @@ impl TransferPanel {
             job: id,
             item: None,
         }));
+    }
 
-        if let Some(other) = blocked_by {
-            tracing::warn!(
-                "not starting {}: {other} is using the same files",
-                job.title()
-            );
-            self.job_finished(
-                id,
-                JobSummary {
-                    error: Some(tr!("transfers-blocked", other = other)),
-                    ..JobSummary::default()
-                },
-                sender,
-            );
-            return;
+    /// Show a made-up download of three files copied in parts, in the stages it shows:
+    /// one with a part halved for a connection that joined late, one in ten parts (how
+    /// narrow they get), and one whose parts are being checked. Its events go through
+    /// the same handling as a real job's; nothing is copied.
+    #[cfg(debug_assertions)]
+    fn gallery_parts(&mut self, sender: &ComponentSender<Self>) {
+        const GIB: u64 = 1 << 30;
+        let remote = |name: &str| {
+            SidePath::Remote(shuttlescp_core::path::RemotePath::new(format!(
+                "/srv/media/{name}"
+            )))
+        };
+        let local = |name: &str| SidePath::Local(PathBuf::from(format!("/home/me/{name}")));
+        let files = [
+            ("Holiday 2026.mkv", 6 * GIB),
+            ("Concert, full set.mkv", 12 * GIB),
+            ("photos-backup.tar", 2 * GIB),
+        ];
+        let job = Job {
+            kind: JobKind::Copy,
+            side: Side::Remote,
+            sources: files.iter().map(|(name, _)| remote(name)).collect(),
+            dest_dir: local(""),
+            same_side: false,
+            between_servers: false,
+            left_server: false,
+            resume: false,
+            verify: Verify::default(),
+            permissions: None,
+            split: true,
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        self.add_job(id, &job, None, &CancelFlag::default(), None);
+        let plan = files
+            .iter()
+            .enumerate()
+            .map(|(item, (name, size))| PlanItem::demo_file(item, *size, remote(name), local(name)))
+            .collect();
+        // In quarters of a GiB.
+        let part = |start: u64, at: u64, end: u64| PartProgress {
+            start: start * GIB / 4,
+            at: at * GIB / 4,
+            end: end * GIB / 4,
+        };
+        // Four parts; the last finished first, and its connection took the second half
+        // of the first part, which had the most left.
+        let halved = vec![
+            part(0, 3, 4),
+            part(6, 10, 12),
+            part(12, 15, 18),
+            part(18, 24, 24),
+            part(4, 5, 6),
+        ];
+        let ten: Vec<PartProgress> = (0..10u64)
+            .map(|n| {
+                let (start, end) = (n * 48 / 10, (n + 1) * 48 / 10);
+                part(start, start + (end - start) * (n % 4) / 3, end)
+            })
+            .collect();
+        let checked: Vec<PartProgress> =
+            (0..4).map(|n| part(2 * n, 2 * n + 2, 2 * n + 2)).collect();
+        let done = |parts: &[PartProgress]| parts.iter().map(|part| part.at - part.start).sum();
+        let events = [
+            TransferEvent::Planned(plan),
+            TransferEvent::Progress {
+                id: 0,
+                done: done(&halved),
+            },
+            TransferEvent::Parts {
+                id: 0,
+                parts: halved,
+            },
+            TransferEvent::Progress {
+                id: 1,
+                done: done(&ten),
+            },
+            TransferEvent::Parts { id: 1, parts: ten },
+            TransferEvent::Progress {
+                id: 2,
+                done: 2 * GIB,
+            },
+            TransferEvent::Parts {
+                id: 2,
+                parts: checked,
+            },
+            TransferEvent::Verifying { id: 2 },
+            TransferEvent::VerifyProgress {
+                id: 2,
+                done: 2 * GIB * 2 / 5,
+            },
+        ];
+        for event in events {
+            sender.command_sender().emit((id, event));
         }
-
-        self.launch(id, job, remote, dest_remote, cancel, sender);
     }
 
     /// Run a job: as its own task on the async runtime's worker threads, whose events
@@ -1103,6 +1226,27 @@ impl TransferPanel {
         if verification.is_some() {
             state.verification = verification;
         }
+        refresh(
+            &shared,
+            &[RowKey {
+                job: id,
+                item: Some(item),
+            }],
+            now,
+        );
+    }
+
+    /// Record where the parts of a file copied in parts have got to.
+    fn set_parts(&self, id: u64, item: usize, parts: Vec<PartProgress>, now: Instant) {
+        let mut shared = self.shared.borrow_mut();
+        let Some(state) = shared
+            .jobs
+            .get_mut(&id)
+            .and_then(|job| job.items.get_mut(item))
+        else {
+            return;
+        };
+        state.parts = parts;
         refresh(
             &shared,
             &[RowKey {
@@ -1598,6 +1742,7 @@ impl TransferPanel {
                         verifying: false,
                         verify_done: None,
                         verification: None,
+                        parts: Vec::new(),
                     }
                 })
                 .collect();
@@ -2126,6 +2271,8 @@ struct RowView {
     tooltip: String,
     heading: bool,
     fraction: Option<f64>,
+    /// A file copied in parts: its parts, shown in place of the one bar.
+    parts: Vec<PartBar>,
     info: String,
     error: bool,
     status: Option<&'static str>,
@@ -2171,17 +2318,23 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     widgets.name.set_label(&row.name);
     widgets.name.set_tooltip_if_changed(Some(&row.tooltip));
     set_class(&widgets.name, "heading", row.heading);
-    widgets.bar.set_visible(row.fraction.is_some());
+    widgets
+        .bar
+        .set_visible(row.fraction.is_some() && row.parts.is_empty());
     widgets.bar.set_fraction(row.fraction.unwrap_or(0.0));
     // The bar fills from the pane the files come from, with an arrowhead at its leading
     // edge, and while data moves its stripes slide toward the other pane (style.css).
     // Deletes and copies within a pane go nowhere.
     let (from, to) = (job.job.source_pane(), job.job.dest_pane());
     let leftward = from == Side::Remote && to == Side::Local;
-    widgets.bar.set_inverted(leftward);
-    set_class(&widgets.bar, "to-right", from != to && !leftward);
-    set_class(&widgets.bar, "to-left", leftward);
-    set_class(&widgets.bar, "flowing", row.moving && from != to);
+    let way = Way {
+        leftward,
+        across: from != to,
+        moving: row.moving,
+    };
+    way.style(&widgets.bar, true);
+    widgets.part_bars.set_visible(!row.parts.is_empty());
+    show_part_bars(&widgets.part_bars, &row.parts, way);
     widgets.info.set_label(&row.info);
     set_class(&widgets.info, "error", row.error);
     widgets.status.set_icon_name(row.status);
@@ -2207,6 +2360,110 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     set_class(&widgets.line, "finished-ok", job.flashing && complete);
     set_class(&widgets.line, "finished-bad", job.flashing && !complete);
     set_class(&widgets.line, "fading", job.fading);
+}
+
+/// One part of a file copied in parts, as its bar shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PartBar {
+    /// Its share of the file, 0 to 1: how wide its bar is.
+    share: f64,
+    /// How much of it is done, 0 to 1.
+    fraction: f64,
+}
+
+/// The bars of a file copied in parts: one per part, in the order the parts lie in the
+/// file, so together they draw the file as one bar.
+fn part_bars(parts: &[PartProgress], size: u64) -> Vec<PartBar> {
+    let mut parts = parts.to_vec();
+    parts.sort_unstable_by_key(|part| part.start);
+    parts
+        .iter()
+        .map(|part| PartBar {
+            share: transfer::fraction(part.end - part.start, size),
+            fraction: transfer::fraction(part.at - part.start, part.end - part.start),
+        })
+        .collect()
+}
+
+/// Widths for bars of these `shares` laid side by side, with `gap` between them, filling
+/// `total` pixels. Each is at least a pixel; rounding never adds up past `total`.
+fn bar_widths(shares: &[f64], total: i32, gap: i32) -> Vec<i32> {
+    let gaps = gap * i32::try_from(shares.len().saturating_sub(1)).unwrap_or(0);
+    let room = f64::from((total - gaps).max(0));
+    let mut edge = 0.0;
+    let mut drawn = 0;
+    shares
+        .iter()
+        .map(|share| {
+            edge += share;
+            // Rounded where each bar ends, so the widths add up to the room exactly.
+            let end = (room * edge.min(1.0)).round() as i32;
+            let width = (end - drawn).max(1);
+            drawn += width;
+            width
+        })
+        .collect()
+}
+
+/// Which way a row's copy goes, for styling its bars.
+#[derive(Clone, Copy)]
+struct Way {
+    /// From the right pane to the left: the bar fills from the right.
+    leftward: bool,
+    /// Between the panes (not a delete, nor within one pane).
+    across: bool,
+    /// Data is moving now.
+    moving: bool,
+}
+
+impl Way {
+    /// Style `bar` for this way; its stripes slide only while `moving` and its part of
+    /// the data is still coming.
+    fn style(self, bar: &gtk::ProgressBar, moving: bool) {
+        bar.set_inverted(self.leftward);
+        set_class(bar, "to-right", self.across && !self.leftward);
+        set_class(bar, "to-left", self.leftward);
+        set_class(bar, "flowing", self.moving && moving && self.across);
+    }
+}
+
+/// Show `parts` in `row_bars`, a bar each, as wide as its share of the file. The bars
+/// fill the way the file goes, so a download's start is at the right end.
+fn show_part_bars(row_bars: &gtk::Box, parts: &[PartBar], way: Way) {
+    let mut bars = Vec::new();
+    let mut child = row_bars.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if let Ok(bar) = widget.downcast::<gtk::ProgressBar>() {
+            bars.push(bar);
+        }
+    }
+    while bars.len() > parts.len() {
+        if let Some(bar) = bars.pop() {
+            row_bars.remove(&bar);
+        }
+    }
+    while bars.len() < parts.len() {
+        let bar = gtk::ProgressBar::builder()
+            .valign(gtk::Align::Center)
+            .css_classes(["part"])
+            .build();
+        row_bars.append(&bar);
+        bars.push(bar);
+    }
+    let shares: Vec<f64> = parts.iter().map(|part| part.share).collect();
+    let mut laid: Vec<(&PartBar, i32)> = parts
+        .iter()
+        .zip(bar_widths(&shares, BAR_WIDTH, PART_GAP))
+        .collect();
+    if way.leftward {
+        laid.reverse();
+    }
+    for (bar, (part, width)) in bars.iter().zip(laid) {
+        bar.set_size_request(width, -1);
+        bar.set_fraction(part.fraction);
+        way.style(bar, part.fraction < 1.0);
+    }
 }
 
 /// Show a row's full status text (often cut short) when the pointer rests on `widget`.
@@ -2362,6 +2619,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
             Some(summary) if summary.is_complete() => Some(1.0),
             _ => Some(fraction),
         },
+        parts: Vec::new(),
         info,
         error,
         status,
@@ -2485,17 +2743,21 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
     let (info, error, status) = match &item.outcome {
         _ if item.verifying => {
             // "Verifying… 35%" while it is read back; checks done by the server have no
-            // progress to show.
+            // progress to show. A copy in parts first has its parts checked.
+            let checking = if item.parts.is_empty() {
+                tr!("item-verifying")
+            } else {
+                tr!("item-checking-parts")
+            };
             let info = match item.verify_done {
                 Some(done) => format!(
-                    "{} {}",
-                    tr!("item-verifying"),
+                    "{checking} {}",
                     tr!(
                         "progress-percent",
                         percent = transfer::percent(done, item.size)
                     )
                 ),
-                None => tr!("item-verifying"),
+                None => checking,
             };
             (info, false, None)
         }
@@ -2579,6 +2841,13 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
             (_, Some(ItemOutcome::Done)) => 1.0,
             _ => transfer::fraction(item.done, item.size),
         }),
+        // Copying (or paused): a bar per part. Being checked, the one bar fills with the
+        // check instead.
+        parts: if item.verifying || item.outcome.is_some() {
+            Vec::new()
+        } else {
+            part_bars(&item.parts, item.size)
+        },
         info,
         error,
         status,
@@ -2714,6 +2983,12 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         .width_request(BAR_WIDTH)
         .valign(gtk::Align::Center)
         .build();
+    let part_bars = gtk::Box::builder()
+        .spacing(PART_GAP)
+        .width_request(BAR_WIDTH)
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
     let info = gtk::Label::builder()
         .xalign(0.0)
         .width_chars(44)
@@ -2723,6 +2998,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         .build();
     show_status_on_hover(&info, &info);
     show_status_on_hover(&bar, &info);
+    show_status_on_hover(&part_bars, &info);
     let status = gtk::Image::new();
     let pause = small_button("media-playback-pause-symbolic", Some(&tr!("job-pause")));
     let cancel = small_button("window-close-symbolic", Some(&tr!("dialog-cancel")));
@@ -2741,6 +3017,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     line.append(&icon);
     line.append(&name);
     line.append(&bar);
+    line.append(&part_bars);
     line.append(&info);
     line.append(&end_slot);
 
@@ -2805,6 +3082,7 @@ fn build_row() -> (gtk::Box, RowWidgets) {
             icon,
             name,
             bar,
+            part_bars,
             info,
             status,
             pause,
@@ -2984,6 +3262,7 @@ mod tests {
                     verifying: false,
                     verify_done: None,
                     verification: None,
+                    parts: Vec::new(),
                 })
                 .collect(),
             children,
@@ -3013,6 +3292,28 @@ mod tests {
             .into_iter()
             .filter_map(|key| key.item)
             .collect()
+    }
+
+    #[test]
+    fn part_bars_lie_in_file_order_each_as_wide_as_its_share() {
+        let part = |start, at, end| PartProgress { start, at, end };
+        // A connection joining late took the second half of the first part: it came last.
+        let parts = [part(0, 100, 250), part(500, 750, 1000), part(250, 250, 500)];
+
+        let bars = part_bars(&parts, 1000);
+
+        let bar = |share, fraction| PartBar { share, fraction };
+        assert_eq!(bars, [bar(0.25, 0.4), bar(0.25, 0.0), bar(0.5, 0.5)]);
+    }
+
+    #[test]
+    fn bar_widths_fill_the_room_left_by_the_gaps() {
+        assert_eq!(bar_widths(&[0.5, 0.5], 102, 2), [50, 50]);
+        let thirds = bar_widths(&[1.0 / 3.0; 3], 160, 2);
+        assert_eq!(thirds.iter().sum::<i32>(), 156, "{thirds:?}");
+        // However small its share, a bar shows.
+        assert_eq!(bar_widths(&[0.999, 0.001], 100, 0), [100, 1]);
+        assert_eq!(bar_widths(&[], 160, 2), Vec::<i32>::new());
     }
 
     #[test]

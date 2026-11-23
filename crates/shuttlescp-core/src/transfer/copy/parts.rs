@@ -30,7 +30,9 @@ use super::{
 use crate::checksum::Checksum;
 use crate::path::SidePath;
 use crate::transfer::endpoint::Endpoint;
-use crate::transfer::{CancelFlag, ItemOutcome, Place, PlanItem, Sink, TransferEvent};
+use crate::transfer::{
+    CancelFlag, ItemOutcome, PartProgress, Place, PlanItem, Sink, TransferEvent,
+};
 
 /// Files smaller than this are copied whole (and the menu offers copying in parts only
 /// for files at least this large).
@@ -222,12 +224,15 @@ impl<'a> Recorder<'a> {
 }
 
 /// The file's progress, summed over its parts, reported at most every
-/// [`PROGRESS_INTERVAL`].
+/// [`PROGRESS_INTERVAL`], with where each part has got to.
 struct Progress<'a> {
     id: usize,
     done: AtomicU64,
     reported: Mutex<Instant>,
     sink: &'a Sink,
+    /// The parts, reported with the progress ([`TransferEvent::Parts`]); `None` to not
+    /// report them (a piece copied again: it is not how the file is split).
+    spans: Option<&'a Mutex<Vec<Span>>>,
 }
 
 impl Progress<'_> {
@@ -238,8 +243,24 @@ impl Progress<'_> {
         };
         if reported.elapsed() >= PROGRESS_INTERVAL {
             *reported = Instant::now();
+            drop(reported);
             (self.sink)(TransferEvent::Progress { id: self.id, done });
+            self.report_parts();
         }
+    }
+
+    /// Report where each part has got to (if the parts are reported at all).
+    fn report_parts(&self) {
+        let Some(spans) = self.spans else {
+            return;
+        };
+        let Ok(parts) = spans
+            .lock()
+            .map(|spans| spans.iter().map(Span::progress).collect())
+        else {
+            return;
+        };
+        (self.sink)(TransferEvent::Parts { id: self.id, parts });
     }
 }
 
@@ -312,10 +333,6 @@ pub(super) async fn copy_in_parts(
     };
     let open = opening.elapsed();
     let moving = Instant::now();
-    sink(TransferEvent::InParts {
-        id: item.id,
-        ranges: parts.iter().map(|part| (part.start, part.end)).collect(),
-    });
     let done: u64 = parts.iter().map(Part::done).sum();
     let ranges = parts
         .iter()
@@ -336,7 +353,7 @@ pub(super) async fn copy_in_parts(
     } else {
         tracing::info!("copying {} in {} parts: {ranges}", item.source, parts.len());
     }
-    let pieces = copy_parts(run, parts, connections, done, recorder).await?;
+    let pieces = copy_parts(run, parts, connections, done, recorder, true).await?;
     Ok((
         FileTimes {
             open,
@@ -383,8 +400,19 @@ async fn still_matches(run: &Copying<'_>, part: Part) -> Part {
 /// [`copy_parts`], which may move the end back for a connection joining late.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Span {
+    start: u64,
     at: u64,
     end: u64,
+}
+
+impl Span {
+    fn progress(&self) -> PartProgress {
+        PartProgress {
+            start: self.start,
+            at: self.at,
+            end: self.end,
+        }
+    }
 }
 
 /// The part to halve for a connection joining late: the one with the most left, if
@@ -418,6 +446,8 @@ fn split_point(spans: &[Span], min_part: u64) -> Option<(usize, u64)> {
 /// # Arguments
 ///
 /// * `done_before` - Bytes of the file already copied, where its progress starts
+/// * `show_parts` - Report where the parts are ([`TransferEvent::Parts`]): at the
+///   start, with progress, after each split and at the end
 ///
 /// # Returns
 ///
@@ -432,6 +462,7 @@ async fn copy_parts(
     connections: Connections<'_>,
     done_before: u64,
     recorder: Option<&Recorder<'_>>,
+    show_parts: bool,
 ) -> Result<Vec<Piece>, Unfinished> {
     let Connections {
         own,
@@ -439,12 +470,6 @@ async fn copy_parts(
         spare,
         min_part,
     } = connections;
-    let progress = Progress {
-        id: run.item.id,
-        done: AtomicU64::new(done_before),
-        reported: Mutex::new(Instant::now()),
-        sink: run.sink,
-    };
     let extra = Mutex::new(extra);
     // When any connection's place is held back, the whole file steps back.
     let held = || {
@@ -458,11 +483,20 @@ async fn copy_parts(
     let spans: Vec<Span> = parts
         .iter()
         .map(|part| Span {
+            start: part.start,
             at: part.at(),
             end: part.end,
         })
         .collect();
     let spans = Mutex::new(spans);
+    let progress = Progress {
+        id: run.item.id,
+        done: AtomicU64::new(done_before),
+        reported: Mutex::new(Instant::now()),
+        sink: run.sink,
+        spans: show_parts.then_some(&spans),
+    };
+    progress.report_parts();
     let mut pieces = Vec::new();
     let mut waiting = VecDeque::new();
     for (index, part) in parts.into_iter().enumerate() {
@@ -485,9 +519,9 @@ async fn copy_parts(
         loop {
             let connections = 1 + extra.lock().map_or(0, |extra| extra.len());
             if running.len() < connections {
-                let next = waiting
-                    .pop_front()
-                    .or_else(|| join_late(run, &spans, min_part, recorder));
+                let next = waiting.pop_front().or_else(|| {
+                    join_late(run, &spans, min_part, recorder).inspect(|_| progress.report_parts())
+                });
                 if let Some((index, part)) = next {
                     running.push(copy_part(
                         run, index, part, &spans, &held, &progress, recorder,
@@ -534,6 +568,7 @@ async fn copy_parts(
         id: run.item.id,
         done,
     });
+    progress.report_parts();
     Ok(pieces)
 }
 
@@ -553,7 +588,7 @@ fn join_late(
     let mut spans = spans.lock().ok()?;
     let (index, at) = split_point(&spans, min_part)?;
     let end = std::mem::replace(&mut spans[index].end, at);
-    spans.push(Span { at, end });
+    spans.push(Span { start: at, at, end });
     if let Some(recorder) = recorder {
         recorder.split(index, at);
     }
@@ -587,7 +622,7 @@ pub(super) async fn copy_again(
         );
         let part = vec![Part::new(range)];
         let own = Connections::own(place);
-        let fresh = copy_parts(run, part, own, done_before, None).await?;
+        let fresh = copy_parts(run, part, own, done_before, None, false).await?;
         pieces.retain(|kept| (kept.start, kept.end) != range);
         pieces.extend(fresh);
     }
@@ -1004,7 +1039,9 @@ mod tests {
             .expect("events")
             .iter()
             .find_map(|event| match event {
-                TransferEvent::InParts { ranges, .. } => Some(ranges.clone()),
+                TransferEvent::Parts { parts, .. } => {
+                    Some(parts.iter().map(|part| (part.start, part.end)).collect())
+                }
                 _ => None,
             });
         assert_eq!(announced, Some(ranges));
@@ -1250,8 +1287,16 @@ mod tests {
     }
 
     /// Copy `setup`'s file as one part not started, over `connections`.
-    async fn one_part_over(setup: &Setup, connections: Connections<'_>) -> Vec<Piece> {
-        let (cancel, (sink, _)) = (CancelFlag::default(), keeping());
+    /// Copy the file in one part over `connections`.
+    ///
+    /// # Returns
+    ///
+    /// The pieces, and where the parts were each time they were reported
+    async fn one_part_over(
+        setup: &Setup,
+        connections: Connections<'_>,
+    ) -> (Vec<Piece>, Vec<Vec<PartProgress>>) {
+        let (cancel, (sink, events)) = (CancelFlag::default(), keeping());
         let run = setup.run(&cancel, &sink);
         let part = vec![Part::new((0, setup.item.size))];
         let Ok((_, pieces)) = copy_in_parts(&run, part, true, connections, None).await else {
@@ -1259,7 +1304,16 @@ mod tests {
         };
         assert_eq!(setup.copied(), setup.whole);
         assert!(cover_the_file(&pieces, setup.item.size).is_ok());
-        pieces
+        let reported = events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter_map(|event| match event {
+                TransferEvent::Parts { parts, .. } => Some(parts.clone()),
+                _ => None,
+            })
+            .collect();
+        (pieces, reported)
     }
 
     #[tokio::test]
@@ -1271,7 +1325,7 @@ mod tests {
             ..Connections::own(None)
         };
 
-        let pieces = one_part_over(&setup, connections).await;
+        let (pieces, reported) = one_part_over(&setup, connections).await;
 
         let mut found: Vec<(u64, u64)> = pieces
             .iter()
@@ -1279,6 +1333,17 @@ mod tests {
             .collect();
         found.sort_unstable();
         assert_eq!(found, [(0, 500_000), (500_000, 1_000_000)]);
+        // Shown as one part, then two as it splits (before any byte moves), both done
+        // at the end.
+        let part = |start, at, end| PartProgress { start, at, end };
+        assert_eq!(reported.first(), Some(&vec![part(0, 0, 1_000_000)]));
+        let split = vec![part(0, 0, 500_000), part(500_000, 500_000, 1_000_000)];
+        assert_eq!(reported.get(1), Some(&split), "{reported:?}");
+        let done = vec![
+            part(0, 500_000, 500_000),
+            part(500_000, 1_000_000, 1_000_000),
+        ];
+        assert_eq!(reported.last(), Some(&done));
     }
 
     #[tokio::test]
@@ -1291,7 +1356,7 @@ mod tests {
             ..Connections::own(None)
         };
 
-        let pieces = one_part_over(&setup, connections).await;
+        let (pieces, _) = one_part_over(&setup, connections).await;
 
         assert_eq!(pieces.len(), 2, "{pieces:?}");
         assert_eq!(spare.slots.available_permits(), 1, "given back");
@@ -1307,14 +1372,14 @@ mod tests {
             ..Connections::own(None)
         };
 
-        let pieces = one_part_over(&setup, connections).await;
+        let (pieces, _) = one_part_over(&setup, connections).await;
 
         assert_eq!(pieces.len(), 1, "{pieces:?}");
     }
 
     #[test]
     fn the_part_with_most_left_is_halved_only_into_halves_large_enough() {
-        let span = |at, end| Span { at, end };
+        let span = |at, end| Span { start: at, at, end };
         let spans = [span(0, 100), span(150, 1000), span(1000, 1000)];
         let chunk = CHUNK_BYTES as u64;
 

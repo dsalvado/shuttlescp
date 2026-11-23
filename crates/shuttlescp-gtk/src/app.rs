@@ -308,6 +308,10 @@ pub enum AppMsg {
     /// picture the transfer lists following it.
     #[cfg(debug_assertions)]
     GalleryFocusFirst,
+    /// Development aid for the UI gallery: show a made-up download in parts in the first
+    /// session's Queue, to picture its part bars.
+    #[cfg(debug_assertions)]
+    GalleryParts,
     /// The number of a session's transfers running, completed or failed changed.
     TransferCounts {
         session: SessionId,
@@ -823,6 +827,7 @@ impl SimpleComponent for App {
         if let Some(dir) = std::env::var_os(crate::ui_gallery::ENV_VAR) {
             let sender = sender.clone();
             let (demo_sender, focus_sender) = (sender.clone(), sender.clone());
+            let parts_sender = sender.clone();
             // With two servers named, the gallery also pictures a site-to-site session.
             if let Some(pair) = std::env::var_os(crate::ui_gallery::PAIR_VAR) {
                 crate::ui_gallery::connect_pair(&pair.to_string_lossy(), sender.clone());
@@ -833,6 +838,7 @@ impl SimpleComponent for App {
                 move || sender.input(AppMsg::ShowLogin),
                 move || demo_sender.input(AppMsg::GalleryDemo),
                 move || focus_sender.input(AppMsg::GalleryFocusFirst),
+                move || parts_sender.input(AppMsg::GalleryParts),
             );
         }
         // Development aid: record the user guide's clips (see `ui_clips`).
@@ -999,6 +1005,14 @@ impl SimpleComponent for App {
             AppMsg::BottomTabSwitched => self.session_follows_transfers(),
             #[cfg(debug_assertions)]
             AppMsg::GalleryFocusFirst => self.session_notebook.set_current_page(Some(0)),
+            #[cfg(debug_assertions)]
+            AppMsg::GalleryParts => {
+                if let Some(first) = self.sessions.first() {
+                    first
+                        .transfers
+                        .emit(crate::transfer_panel::TransferPanelMsg::GalleryParts);
+                }
+            }
             #[cfg(debug_assertions)]
             AppMsg::GalleryDemo => {
                 if let Some(first) = self.sessions.first_mut() {

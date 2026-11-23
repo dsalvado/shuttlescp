@@ -154,6 +154,17 @@ pub struct Job {
     pub split: bool,
 }
 
+/// Where one part of a file copied in parts has got to (see [`TransferEvent::Parts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartProgress {
+    /// Where the part starts in the file.
+    pub start: u64,
+    /// How far it has been copied: `start..at` is done.
+    pub at: u64,
+    /// Where it ends (moved back when a connection joining late takes its second half).
+    pub end: u64,
+}
+
 /// Whether and how copies are checked against their sources once made: by comparing
 /// SHA-256 checksums, computed by the servers themselves or on this computer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -514,6 +525,30 @@ pub struct PlanItem {
 }
 
 impl PlanItem {
+    /// Development aid: a file to show in the transfer list without planning a job (the
+    /// UI gallery). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub fn demo_file(id: usize, size: u64, source: SidePath, dest: SidePath) -> Self {
+        Self {
+            id,
+            parent: None,
+            name: source
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            kind: ItemKind::File,
+            size,
+            source,
+            dest,
+            existing: None,
+            modified: None,
+            existing_is_dir: false,
+            partial: 0,
+            mode: None,
+            is_link: false,
+        }
+    }
+
     /// Size and date of the source, for comparing with an existing copy.
     pub fn info(&self) -> FileInfo {
         FileInfo {
@@ -630,13 +665,15 @@ pub enum TransferEvent {
         /// Where the answer goes.
         reply: ConflictReply,
     },
-    /// A file is copied in parts, all at once: one for each of these byte ranges, which
-    /// cover it from start to end.
-    InParts {
+    /// A file is copied in parts, each over a connection of its own: where each part
+    /// has got to. Sent as the copy starts, with its progress, and when a connection
+    /// joining late takes the second half of a part (so there is one part more).
+    Parts {
         /// Item id.
         id: usize,
-        /// Each part's `start..end`.
-        ranges: Vec<(u64, u64)>,
+        /// The parts, which cover the file from start to end; in the order they were
+        /// made, not by position.
+        parts: Vec<PartProgress>,
     },
     /// A file continues an earlier, interrupted copy: its first `from` bytes were
     /// copied before (they count as done, but not towards the current speed).

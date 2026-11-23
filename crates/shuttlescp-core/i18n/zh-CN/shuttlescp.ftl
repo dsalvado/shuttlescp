@@ -606,6 +606,7 @@ verify-mismatch = 副本的校验和与原文件不同：副本与所复制的�
 verify-parts-mismatch = 重新复制后，副本中仍有部分与所复制的内容不一致
 verify-skipped = 已被用户跳过
 item-verifying = 正在验证…
+item-checking-parts = 正在验证分段…
 item-verified = { $size } · 已验证
 item-not-verified = { $size } · 未验证
 item-not-verified-large = { $size } · 未验证（大文件）

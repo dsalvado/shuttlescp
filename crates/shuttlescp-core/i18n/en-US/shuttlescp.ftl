@@ -808,6 +808,7 @@ verify-mismatch = the copy's checksum differs from the original's: the copy is n
 verify-parts-mismatch = pieces of the copy still differ from what was copied, after copying them again
 verify-skipped = skipped by the user
 item-verifying = Verifying…
+item-checking-parts = Checking parts…
 item-verified = { $size } · verified
 item-not-verified = { $size } · not verified
 item-not-verified-large = { $size } · not verified (large file)

@@ -668,6 +668,7 @@ verify-mismatch = la somme de contrôle de la copie diffère de celle de l'origi
 verify-parts-mismatch = des morceaux de la copie diffèrent encore de ce qui a été copié, même après les avoir copiés à nouveau
 verify-skipped = ignorée par l'utilisateur
 item-verifying = Vérification…
+item-checking-parts = Vérification des parties…
 item-verified = { $size } · vérifié
 item-not-verified = { $size } · non vérifié
 item-not-verified-large = { $size } · non vérifié (gros fichier)

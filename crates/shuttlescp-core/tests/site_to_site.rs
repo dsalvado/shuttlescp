@@ -1552,7 +1552,12 @@ async fn a_large_file_from_ftp_is_copied_in_parts() {
         None,
         first,
         move |event| match event {
-            TransferEvent::InParts { ranges, .. } => *seen.lock().expect("lock") = Some(ranges),
+            TransferEvent::Parts { parts, .. } => {
+                // The parts as they started.
+                let ranges: Vec<(u64, u64)> =
+                    parts.iter().map(|part| (part.start, part.end)).collect();
+                seen.lock().expect("lock").get_or_insert(ranges);
+            }
             TransferEvent::Progress { done, .. } if done > (2 << 30) / 5 => pausing.pause(),
             _ => {}
         },
