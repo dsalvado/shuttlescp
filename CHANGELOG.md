@@ -7,6 +7,17 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- Large files download from FTP servers in parts, each over its own connection, which is
+  much faster on servers that limit each connection's speed. Right-click a file of 1 GiB
+  or more and choose "Download to this computer in Parts" (or "Copy to … in Parts", to an
+  SFTP server). The parts share the transfer limit; a connection that frees up joins in,
+  taking half of the part with the most left. The file's bar shows a piece per part.
+- A copy in parts is always checked, part by part, against checksums taken as it arrived;
+  a part that differs is copied again. A paused or interrupted copy in parts continues
+  where each part was, also after ShuttleSCP restarts.
+
 ## [0.27.2] - 2026-11-22
 
 ### Fixed
