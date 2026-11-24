@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.27.3] - 2026-11-24
+
 ### Fixed
 
 - A dialog that opens by itself, like the offer of a new version, no longer hides behind
@@ -683,7 +685,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.27.2...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.27.3...HEAD
+[0.27.3]: https://github.com/dsalvado/shuttlescp/compare/v0.27.2...v0.27.3
 [0.27.2]: https://github.com/dsalvado/shuttlescp/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/dsalvado/shuttlescp/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/dsalvado/shuttlescp/compare/v0.26.0...v0.27.0
