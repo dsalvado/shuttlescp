@@ -12,6 +12,38 @@ pub const SPACING: i32 = 6;
 /// Space between the window edge and the contents, in pixels.
 const MARGIN: i32 = 12;
 
+/// The window a new dialog over `parent` must sit on: the last of the modal windows
+/// already open over it (such as the Login dialog), or `parent` itself if there are none.
+///
+/// Only the newest modal window takes input. Placed on `parent` beside an open modal
+/// window, a dialog that pops up by itself (like the update offer) can end up hidden
+/// behind it, while the window in front no longer answers: the app seems frozen.
+/// Stacked on top of the open one instead, it is always in front.
+///
+/// # Arguments
+///
+/// * `parent` - The window the dialog was asked to stay above
+pub fn topmost(parent: &gtk::Window) -> gtk::Window {
+    let windows: Vec<gtk::Window> = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+        .collect();
+    let mut top = parent.clone();
+    // Each step goes one window higher; the bound stops a loop of windows.
+    for _ in 0..windows.len() {
+        let above = windows.iter().find(|window| {
+            window.is_visible()
+                && window.is_modal()
+                && window.transient_for().as_ref() == Some(&top)
+        });
+        match above {
+            Some(window) => top = window.clone(),
+            None => break,
+        }
+    }
+    top
+}
+
 /// A dialog window under construction: fill `content` and `buttons`, then present it.
 pub struct Dialog {
     /// The window.
@@ -32,7 +64,7 @@ impl Dialog {
     pub fn new(parent: &gtk::Window, title: &str) -> Self {
         let window = gtk::Window::builder()
             .title(title)
-            .transient_for(parent)
+            .transient_for(&topmost(parent))
             .modal(true)
             .resizable(false)
             .build();

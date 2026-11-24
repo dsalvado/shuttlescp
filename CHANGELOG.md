@@ -7,6 +7,13 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Fixed
+
+- A dialog that opens by itself, like the offer of a new version, no longer hides behind
+  the Login dialog. Only the newer window took input, so the Login dialog could not be
+  closed and the app seemed frozen. A new dialog now opens on top of any dialog already
+  open.
+
 ## [0.27.2] - 2026-11-22
 
 ### Fixed
