@@ -183,7 +183,7 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
         dialog.window.present();
         return;
     }
-    let Some((asset, target)) = self_update(&manifest) else {
+    let Some((asset, place)) = self_update(&manifest) else {
         // E.g. built from source on Linux: nothing here can be replaced.
         dialog
             .content
@@ -225,7 +225,7 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
             status.set_label(&tr!("update-downloading"));
             start_download(
                 asset.clone(),
-                target.clone(),
+                place.clone(),
                 Widgets {
                     window: window.clone(),
                     bar: bar.clone(),
@@ -251,6 +251,15 @@ pub fn offer(parent: &gtk::Window, manifest: Manifest, on_installed: impl Fn(Pat
     install_button.grab_focus();
 }
 
+/// Where an update goes.
+#[derive(Clone)]
+struct Place {
+    /// The new version's file.
+    target: PathBuf,
+    /// The file it takes over from: the running AppImage, or `target` itself.
+    replaces: PathBuf,
+}
+
 /// The parts of the update dialog a download updates.
 struct Widgets {
     window: gtk::Window,
@@ -260,15 +269,15 @@ struct Widgets {
     install: gtk::Button,
 }
 
-/// Download the update on a worker thread, showing its progress, and put it at `target`.
+/// Download the update on a worker thread, showing its progress, and put it in `place`.
 fn start_download(
     asset: update::Asset,
-    target: PathBuf,
+    place: Place,
     widgets: Widgets,
     cancel: Arc<AtomicBool>,
     on_installed: Rc<dyn Fn(PathBuf)>,
 ) {
-    let Some(dir) = target.parent().map(std::path::Path::to_path_buf) else {
+    let Some(dir) = place.target.parent().map(std::path::Path::to_path_buf) else {
         return;
     };
     let (sender, news) = mpsc::channel();
@@ -298,7 +307,7 @@ fn start_download(
                     ));
                 }
                 Download::Done(result) => {
-                    finish(result, &target, &widgets, on_installed.as_ref());
+                    finish(result, &place, &widgets, on_installed.as_ref());
                     return glib::ControlFlow::Break;
                 }
             }
@@ -310,15 +319,16 @@ fn start_download(
 /// The download ended: put it in place and restart, or say what went wrong.
 fn finish(
     result: Result<PathBuf, String>,
-    target: &std::path::Path,
+    place: &Place,
     widgets: &Widgets,
     on_installed: &dyn Fn(PathBuf),
 ) {
-    let installed = result.and_then(|downloaded| update::install(&downloaded, target));
+    let installed =
+        result.and_then(|downloaded| update::install(&downloaded, &place.target, &place.replaces));
     match installed {
         Ok(()) => {
             widgets.window.close();
-            on_installed(target.to_path_buf());
+            on_installed(place.target.clone());
         }
         // Closed during the download: nothing more to show.
         Err(_) if !widgets.window.is_visible() => {}
@@ -343,11 +353,12 @@ fn finish(
 }
 
 /// What this copy of the app can update itself with: the release's file and where the
-/// download goes. On Linux that is the running AppImage, replaced in place; on Windows
+/// download goes. On Linux that replaces the running AppImage, under the new release's
+/// name if it had a release's name (see [`update::appimage_target`]); on Windows
 /// the installer, in a temporary folder, which runs once the app has closed. `None`
 /// when the app cannot update itself (a build from source on Linux; a release without
 /// a Windows installer).
-fn self_update(manifest: &Manifest) -> Option<(update::Asset, PathBuf)> {
+fn self_update(manifest: &Manifest) -> Option<(update::Asset, Place)> {
     if cfg!(windows) {
         let asset = manifest.windows.clone()?;
         // The name comes from the signed manifest; only its last part is used.
@@ -356,9 +367,14 @@ fn self_update(manifest: &Manifest) -> Option<(update::Asset, PathBuf)> {
         std::fs::create_dir_all(&dir)
             .inspect_err(|error| tracing::warn!("cannot create {}: {error}", dir.display()))
             .ok()?;
-        return Some((asset, dir.join(name)));
+        let target = dir.join(name);
+        let replaces = target.clone();
+        return Some((asset, Place { target, replaces }));
     }
-    Some((manifest.appimage.clone(), update::running_appimage()?))
+    let asset = manifest.appimage.clone();
+    let replaces = update::running_appimage()?;
+    let target = update::appimage_target(&replaces, &asset.name);
+    Some((asset, Place { target, replaces }))
 }
 
 /// Open a web page in the desktop's browser.
