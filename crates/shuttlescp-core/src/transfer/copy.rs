@@ -930,6 +930,8 @@ async fn copy_file_in_parts(
             .map(parts::Part::new)
             .collect()
     });
+    // Copied before a restart: left out of this run's speed in the log.
+    let done_before = parts.iter().map(parts::Part::done).sum();
     let recorder = parts::Recorder::new(&spare.records, item, &parts);
     let connections = parts::Connections {
         own: place,
@@ -971,7 +973,19 @@ async fn copy_file_in_parts(
         }
     }
     recorder.forget();
-    put_in_place(item, src, dst, &copy, 0, took, finish, cancel, sink, times).await
+    put_in_place(
+        item,
+        src,
+        dst,
+        &copy,
+        done_before,
+        took,
+        finish,
+        cancel,
+        sink,
+        times,
+    )
+    .await
 }
 
 /// End a copy in parts that did not complete, for the reason `unfinished`. Paused,
