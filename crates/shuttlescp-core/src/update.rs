@@ -206,18 +206,57 @@ pub fn download(
     result.map(|()| target)
 }
 
-/// Replace `target` (the running AppImage) with the downloaded file, in one rename.
+/// Put the downloaded file in place as `target`, in one rename, and remove `replaces`
+/// (the running AppImage) if it had another name.
+///
+/// # Arguments
+///
+/// * `downloaded` - The checked download, from [`download`]
+/// * `target` - Where the new version goes (see [`appimage_target`])
+/// * `replaces` - The file it takes over from; the same as `target` when the name stays
 ///
 /// # Errors
 ///
-/// Returns a message if the file cannot be replaced (e.g. its folder is read-only)
-pub fn install(downloaded: &Path, target: &Path) -> Result<(), String> {
+/// Returns a message if the file cannot be put in place (e.g. its folder is read-only);
+/// the old version is then left as it was
+pub fn install(downloaded: &Path, target: &Path, replaces: &Path) -> Result<(), String> {
     std::fs::rename(downloaded, target).map_err(|error| {
         let _ = std::fs::remove_file(downloaded);
         crate::i18n::cannot("replace", target.display(), &error)
     })?;
     tracing::info!("installed the update as {}", target.display());
+    if replaces != target {
+        // The new version is in place either way: an old file left behind only costs space.
+        match std::fs::remove_file(replaces) {
+            Ok(()) => tracing::info!("removed the old version {}", replaces.display()),
+            Err(error) => tracing::warn!("cannot remove {}: {error}", replaces.display()),
+        }
+    }
     Ok(())
+}
+
+/// Where an update of the AppImage `running` goes. A file named the way releases are
+/// (`ShuttleSCP-0.18.0-x86_64.AppImage`) takes the new release's name, so the name
+/// keeps telling the version; a file the user renamed keeps its name.
+///
+/// # Arguments
+///
+/// * `running` - The running AppImage
+/// * `asset_name` - The new release's file name, from the signed manifest
+pub fn appimage_target(running: &Path, asset_name: &str) -> PathBuf {
+    // Only the last part of the manifest's name is used, so it stays in the same folder.
+    let new_name = Path::new(asset_name).file_name();
+    let release_named = running
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("ShuttleSCP-"))
+        .filter(|rest| rest.ends_with(".AppImage"))
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(version, _)| parse_version(version).is_ok());
+    match (release_named, new_name) {
+        (true, Some(new_name)) => running.with_file_name(new_name),
+        _ => running.to_path_buf(),
+    }
 }
 
 /// The AppImage file this program runs from, if it was started from one.
@@ -511,10 +550,65 @@ mod tests {
         std::fs::write(&old, b"old").expect("write");
         std::fs::write(&new, b"new").expect("write");
 
-        install(&new, &old).expect("install");
+        install(&new, &old, &old).expect("install");
 
         assert_eq!(std::fs::read(&old).expect("read"), b"new");
         assert!(!new.exists());
+    }
+
+    #[test]
+    fn install_under_a_new_name_removes_the_old_version() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let old = temp.path().join("ShuttleSCP-0.18.0-x86_64.AppImage");
+        let target = temp.path().join("ShuttleSCP-0.27.2-x86_64.AppImage");
+        let new = temp
+            .path()
+            .join(".ShuttleSCP-0.27.2-x86_64.AppImage.download");
+        std::fs::write(&old, b"old").expect("write");
+        std::fs::write(&new, b"new").expect("write");
+
+        install(&new, &target, &old).expect("install");
+
+        assert_eq!(std::fs::read(&target).expect("read"), b"new");
+        assert!(!old.exists());
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn a_release_named_appimage_takes_the_new_name() {
+        let running = Path::new("/home/a/Applications/ShuttleSCP-0.18.0-x86_64.AppImage");
+
+        let target = appimage_target(running, "ShuttleSCP-0.27.2-x86_64.AppImage");
+
+        assert_eq!(
+            target,
+            Path::new("/home/a/Applications/ShuttleSCP-0.27.2-x86_64.AppImage")
+        );
+    }
+
+    #[test]
+    fn a_renamed_appimage_keeps_its_name() {
+        for name in [
+            "shuttlescp.AppImage",
+            "ShuttleSCP.AppImage",
+            "ShuttleSCP-latest-x86_64.AppImage",
+            "ShuttleSCP-0.18.0-x86_64",
+        ] {
+            let running = Path::new("/opt").join(name);
+
+            let target = appimage_target(&running, "ShuttleSCP-0.27.2-x86_64.AppImage");
+
+            assert_eq!(target, running, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_manifest_name_cannot_leave_the_folder() {
+        let running = Path::new("/opt/ShuttleSCP-0.18.0-x86_64.AppImage");
+
+        let target = appimage_target(running, "../../etc/ShuttleSCP-0.27.2-x86_64.AppImage");
+
+        assert_eq!(target, Path::new("/opt/ShuttleSCP-0.27.2-x86_64.AppImage"));
     }
 
     #[test]

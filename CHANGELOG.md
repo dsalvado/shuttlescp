@@ -12,11 +12,24 @@ becomes its release notes on GitHub.
 - Large files can be copied in parts, all at the same time: from FTP servers, which often
   limit each connection's speed, and uploads to SFTP servers, where one file uses only
   part of the network. Right-click a file of 1 GiB or more and choose "Multi-part
-  Download to this computer" (or "Multi-part Upload to …", "Multi-part Copy to …"). The parts share the transfer limit; a connection that frees up joins in,
-  taking half of the part with the most left. The file's bar shows a piece per part.
+  Download to this computer" (or "Multi-part Upload to …", "Multi-part Copy to …"). The
+  parts share the transfer limit; a connection that frees up joins in, taking half of the
+  part with the most left. The file's bar shows a piece per part.
 - A copy in parts is always checked, part by part, against checksums taken as it arrived;
   a part that differs is copied again. A paused or interrupted copy in parts continues
   where each part was, also after ShuttleSCP restarts.
+
+## [0.27.3] - 2026-11-24
+
+### Fixed
+
+- A dialog that opens by itself, like the offer of a new version, no longer hides behind
+  the Login dialog. Only the newer window took input, so the Login dialog could not be
+  closed and the app seemed frozen. A new dialog now opens on top of any dialog already
+  open.
+- An updated AppImage now takes the new version's name, such as
+  `ShuttleSCP-0.27.3-x86_64.AppImage`, and the old file is removed. It used to keep the
+  name of the first version installed. An AppImage you renamed keeps your name.
 
 ## [0.27.2] - 2026-11-22
 
@@ -684,7 +697,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.27.2...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.27.3...HEAD
+[0.27.3]: https://github.com/dsalvado/shuttlescp/compare/v0.27.2...v0.27.3
 [0.27.2]: https://github.com/dsalvado/shuttlescp/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/dsalvado/shuttlescp/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/dsalvado/shuttlescp/compare/v0.26.0...v0.27.0
