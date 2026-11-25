@@ -1627,21 +1627,11 @@ async fn a_large_file_from_ftp_is_copied_in_parts() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
 async fn a_large_file_uploaded_to_sftp_is_copied_in_parts() {
-    use std::io::Write;
-    // Arrange: just over 1 GiB here, in chunks that keep the pattern's place.
+    // Arrange
     let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
     let remote = server.connect().await;
     let temp = tempfile::tempdir().expect("temp dir");
-    let local = temp.path().join("big-up.bin");
-    let chunk = pattern(251 * 4096);
-    let mut file = std::io::BufWriter::new(std::fs::File::create(&local).expect("create"));
-    let mut size = 0;
-    while size < (1 << 30) {
-        file.write_all(&chunk).expect("write");
-        size += chunk.len();
-    }
-    file.flush().expect("flush");
-    drop(file);
+    let local = big_local_file(temp.path(), "big-up.bin");
     let mut upload = job(
         JobKind::Copy,
         Side::Local,
@@ -1705,5 +1695,93 @@ async fn a_large_file_uploaded_to_sftp_is_copied_in_parts() {
         SidePath::Remote(server.dir.clone()),
     );
     let (removed, _) = run_job(remove, &remote, None).await;
+    assert!(removed.is_complete(), "clean up: {removed:?}");
+}
+
+/// Write a file of just over 1 GiB, large enough to copy in parts, in chunks that keep
+/// the pattern's place.
+fn big_local_file(dir: &Path, name: &str) -> PathBuf {
+    use std::io::Write;
+    let path = dir.join(name);
+    let chunk = pattern(251 * 4096);
+    let mut file = std::io::BufWriter::new(std::fs::File::create(&path).expect("create"));
+    let mut size = 0;
+    while size < (1 << 30) {
+        file.write_all(&chunk).expect("write");
+        size += chunk.len();
+    }
+    file.flush().expect("flush");
+    path
+}
+
+/// Asked to copy in parts with no connection free, an upload starts as one part; places
+/// freed later join in, each taking half of the part with the most left. It comes out
+/// whole.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn connections_freed_later_join_a_copy_started_as_one_part() {
+    // Arrange: one place only; 3 s in, four.
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = big_local_file(temp.path(), "joined-up.bin");
+    let mut upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    upload.split = true;
+    let places = FilePlaces::new(Some(1));
+    let limits = Arc::clone(&places);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        limits.set_limit(Some(4));
+    });
+
+    // Act: the number of parts in each report.
+    let seen = Arc::new(Mutex::new((Vec::new(), Vec::new())));
+    let events = Arc::clone(&seen);
+    let cancel = CancelFlag::default().with_places(Arc::clone(&places));
+    let summary = run(upload, Some(remote.clone()), None, cancel, move |event| {
+        let mut events = events.lock().expect("lock");
+        match event {
+            TransferEvent::Parts { parts, .. } => {
+                if events.0.last() != Some(&parts.len()) {
+                    events.0.push(parts.len());
+                }
+            }
+            TransferEvent::ItemFinished {
+                outcome: ItemOutcome::Failed(error),
+                ..
+            } => events.1.push(error),
+            _ => {}
+        }
+    })
+    .await;
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![SidePath::Remote(server.dir.join("joined-up.bin"))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("checksum");
+    let there = remote.sha256(&server.dir.join("joined-up.bin")).await;
+    let (removed, _) = run_job(remove, &remote, None).await;
+
+    // Assert: one part first, more once places were freed; whole.
+    let (counts, failures) = seen.lock().expect("lock").clone();
+    assert!(
+        summary.is_complete(),
+        "upload: {summary:?}, failed: {failures:?}"
+    );
+    assert_eq!(counts.first(), Some(&1), "started as one part: {counts:?}");
+    assert!(
+        counts.iter().any(|&count| count > 1),
+        "freed places joined in: {counts:?}"
+    );
+    assert_eq!(there.expect("checksum on the server"), here);
     assert!(removed.is_complete(), "clean up: {removed:?}");
 }

@@ -1,7 +1,7 @@
 //! Copying one large file in parts: byte ranges copied at the same time, each over a
 //! connection of its own, into one copy (`name.fileparts`, see
 //! [`super::super::PARTS_SUFFIX`]). Worth it where servers limit each connection's
-//! speed (see `Remote::reads_faster_in_parts`).
+//! speed, or one file uses only part of the network (see [`faster_in_parts`]).
 //!
 //! The copy is set to its full size first, and every part writes its range in place
 //! ([`Endpoint::open_write_range`]), so nothing is joined afterwards. Each part hashes

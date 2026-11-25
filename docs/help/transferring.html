@@ -162,7 +162,8 @@ menu.</p>
   <li>The parts use the places of <a href="#limit">Files at once</a>: a file in parts never
     opens more connections than the limit allows, and each part is at least 256&nbsp;MiB.
     Whole files waiting go first. When a connection frees up, it joins in, taking the second
-    half of the part with the most left.</li>
+    half of the part with the most left; with none free at the start, the file starts as
+    one part and is split as connections free up.</li>
   <li>The file's bar is cut into a piece per part, as wide as its share of the file: solid
     when done, striped while it moves.</li>
   <li>While it is copied it is called <code>name.fileparts</code>. Pausing, a dropped

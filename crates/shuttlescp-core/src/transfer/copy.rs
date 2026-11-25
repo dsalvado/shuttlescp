@@ -701,19 +701,21 @@ async fn copy_file(
             |parts| parts.iter().filter(|part| !part.is_done()).count(),
         );
         let extra = spare.take(wanted.saturating_sub(1));
-        // A copy in parts under way continues in parts, even over one connection.
-        if resumed.is_some() || !extra.is_empty() {
-            let parts = PartsCopy {
-                place,
-                extra,
-                resumed,
-                spare,
-            };
-            return copy_file_in_parts(item, src, dst, parts, &finish, cancel, sink, times).await;
+        // With no connection free yet, it starts as one part over its own: connections
+        // freed later join in, each taking half of the part with the most left.
+        if extra.is_empty() && resumed.is_none() {
+            tracing::debug!(
+                "no connection free yet to copy {} in parts: starting with one part",
+                item.source
+            );
         }
-        tracing::debug!("no connection free to copy {} in parts", item.source);
-        // Copied whole after all: a copy in parts left without a record is no use.
-        let _ = dst.remove_file(&parts_path(&item.dest)).await;
+        let parts = PartsCopy {
+            place,
+            extra,
+            resumed,
+            spare,
+        };
+        return copy_file_in_parts(item, src, dst, parts, &finish, cancel, sink, times).await;
     }
     let partial = partial_path(&item.dest);
     let with_server = matches!(src, Endpoint::Remote(_)) || matches!(dst, Endpoint::Remote(_));
