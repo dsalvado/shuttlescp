@@ -123,6 +123,7 @@ fn parse_server(text: &str) -> Option<Server> {
             passphrase_saved: false,
         },
         files_at_once: sites::DEFAULT_FILES_AT_ONCE,
+        parts_per_file: sites::DEFAULT_PARTS_PER_FILE,
         alias: alias.to_owned(),
         description: String::new(),
         folder: String::new(),

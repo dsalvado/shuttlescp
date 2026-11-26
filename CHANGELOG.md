@@ -7,6 +7,13 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- A site's "Parts per file" (under Advanced in the Login dialog, usually 8): how many
+  connections a Multi-part copy may use, apart from "Files at once", which counts whole
+  files. It used to be held to Files at once (usually 4). A server that refuses that many
+  connections gets fewer; the other parts wait for one.
+
 ## [0.28.1] - 2026-11-26
 
 ### Security

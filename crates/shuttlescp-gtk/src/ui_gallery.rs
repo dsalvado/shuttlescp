@@ -494,6 +494,7 @@ pub fn connect_pair(pair: &str, sender: relm4::ComponentSender<crate::app::App>)
                 passphrase_saved: false,
             },
             files_at_once: shuttlescp_core::sites::DEFAULT_FILES_AT_ONCE,
+            parts_per_file: shuttlescp_core::sites::DEFAULT_PARTS_PER_FILE,
             alias: String::new(),
             description: String::new(),
             folder: String::new(),

@@ -73,6 +73,15 @@ impl Endpoint {
         }
     }
 
+    /// Most connections one file copied in parts may use to or from here: the server's
+    /// setting, or `None` for this computer.
+    pub(super) fn parts_per_file(&self) -> Option<usize> {
+        match self {
+            Self::Local => None,
+            Self::Remote(remote) => Some(remote.parts_per_file()),
+        }
+    }
+
     /// Details of `path`; `follow` describes what a symbolic link points to instead of
     /// the link itself.
     pub(super) async fn stat(&self, path: &SidePath, follow: bool) -> Result<Node, String> {

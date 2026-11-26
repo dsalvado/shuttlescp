@@ -255,6 +255,8 @@ struct RemoteInner {
     backend: Backend,
     /// The site's [`Site::files_at_once`].
     files_at_once: usize,
+    /// The site's [`Site::parts_per_file`].
+    parts_per_file: usize,
     /// The connection for transfers, once opened (see [`Remote::for_transfers`]).
     transfers: tokio::sync::OnceCell<Remote>,
 }
@@ -318,6 +320,7 @@ impl Remote {
                     home: self.0.home.clone(),
                     backend: Backend::Sftp(Box::new(twin)),
                     files_at_once: self.0.files_at_once,
+                    parts_per_file: self.0.parts_per_file,
                     transfers: tokio::sync::OnceCell::new(),
                 })))
             })
@@ -339,6 +342,12 @@ impl Remote {
     /// setting).
     pub fn files_at_once(&self) -> usize {
         self.0.files_at_once
+    }
+
+    /// Most connections one file copied in parts may use to or from this server (the
+    /// site's setting).
+    pub fn parts_per_file(&self) -> usize {
+        self.0.parts_per_file
     }
 
     /// List a folder on the server, sorted like local listings (folders first). A
@@ -741,6 +750,7 @@ pub async fn connect(
         home,
         backend,
         files_at_once: site.files_at_once(),
+        parts_per_file: site.parts_per_file(),
         transfers: tokio::sync::OnceCell::new(),
     })))
 }

@@ -100,6 +100,10 @@ pub struct Site {
     /// [`Site::files_at_once`].
     #[serde(default = "default_files_at_once")]
     pub files_at_once: u8,
+    /// Most connections one file copied in parts (a Multi-part copy) may use, apart from
+    /// [`Site::files_at_once`], which counts whole files. See [`Site::parts_per_file`].
+    #[serde(default = "default_parts_per_file")]
+    pub parts_per_file: u8,
     /// The alias the user gave the site; empty shows [`Site::display_name`] instead (see
     /// [`Site::label`]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -147,6 +151,17 @@ pub const MAX_FILES_AT_ONCE: u8 = 10;
 
 pub(crate) fn default_files_at_once() -> u8 {
     DEFAULT_FILES_AT_ONCE
+}
+
+/// Most parts a file copied in parts uses for a site that does not say: servers that
+/// limit each connection's speed are measured faster with more (an FTP seedbox: about
+/// 0.85 MiB/s whole, 6.7 MiB/s in 4 parts).
+pub const DEFAULT_PARTS_PER_FILE: u8 = 8;
+/// Most parts per file a site may be set to.
+pub const MAX_PARTS_PER_FILE: u8 = 16;
+
+pub(crate) fn default_parts_per_file() -> u8 {
+    DEFAULT_PARTS_PER_FILE
 }
 
 /// Logging in to an SSH server (SFTP and SCP) with keys rather than, or before, a
@@ -286,6 +301,12 @@ impl Site {
     /// [`MAX_FILES_AT_ONCE`] whatever the settings file says.
     pub fn files_at_once(&self) -> usize {
         usize::from(self.files_at_once.clamp(1, MAX_FILES_AT_ONCE))
+    }
+
+    /// Most connections one file copied in parts may use to or from this server, kept
+    /// within 1 and [`MAX_PARTS_PER_FILE`] whatever the settings file says.
+    pub fn parts_per_file(&self) -> usize {
+        usize::from(self.parts_per_file.clamp(1, MAX_PARTS_PER_FILE))
     }
 
     /// The usual port for this site's protocol (and, for FTP, its encryption).
@@ -585,6 +606,7 @@ mod tests {
             ftp: crate::sites::FtpOptions::default(),
             ssh: SshAuth::default(),
             files_at_once: DEFAULT_FILES_AT_ONCE,
+            parts_per_file: DEFAULT_PARTS_PER_FILE,
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
@@ -731,6 +753,23 @@ mod tests {
         assert_eq!(edited.files_at_once(), 1);
         edited.files_at_once = 99;
         assert_eq!(edited.files_at_once(), usize::from(MAX_FILES_AT_ONCE));
+    }
+
+    #[test]
+    fn parts_per_file_defaults_for_older_sites_and_stays_in_range() {
+        // A site saved before the setting existed.
+        let old: Site = serde_json::from_str(
+            r#"{"protocol":"ftp","host":"example.com","port":21,"user":"me"}"#,
+        )
+        .expect("read an older site");
+        assert_eq!(old.parts_per_file(), usize::from(DEFAULT_PARTS_PER_FILE));
+
+        // Out of range in a hand-edited file: kept within 1 and the maximum.
+        let mut edited = site("me", 21);
+        edited.parts_per_file = 0;
+        assert_eq!(edited.parts_per_file(), 1);
+        edited.parts_per_file = 99;
+        assert_eq!(edited.parts_per_file(), usize::from(MAX_PARTS_PER_FILE));
     }
 
     #[test]

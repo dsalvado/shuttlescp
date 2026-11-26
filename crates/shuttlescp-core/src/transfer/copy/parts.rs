@@ -302,6 +302,8 @@ pub(super) struct Connections<'a> {
     /// The job's room to spare, to take connections that free up later; `None` to use
     /// only these.
     pub(super) spare: Option<&'a Spare>,
+    /// Most connections it may use, its own included; none more are taken late.
+    pub(super) max: usize,
     /// A part is split for a connection joining late only if each half is at least
     /// this ([`MIN_PART`], smaller in tests).
     pub(super) min_part: u64,
@@ -314,6 +316,7 @@ impl Connections<'_> {
             own: place,
             extra: Vec::new(),
             spare: None,
+            max: 1,
             min_part: u64::MAX,
         }
     }
@@ -501,6 +504,7 @@ async fn copy_parts(
         own,
         extra,
         spare,
+        max,
         min_part,
     } = connections;
     let extra = Mutex::new(extra);
@@ -570,6 +574,7 @@ async fn copy_parts(
                     continue;
                 }
             } else if !gave_back
+                && connections < max
                 && waiting.is_empty()
                 && can_split()
                 && let Some(spare) = spare
@@ -1313,6 +1318,7 @@ mod tests {
     fn spare(free: usize, waiting: usize) -> Spare {
         Spare {
             slots: Arc::new(tokio::sync::Semaphore::new(free)),
+            max_parts: usize::MAX,
             ticket: None,
             records: Arc::new(SplitRecords::in_memory()),
             files_waiting: Arc::new(std::sync::atomic::AtomicUsize::new(waiting)),
@@ -1385,6 +1391,7 @@ mod tests {
         let spare = spare(1, 0);
         let connections = Connections {
             spare: Some(&spare),
+            max: 2,
             min_part: 1,
             ..Connections::own(None)
         };
@@ -1396,11 +1403,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_file_in_parts_takes_no_more_connections_than_it_may_use() {
+        // Two connections free in the job, but the file may use two in all. Large enough
+        // for both halves to be halved again.
+        let setup = Setup::new(4_000_000);
+        let spare = spare(2, 0);
+        let connections = Connections {
+            spare: Some(&spare),
+            max: 2,
+            min_part: 1,
+            ..Connections::own(None)
+        };
+
+        let (pieces, _) = one_part_over(&setup, connections).await;
+
+        assert_eq!(pieces.len(), 2, "one joined, not two: {pieces:?}");
+        assert_eq!(spare.slots.available_permits(), 2, "given back");
+    }
+
+    #[tokio::test]
     async fn whole_files_waiting_go_before_joining_late() {
         let setup = Setup::new(1_000_000);
         let spare = spare(1, 1);
         let connections = Connections {
             spare: Some(&spare),
+            max: 2,
             min_part: 1,
             ..Connections::own(None)
         };

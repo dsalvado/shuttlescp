@@ -144,7 +144,8 @@ partial copies when there is room.</p>
 <p>To jump the queue, right-click a transfer that has files waiting and choose <span
 class="ui">Start now</span>. Each site also has its own <span class="ui">Files at
 once</span> (under <span class="ui">Advanced</span> in the Login dialog), for servers that
-refuse many connections.</p>
+refuse many connections, and <span class="ui">Parts per file</span> for <a
+href="#parts">large files in parts</a>.</p>
 
 <h2 id="parts">Large files in parts</h2>
 <p>Many FTP servers limit how fast each connection goes, and over SFTP one file uses only
@@ -159,9 +160,13 @@ menu.</p>
     an SFTP server. Other files in the selection, and
     folders, are copied as usual. Dragging and the plain <span class="ui">Download</span>
     always copy whole files.</li>
-  <li>The parts use the places of <a href="#limit">Files at once</a>: a file in parts never
-    opens more connections than the limit allows, and each part is at least 256&nbsp;MiB.
-    Whole files waiting go first. When a connection frees up, it joins in, taking the second
+  <li>A file uses up to the site's <span class="ui">Parts per file</span> connections
+    (under <span class="ui">Advanced</span> in the Login dialog; usually 8, site to site the
+    lower of the two), apart from its <span class="ui">Files at once</span>, which counts
+    whole files. Each part is at least 256&nbsp;MiB, and the parts also count in the
+    status bar's <a href="#limit">limit</a>: set it to <span class="ui">Unlimited</span> or
+    to at least as many parts. A server that refuses that many connections gets fewer:
+    the other parts wait for a connection. Whole files waiting go first. When a connection frees up, it joins in, taking the second
     half of the part with the most left; with none free at the start, the file starts as
     one part and is split as connections free up.</li>
   <li>The file's bar is cut into a piece per part, as wide as its share of the file: solid

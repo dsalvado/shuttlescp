@@ -3,7 +3,8 @@
 //!
 //! An FTP connection carries one file transfer at a time, so several transfers in
 //! parallel need several connections: they come from a small pool, opened as needed
-//! (one per file the site copies at once, plus [`BROWSING_CONNECTIONS`]) and reused. A
+//! (one per file the site copies at once, or per part of a file copied in parts if
+//! that is more, plus [`BROWSING_CONNECTIONS`]) and reused. A
 //! pooled connection the server has closed meanwhile (servers drop idle ones) is
 //! replaced and the operation retried once. A server that refuses another connection
 //! while others are open is taken to allow no more: the pool shrinks for the rest of
@@ -206,7 +207,8 @@ pub(super) async fn connect(
     let home = first.pwd().await.map_err(|error| {
         ConnectError::Ftp(crate::tr!("connect-ftp-home", reason = error.to_string()))
     })?;
-    let limit = site.files_at_once() + BROWSING_CONNECTIONS;
+    // Enough for whole files or for one file in parts, whichever needs more.
+    let limit = site.files_at_once().max(site.parts_per_file()) + BROWSING_CONNECTIONS;
     let pool = Arc::new(Pool {
         idle: Mutex::new(vec![first]),
         slots: Arc::new(Semaphore::new(limit)),
@@ -1156,6 +1158,7 @@ mod tests {
                 passphrase_saved: false,
             },
             files_at_once: 1,
+            parts_per_file: crate::sites::DEFAULT_PARTS_PER_FILE,
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
