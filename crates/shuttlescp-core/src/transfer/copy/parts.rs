@@ -369,19 +369,22 @@ pub(super) async fn copy_in_parts(
         .map(|part| format!("{}..{} (at {})", part.start, part.end, part.at()))
         .collect::<Vec<_>>()
         .join(", ");
+    let count = match parts.len() {
+        1 => String::from("1 part"),
+        many => format!("{many} parts"),
+    };
     if done > 0 {
         tracing::info!(
-            "resuming {} at {done} of {} bytes, in {} parts: {ranges}",
+            "resuming {} at {done} of {} bytes, in {count}: {ranges}",
             item.dest,
-            item.size,
-            parts.len()
+            item.size
         );
         sink(TransferEvent::Resumed {
             id: item.id,
             from: done,
         });
     } else {
-        tracing::info!("copying {} in {} parts: {ranges}", item.source, parts.len());
+        tracing::info!("copying {} in {count}: {ranges}", item.source);
     }
     let pieces = copy_parts(run, parts, connections, done, recorder, true).await?;
     Ok((
