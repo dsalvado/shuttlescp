@@ -17,6 +17,15 @@ preferences-restart = Starten Sie { -app-name } neu, um die neue Sprache zu verw
 status-transfers-unlimited = Dateien: unbegrenzt
 status-transfers-limited = Dateien: { $running } von { $limit }
 status-transfers-waiting = { $count } wartend
+status-transfers-file-uses = { $name }: { $count ->
+    [one] 1 Verbindung
+   *[other] { $count } Verbindungen
+}
+status-transfers-file-held = { $name }: angehalten, wartet auf einen Platz
+status-transfers-not-started = { $count ->
+    [one] 1 weitere Datei wartet auf den Start
+   *[other] { $count } weitere Dateien warten auf den Start
+}
 dialog-cancel = Abbrechen
 
 quit-title = Beenden
@@ -336,6 +345,7 @@ job-cancel-paused = Die angehaltene Übertragung abbrechen
 job-pause = Anhalten: vorerst stoppen und Kopiertes behalten
 job-resume = Fortsetzen: dort weitermachen, wo angehalten wurde
 job-start-now = Jetzt starten
+item-raise-priority = Priorität erhöhen
 job-retry = Wiederholen: dort weitermachen, wo sie stoppte
 job-remove = Aus der Liste entfernen
 

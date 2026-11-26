@@ -65,6 +65,8 @@ const PARTWAY_PAUSE: Duration = Duration::from_secs(2);
 /// Room a job has to spare for copying a file in parts: its free slots, and free places
 /// in the limit shared by every job; and where copies in parts record how far they got.
 struct Spare {
+    /// The file this room is for (each file has its own).
+    item: usize,
     slots: Arc<Semaphore>,
     /// Most connections one file in parts may use (the sites' parts per file).
     max_parts: usize,
@@ -96,7 +98,7 @@ impl Spare {
                 break;
             };
             let place = match &self.ticket {
-                Some(ticket) => match ticket.try_take_extra() {
+                Some(ticket) => match ticket.try_take_extra(self.item) {
                     Some(place) => Some(place),
                     None => break,
                 },
@@ -314,6 +316,24 @@ pub(super) async fn copy_items(
             tracing::info!("starting a file of this job now, ahead of the others");
             ticket.start_now();
         }
+        // Raise Priority on a file waiting for a place (held back, or not started): it
+        // goes first, in this job and in the shared limit, the newest file elsewhere
+        // stepping back to make room. (A file copying in parts takes its own request.)
+        if let Some(index) = waiting
+            .iter()
+            .position(|(item, _)| cancel.take_raised(item.id))
+            && let Some(raised) = waiting.remove(index)
+        {
+            if let Some(ticket) = &ticket {
+                let free = files.available_permits().min(slots.available_permits());
+                let held = ticket.prioritize(raised.0.id, 1, free);
+                tracing::info!(
+                    "raised above the others: {}, {held} other files held back",
+                    raised.0.dest
+                );
+            }
+            waiting.push_front(raised);
+        }
         // Paused files that were resumed queue up again; stopped or cancelled ones end.
         let mut still_paused = Vec::new();
         for (item, action) in paused.drain(..) {
@@ -389,6 +409,7 @@ pub(super) async fn copy_items(
                 Arc::clone(&times),
             );
             let spare = job.split.then(|| Spare {
+                item: item.id,
                 slots: Arc::clone(&slots),
                 max_parts,
                 ticket: ticket.clone(),

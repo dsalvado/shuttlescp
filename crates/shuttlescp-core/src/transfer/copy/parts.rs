@@ -30,6 +30,7 @@ use super::{
 use crate::checksum::Checksum;
 use crate::path::SidePath;
 use crate::transfer::endpoint::Endpoint;
+use crate::transfer::places::Ticket;
 use crate::transfer::{
     CancelFlag, ItemOutcome, PartProgress, Place, PlanItem, Sink, TransferEvent,
 };
@@ -471,13 +472,63 @@ fn split_point(spans: &[Span], min_part: u64) -> Option<(usize, u64)> {
     (half >= least).then_some((index, span.at + half))
 }
 
+/// How many connections the parts left could use in all: each part not done can be cut
+/// into as many as leave every piece at least `min_part` (and a chunk), one at least.
+fn usable_connections(spans: &[Span], min_part: u64) -> usize {
+    let least = min_part.max(CHUNK_BYTES as u64);
+    spans
+        .iter()
+        .map(|span| span.end.saturating_sub(span.at))
+        .filter(|&left| left > 0)
+        .map(|left| usize::try_from(left / least).unwrap_or(usize::MAX).max(1))
+        .sum()
+}
+
+/// A file raised above the others (see [`Ticket::prioritize`]): ends its reservation
+/// when dropped, however its copy ends.
+struct Raised<'a> {
+    ticket: Option<&'a Ticket>,
+    item: usize,
+    on: std::cell::Cell<bool>,
+}
+
+impl Raised<'_> {
+    /// Reserve `wanted` more connections for the file, holding back other files.
+    fn raise(&self, wanted: usize, free_slots: usize) {
+        let Some(ticket) = self.ticket else {
+            return;
+        };
+        let held = ticket.prioritize(self.item, wanted, free_slots);
+        tracing::info!(
+            "raised above the others: up to {wanted} more connections, {held} other files held back"
+        );
+        self.on.set(wanted > 0);
+    }
+
+    /// The file needs no more of its reserved places.
+    fn end(&self) {
+        if self.on.replace(false)
+            && let Some(ticket) = self.ticket
+        {
+            ticket.end_priority(self.item);
+        }
+    }
+}
+
+impl Drop for Raised<'_> {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
 /// Copy what is left of `parts` (already full-sized in the copy) over `connections`.
 ///
 /// Every free connection gets work: first a part not started yet, else the second half
 /// of the part with the most left (late joining, see [`split_point`]); with none for
 /// it, an extra connection is given back to the job's other files. Every
 /// [`JOIN_POLL`], a connection freed elsewhere in the job is taken to join too, when
-/// no whole file of the job waits for it.
+/// no whole file of the job waits for it; or, once the user raised the file above the
+/// others ([`CancelFlag::raise_priority`]), the connections reserved for it.
 ///
 /// # Arguments
 ///
@@ -549,7 +600,24 @@ async fn copy_parts(
             .is_ok_and(|spans| split_point(&spans, min_part).is_some())
     };
     let mut running = FuturesUnordered::new();
+    let raised = Raised {
+        ticket: spare.and_then(|spare| spare.ticket.as_deref()),
+        item: run.item.id,
+        on: std::cell::Cell::new(false),
+    };
     loop {
+        if let Some(spare) = spare
+            && run.cancel.take_raised(run.item.id)
+        {
+            let now = 1 + extra.lock().map_or(0, |extra| extra.len());
+            let usable = spans
+                .lock()
+                .map_or(0, |spans| usable_connections(&spans, min_part));
+            raised.raise(
+                usable.min(max).saturating_sub(now),
+                spare.slots.available_permits(),
+            );
+        }
         // Parts run within this task, so nothing moves while this looks. A connection
         // given back is not taken again in the same round, so this always ends.
         let mut gave_back = false;
@@ -578,7 +646,7 @@ async fn copy_parts(
                 && waiting.is_empty()
                 && can_split()
                 && let Some(spare) = spare
-                && spare.nobody_waiting()
+                && (raised.on.get() || spare.nobody_waiting())
                 && let Some(more) = spare.take(1).pop()
                 && let Ok(mut extra) = extra.lock()
             {
@@ -586,6 +654,13 @@ async fn copy_parts(
                 continue;
             }
             break;
+        }
+        // Raised, but it cannot use another connection: the places go back to the line.
+        if raised.on.get()
+            && (1 + extra.lock().map_or(0, |extra| extra.len()) >= max
+                || (waiting.is_empty() && !can_split()))
+        {
+            raised.end();
         }
         if running.is_empty() {
             break;
@@ -1317,6 +1392,7 @@ mod tests {
     /// Room to spare in a job with `free` slots and `waiting` files waiting for one.
     fn spare(free: usize, waiting: usize) -> Spare {
         Spare {
+            item: 0,
             slots: Arc::new(tokio::sync::Semaphore::new(free)),
             max_parts: usize::MAX,
             ticket: None,
@@ -1402,6 +1478,15 @@ mod tests {
         assert_eq!(spare.slots.available_permits(), 1, "given back");
     }
 
+    /// The most parts copied at the same time in `reported` (parts not at their end).
+    fn most_at_once(reported: &[Vec<PartProgress>]) -> usize {
+        reported
+            .iter()
+            .map(|parts| parts.iter().filter(|part| part.at < part.end).count())
+            .max()
+            .unwrap_or(0)
+    }
+
     #[tokio::test]
     async fn a_file_in_parts_takes_no_more_connections_than_it_may_use() {
         // Two connections free in the job, but the file may use two in all. Large enough
@@ -1415,10 +1500,77 @@ mod tests {
             ..Connections::own(None)
         };
 
-        let (pieces, _) = one_part_over(&setup, connections).await;
+        let (_, reported) = one_part_over(&setup, connections).await;
 
-        assert_eq!(pieces.len(), 2, "one joined, not two: {pieces:?}");
+        assert_eq!(
+            most_at_once(&reported),
+            2,
+            "one joined, not two: {reported:?}"
+        );
         assert_eq!(spare.slots.available_permits(), 2, "given back");
+    }
+
+    /// Copy `setup`'s file as one part, with one connection free that a whole file of
+    /// its job waits for (one place free in a limit of 3, another job's file in one),
+    /// raised or not.
+    ///
+    /// # Returns
+    ///
+    /// The most parts copied at the same time
+    async fn with_a_file_waiting(setup: &Setup, raise: bool) -> usize {
+        let places = crate::transfer::FilePlaces::new(Some(3));
+        let (ticket, other) = (Arc::new(places.join()), places.join());
+        let own = ticket.try_take(setup.item.id).expect("room");
+        let _others = other.try_take(0).expect("room");
+        let spare = Spare {
+            item: setup.item.id,
+            ticket: Some(Arc::clone(&ticket)),
+            ..spare(1, 1)
+        };
+        let (cancel, (sink, events)) = (CancelFlag::default(), keeping());
+        if raise {
+            cancel.raise_priority(setup.item.id);
+        }
+        let run = setup.run(&cancel, &sink);
+        let connections = Connections {
+            own: Some(&own),
+            spare: Some(&spare),
+            max: 4,
+            min_part: 1,
+            ..Connections::own(None)
+        };
+        let part = vec![Part::new((0, setup.item.size))];
+        let copied = copy_in_parts(&run, part, true, connections, None).await;
+        assert!(copied.is_ok(), "the copy in parts failed");
+        assert_eq!(setup.copied(), setup.whole);
+        let reported: Vec<Vec<PartProgress>> = events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter_map(|event| match event {
+                TransferEvent::Parts { parts, .. } => Some(parts.clone()),
+                _ => None,
+            })
+            .collect();
+        most_at_once(&reported)
+    }
+
+    #[tokio::test]
+    async fn a_raised_file_goes_before_its_jobs_waiting_files() {
+        let setup = Setup::new(4_000_000);
+
+        let at_once = with_a_file_waiting(&setup, true).await;
+
+        assert_eq!(at_once, 2, "joined over the free connection");
+    }
+
+    #[tokio::test]
+    async fn a_file_not_raised_leaves_a_free_connection_to_a_waiting_file() {
+        let setup = Setup::new(4_000_000);
+
+        let at_once = with_a_file_waiting(&setup, false).await;
+
+        assert_eq!(at_once, 1);
     }
 
     #[tokio::test]

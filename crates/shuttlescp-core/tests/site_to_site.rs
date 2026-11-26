@@ -1895,3 +1895,96 @@ async fn more_parts_than_the_ftp_server_allows() {
     assert_eq!(copied, here);
     assert!(removed.is_complete(), "clean up: {removed:?}");
 }
+
+/// Raised above the others, a file copied in parts takes the place of another job's
+/// file, which steps back and continues afterwards from its partial copy: both arrive
+/// whole.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_raised_file_takes_the_place_of_another_jobs_file() {
+    // Arrange: a limit of 2; job A uploads a file whole, job B one in parts, which
+    // starts as one part.
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let whole = big_local_file(temp.path(), "raised-other.bin");
+    let parted = big_local_file(temp.path(), "raised-parts.bin");
+    let places = FilePlaces::new(Some(2));
+    let upload = |path: &Path| {
+        job(
+            JobKind::Copy,
+            Side::Local,
+            vec![SidePath::Local(path.to_owned())],
+            SidePath::Remote(server.dir.clone()),
+        )
+    };
+    let mut in_parts = upload(&parted);
+    in_parts.split = true;
+
+    // Act: B is raised as soon as it reports its part.
+    let cancel_a = CancelFlag::default().with_places(Arc::clone(&places));
+    let cancel_b = CancelFlag::default().with_places(Arc::clone(&places));
+    let raising = cancel_b.clone();
+    let most = Arc::new(Mutex::new(0));
+    let seen = Arc::clone(&most);
+    let held = Arc::new(Mutex::new(false));
+    let a_held = Arc::clone(&held);
+    let a = run(
+        upload(&whole),
+        Some(remote.clone()),
+        None,
+        cancel_a,
+        move |event| {
+            if let TransferEvent::Held { .. } = event {
+                *a_held.lock().expect("lock") = true;
+            }
+        },
+    );
+    // A starts first, so it holds a place when B starts.
+    let b = async {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        run(
+            in_parts,
+            Some(remote.clone()),
+            None,
+            cancel_b,
+            move |event| {
+                if let TransferEvent::Parts { id, parts } = event {
+                    raising.raise_priority(id);
+                    let moving = parts.iter().filter(|part| part.at < part.end).count();
+                    let mut most = seen.lock().expect("lock");
+                    *most = (*most).max(moving);
+                }
+            },
+        )
+        .await
+    };
+    let (a, b) = tokio::join!(a, b);
+    let mut sums = Vec::new();
+    for name in ["raised-other.bin", "raised-parts.bin"] {
+        sums.push(remote.sha256(&server.dir.join(name)).await);
+    }
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        ["raised-other.bin", "raised-parts.bin"]
+            .iter()
+            .map(|name| SidePath::Remote(server.dir.join(name)))
+            .collect(),
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (removed, _) = run_job(remove, &remote, None).await;
+
+    // Assert: A stepped back for B, which went to more parts; both whole.
+    assert!(a.is_complete(), "A: {a:?}");
+    assert!(b.is_complete(), "B: {b:?}");
+    assert!(*held.lock().expect("lock"), "A's file stepped back");
+    assert!(*most.lock().expect("lock") >= 2, "B went to more parts");
+    for (path, sum) in [whole, parted].iter().zip(sums) {
+        let here = shuttlescp_core::checksum::local_sha256(path.clone())
+            .await
+            .expect("checksum");
+        assert_eq!(sum.expect("checksum on the server"), here);
+    }
+    assert!(removed.is_complete(), "clean up: {removed:?}");
+}

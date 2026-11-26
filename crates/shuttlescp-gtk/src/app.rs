@@ -558,7 +558,8 @@ impl SimpleComponent for App {
                             set_has_frame: false,
                             set_direction: gtk::ArrowType::Up,
                             set_popover: Some(&limit_popover),
-                            set_tooltip_text: Some(&tr!("status-transfers-tooltip")),
+                            #[watch]
+                            set_tooltip_text: Some(&model.transfer_limit_tooltip()),
                             #[watch]
                             set_label: &model.transfer_limit_text(),
                         },
@@ -1598,6 +1599,41 @@ impl App {
         text
     }
 
+    /// The status bar transfer limit's tooltip: what it is, then what uses its places,
+    /// under each tab's title: every file copied (with its connections), every file
+    /// held back, and how many more wait to start.
+    fn transfer_limit_tooltip(&self) -> String {
+        /// Longest file name shown; longer ones are cut in the middle.
+        const LONGEST: usize = 60;
+        let mut text = tr!("status-transfers-tooltip");
+        for session in &self.sessions {
+            let (uses, not_started) = session.transfers.model().place_uses();
+            if uses.is_empty() && not_started == 0 {
+                continue;
+            }
+            text.push_str("\n\n");
+            text.push_str(&session.title(&self.host));
+            for file in uses {
+                let name = shortened(&file.name, LONGEST);
+                text.push_str("\n    ");
+                text.push_str(&if file.connections == 0 {
+                    tr!("status-transfers-file-held", name = name)
+                } else {
+                    tr!(
+                        "status-transfers-file-uses",
+                        name = name,
+                        count = file.connections
+                    )
+                });
+            }
+            if not_started > 0 {
+                text.push_str("\n    ");
+                text.push_str(&tr!("status-transfers-not-started", count = not_started));
+            }
+        }
+        text
+    }
+
     fn connection_status(&self) -> String {
         self.current().map_or_else(not_connected, Session::status)
     }
@@ -2486,4 +2522,36 @@ fn edit_menu() -> gio::Menu {
         ]),
     );
     menu
+}
+
+/// `name` cut to at most `longest` characters, keeping its start and end (where a file's
+/// type is) around an ellipsis.
+fn shortened(name: &str, longest: usize) -> String {
+    let count = name.chars().count();
+    if count <= longest {
+        return name.to_owned();
+    }
+    let keep = longest.saturating_sub(1);
+    let (head, tail) = (keep - keep / 3, keep / 3);
+    let start: String = name.chars().take(head).collect();
+    let end: String = name.chars().skip(count - tail).collect();
+    format!("{start}\u{2026}{end}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shortened;
+
+    #[test]
+    fn long_names_are_cut_in_the_middle_keeping_their_type() {
+        assert_eq!(shortened("short.iso", 60), "short.iso");
+        let long = "UFC Fight Night 294 Prochazka vs Stirling 1080p WEB-DL H264 Fight-BB.mp4";
+
+        let cut = shortened(long, 40);
+
+        assert_eq!(cut.chars().count(), 40);
+        assert!(cut.starts_with("UFC Fight Night"), "{cut}");
+        assert!(cut.ends_with("Fight-BB.mp4"), "{cut}");
+        assert!(cut.contains('\u{2026}'));
+    }
 }

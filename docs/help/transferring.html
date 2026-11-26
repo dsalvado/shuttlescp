@@ -169,6 +169,11 @@ menu.</p>
     the other parts wait for a connection. Whole files waiting go first. When a connection frees up, it joins in, taking the second
     half of the part with the most left; with none free at the start, the file starts as
     one part and is split as connections free up.</li>
+  <li>To speed one up, right-click its line in <span class="ui">Transfers</span> and choose
+    <span class="ui">Raise Priority</span>. Other files step back, newest first, only as
+    many as it can use more connections, and their places go to its parts. They continue
+    from their partial copies as its parts finish. A file waiting for a place, or held
+    back for another, can be raised too: it goes first, the newest file stepping back.</li>
   <li>The file's bar is cut into a piece per part, as wide as its share of the file: solid
     when done, striped while it moves.</li>
   <li>While it is copied it is called <code>name.fileparts</code>. Pausing, a dropped
