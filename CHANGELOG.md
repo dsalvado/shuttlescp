@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-26
+
 ### Added
 
 - Large files can be copied in parts, all at the same time: from FTP servers, which often
@@ -697,7 +699,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.27.3...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/dsalvado/shuttlescp/compare/v0.27.3...v0.28.0
 [0.27.3]: https://github.com/dsalvado/shuttlescp/compare/v0.27.2...v0.27.3
 [0.27.2]: https://github.com/dsalvado/shuttlescp/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/dsalvado/shuttlescp/compare/v0.27.0...v0.27.1
