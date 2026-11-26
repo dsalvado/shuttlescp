@@ -274,6 +274,12 @@ pane-transfer-to =
         [download] _Herunterladen auf { $name }
        *[copy] _Kopieren nach { $name }
     }
+pane-transfer-in-parts =
+    { $kind ->
+        [upload] Mehr_teilig hochladen nach { $name }
+        [download] Mehr_teilig herunterladen auf { $name }
+       *[copy] Mehr_teilig kopieren nach { $name }
+    }
 pane-move = _Verschieben
 pane-move-to = _Verschieben nach { $name }
 pane-menu-new-folder = _Neuer Ordner…
@@ -642,6 +648,8 @@ error-cannot-rename-bare = { $from } kann nicht in { $to } umbenannt werden
 error-no-such-item = keine solche Datei und kein solcher Ordner
 error-sftp-date = { $path } hat ein Datum, das SFTP nicht speichern kann
 error-ftp-no-owner = FTP kann den Besitzer einer Datei nicht ändern
+error-ftp-no-parts = FTP kann eine Datei nicht in Teilen schreiben
+error-source-ended-early = { $path } endete vor seiner erwarteten Größe
 error-owner-unknown = Der Server hat den aktuellen Besitzer nicht genannt
 error-mode-unknown = Die aktuellen Rechte sind unbekannt, daher muss jedes Kästchen gesetzt oder geleert werden
 error-no-such-user = Es gibt keinen Benutzer und keine Gruppe { $name }
@@ -657,8 +665,10 @@ checksum-unsupported = der Server kann keine Prüfsummen berechnen
 checksum-no-answer = die Antwort des Servers enthielt keine Prüfsumme
 ftp-no-transfer-reply = der Server hat die Übertragung nicht innerhalb von { $seconds } s bestätigt
 verify-mismatch = die Prüfsumme der Kopie weicht von der des Originals ab: die Kopie entspricht nicht dem Kopierten
+verify-parts-mismatch = Teile der Kopie weichen auch nach erneutem Kopieren noch vom Kopierten ab
 verify-skipped = vom Benutzer übersprungen
 item-verifying = Wird geprüft…
+item-checking-parts = Teile werden geprüft…
 item-verified = { $size } · geprüft
 item-not-verified = { $size } · nicht geprüft
 item-not-verified-large = { $size } · nicht geprüft (große Datei)

@@ -256,6 +256,8 @@ pub enum AppMsg {
         kind: JobKind,
         /// The selected items.
         paths: Vec<SidePath>,
+        /// Copy large files in parts ([`Job::split`]).
+        split: bool,
     },
     /// The user showed or hid a file pane column: these are hidden now, in every pane.
     ColumnsChanged(Vec<String>),
@@ -306,6 +308,10 @@ pub enum AppMsg {
     /// picture the transfer lists following it.
     #[cfg(debug_assertions)]
     GalleryFocusFirst,
+    /// Development aid for the UI gallery: show a made-up download in parts in the first
+    /// session's Queue, to picture its part bars.
+    #[cfg(debug_assertions)]
+    GalleryParts,
     /// The number of a session's transfers running, completed or failed changed.
     TransferCounts {
         session: SessionId,
@@ -821,6 +827,7 @@ impl SimpleComponent for App {
         if let Some(dir) = std::env::var_os(crate::ui_gallery::ENV_VAR) {
             let sender = sender.clone();
             let (demo_sender, focus_sender) = (sender.clone(), sender.clone());
+            let parts_sender = sender.clone();
             // With two servers named, the gallery also pictures a site-to-site session.
             if let Some(pair) = std::env::var_os(crate::ui_gallery::PAIR_VAR) {
                 crate::ui_gallery::connect_pair(&pair.to_string_lossy(), sender.clone());
@@ -831,6 +838,7 @@ impl SimpleComponent for App {
                 move || sender.input(AppMsg::ShowLogin),
                 move || demo_sender.input(AppMsg::GalleryDemo),
                 move || focus_sender.input(AppMsg::GalleryFocusFirst),
+                move || parts_sender.input(AppMsg::GalleryParts),
             );
         }
         // Development aid: record the user guide's clips (see `ui_clips`).
@@ -998,6 +1006,14 @@ impl SimpleComponent for App {
             #[cfg(debug_assertions)]
             AppMsg::GalleryFocusFirst => self.session_notebook.set_current_page(Some(0)),
             #[cfg(debug_assertions)]
+            AppMsg::GalleryParts => {
+                if let Some(first) = self.sessions.first() {
+                    first
+                        .transfers
+                        .emit(crate::transfer_panel::TransferPanelMsg::GalleryParts);
+                }
+            }
+            #[cfg(debug_assertions)]
             AppMsg::GalleryDemo => {
                 if let Some(first) = self.sessions.first_mut() {
                     first.show_counts(2, 0, 1, 0);
@@ -1155,8 +1171,9 @@ impl SimpleComponent for App {
                 side,
                 kind,
                 paths,
+                split,
             } => {
-                self.request_job(session, side, kind, paths, &sender);
+                self.request_job(session, side, (kind, split), paths, &sender);
             }
             AppMsg::ColumnsChanged(hidden) => {
                 for session in &self.sessions {
@@ -1188,6 +1205,7 @@ impl SimpleComponent for App {
                     left_server: false,
                     resume: false,
                     verify: Verify::default(),
+                    split: false,
                     permissions: Some(change),
                 };
                 self.start_job(session, job);
@@ -1205,6 +1223,7 @@ impl SimpleComponent for App {
                 self.start_job(
                     session,
                     Job {
+                        split: false,
                         permissions: None,
                         kind,
                         side: source_side,
@@ -1779,14 +1798,15 @@ impl App {
     ///
     /// * `session` - The session of the pane
     /// * `side` - The pane the items are in
-    /// * `kind` - Copy, move or delete
+    /// * `(kind, split)` - Copy, move or delete; and whether to copy large files in
+    ///   parts ([`Job::split`])
     /// * `paths` - The selected items
     /// * `sender` - Receives the confirmed delete
     fn request_job(
         &self,
         session: SessionId,
         side: Side,
-        kind: JobKind,
+        (kind, split): (JobKind, bool),
         paths: Vec<SidePath>,
         sender: &ComponentSender<Self>,
     ) {
@@ -1804,6 +1824,7 @@ impl App {
             return;
         };
         let job = Job {
+            split,
             permissions: None,
             kind,
             side,

@@ -3,6 +3,8 @@
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -12,6 +14,12 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 pub struct Checksum([u8; 32]);
 
 impl Checksum {
+    /// The checksum of everything `hasher` was fed (for hashing bytes as they are
+    /// copied).
+    pub(crate) fn from_hasher(hasher: Sha256) -> Self {
+        Self(hasher.finalize().into())
+    }
+
     /// Read a checksum written as 64 hex digits (either case), as `sha256sum` and FTP
     /// servers answer.
     ///
@@ -43,6 +51,20 @@ impl fmt::Display for Checksum {
     }
 }
 
+/// Saved as `sha256sum` shows it (64 hex digits), to be read back the same.
+impl serde::Serialize for Checksum {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Checksum {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::from_hex(&text).ok_or_else(|| serde::de::Error::custom("not a SHA-256 checksum"))
+    }
+}
+
 /// The checksum in a server's answer: its first word that is one. Answers differ:
 /// `sha256sum` prints "<checksum>  <name>" (with a `\` before it when the name holds a
 /// `\` or a line break), FTP's HASH "213 SHA-256 0-100 <checksum> <name>".
@@ -68,6 +90,42 @@ pub async fn local_sha256(path: PathBuf) -> io::Result<Checksum> {
                 Ok(0) => return Ok(Checksum(hasher.finalize().into())),
                 Ok(read) => hasher.update(&buffer[..read]),
                 // A signal broke off the read: nothing was lost, read again.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+/// The checksum of the bytes `start..end` of a file on this computer, on a thread of
+/// its own as for [`local_sha256`]. `read` is added the bytes as they are read, to show
+/// how far the reading has got. A file ending before `end` gives the checksum of what
+/// there is, so it does not match.
+///
+/// # Errors
+///
+/// Returns the error of opening or reading the file
+pub(crate) async fn local_range_sha256(
+    path: PathBuf,
+    start: u64,
+    end: u64,
+    read: Arc<AtomicU64>,
+) -> io::Result<Checksum> {
+    tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::open(&path)?;
+        io::Seek::seek(&mut file, io::SeekFrom::Start(start))?;
+        let mut range = io::Read::take(file, end.saturating_sub(start));
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0; 256 * 1024];
+        loop {
+            match io::Read::read(&mut range, &mut buffer) {
+                Ok(0) => return Ok(Checksum(hasher.finalize().into())),
+                Ok(count) => {
+                    hasher.update(&buffer[..count]);
+                    read.fetch_add(count as u64, Ordering::Relaxed);
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }
@@ -157,6 +215,24 @@ mod tests {
 
         // One report per 256 KiB piece, the last one the whole size.
         assert_eq!(reported, [262_144, 524_288, 700_000]);
+    }
+
+    #[tokio::test]
+    async fn a_range_hashes_like_those_bytes_alone_and_counts_them() {
+        let bytes: Vec<u8> = (0..700_000_u32).map(|i| (i % 251) as u8).collect();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("f");
+        std::fs::write(&path, &bytes).expect("write");
+        let read = Arc::new(AtomicU64::new(0));
+
+        let range = local_range_sha256(path.clone(), 100_001, 650_000, Arc::clone(&read)).await;
+
+        let alone = sha256_of(&bytes[100_001..650_000], |_| {}).await;
+        assert_eq!(range.expect("hash"), alone.expect("hash"));
+        assert_eq!(read.load(Ordering::Relaxed), 650_000 - 100_001);
+        let past_the_end = local_range_sha256(path, 600_000, 800_000, read).await;
+        let what_there_is = sha256_of(&bytes[600_000..], |_| {}).await;
+        assert_eq!(past_the_end.expect("hash"), what_there_is.expect("hash"));
     }
 
     #[tokio::test]

@@ -250,6 +250,12 @@ pane-transfer-to =
         [download] 下载到 { $name }(_D)
        *[copy] 复制到 { $name }(_C)
     }
+pane-transfer-in-parts =
+    { $kind ->
+        [upload] 多段上传到 { $name }(_P)
+        [download] 多段下载到 { $name }(_P)
+       *[copy] 多段复制到 { $name }(_P)
+    }
 pane-move = 移动(_M)
 pane-move-to = 移动到 { $name }(_M)
 pane-menu-new-folder = 新建文件夹(_N)…
@@ -580,6 +586,8 @@ error-cannot-rename-bare = 无法将 { $from } 重命名为 { $to }
 error-no-such-item = 没有这个文件或文件夹
 error-sftp-date = { $path } 的日期无法用 SFTP 保存
 error-ftp-no-owner = FTP 无法更改文件的所有者
+error-ftp-no-parts = FTP 无法分段写入文件
+error-source-ended-early = { $path } 在达到预期大小之前就结束了
 error-owner-unknown = 服务器未告知其当前所有者
 error-mode-unknown = 其当前权限未知，因此每个复选框都必须勾选或取消
 error-no-such-user = 没有名为 { $name } 的用户或组
@@ -595,8 +603,10 @@ checksum-unsupported = 服务器无法计算校验和
 checksum-no-answer = 服务器的回复中没有校验和
 ftp-no-transfer-reply = 服务器未在 { $seconds } 秒内确认传输
 verify-mismatch = 副本的校验和与原文件不同：副本与所复制的内容不一致
+verify-parts-mismatch = 重新复制后，副本中仍有部分与所复制的内容不一致
 verify-skipped = 已被用户跳过
 item-verifying = 正在验证…
+item-checking-parts = 正在验证分段…
 item-verified = { $size } · 已验证
 item-not-verified = { $size } · 未验证
 item-not-verified-large = { $size } · 未验证（大文件）

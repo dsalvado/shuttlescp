@@ -3,7 +3,7 @@
 
 use crate::path::SidePath;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,13 +11,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Semaphore, oneshot};
 use tokio::task::JoinSet;
 
-use super::endpoint::{Endpoint, partial_path};
+use super::endpoint::{Endpoint, partial_path, parts_path};
 use super::{
     CancelFlag, ConflictAnswer, ConflictChoice, ConflictReply, FILES_AT_ONCE, FilePlaces, ItemKind,
-    ItemOutcome, Job, JobKind, Place, PlanItem, Sink, TransferEvent, Verification, Verify,
+    ItemOutcome, Job, JobKind, Place, PlanItem, Sink, Ticket, TransferEvent, Verification, Verify,
 };
 use crate::checksum::Checksum;
 use crate::format::format_size;
+
+mod parts;
+mod record;
+
+pub use parts::{PartsHost, SPLIT_FROM, faster_in_parts};
+pub use record::SplitRecords;
 
 /// Bytes read and written per step of a file copy.
 const CHUNK_BYTES: usize = 256 * 1024;
@@ -55,6 +61,50 @@ impl From<ItemOutcome> for FileEnd {
 const PARTWAY_TRIES: u32 = 3;
 /// Wait before each of those, so a lost connection is noticed as lost.
 const PARTWAY_PAUSE: Duration = Duration::from_secs(2);
+
+/// Room a job has to spare for copying a file in parts: its free slots, and free places
+/// in the limit shared by every job; and where copies in parts record how far they got.
+struct Spare {
+    slots: Arc<Semaphore>,
+    ticket: Option<Arc<Ticket>>,
+    records: Arc<SplitRecords>,
+    /// How many of the job's files wait for a slot: they go before parts joining late.
+    files_waiting: Arc<AtomicUsize>,
+}
+
+/// One extra part's hold on a slot (and a place, under a shared limit); let go when
+/// dropped.
+struct ExtraPart {
+    _slot: tokio::sync::OwnedSemaphorePermit,
+    place: Option<Place>,
+}
+
+impl Spare {
+    /// Whether no file of the job waits for a slot (one freed may then go to a part).
+    fn nobody_waiting(&self) -> bool {
+        self.files_waiting.load(Ordering::Relaxed) == 0
+    }
+
+    /// Up to `wanted` extra parts, only from what is free now: parts never make whole
+    /// files wait.
+    fn take(&self, wanted: usize) -> Vec<ExtraPart> {
+        let mut taken = Vec::new();
+        while taken.len() < wanted {
+            let Ok(slot) = Arc::clone(&self.slots).try_acquire_owned() else {
+                break;
+            };
+            let place = match &self.ticket {
+                Some(ticket) => match ticket.try_take_extra() {
+                    Some(place) => Some(place),
+                    None => break,
+                },
+                None => None,
+            };
+            taken.push(ExtraPart { _slot: slot, place });
+        }
+        taken
+    }
+}
 
 /// Why [`copy_contents`] stopped before the end.
 enum Unfinished {
@@ -225,7 +275,16 @@ pub(super) async fn copy_items(
     let mut paused: Vec<(PlanItem, FileAction)> = Vec::new();
     // The job's place in the shared limit's line, if there is one; dropped at the end,
     // which takes its waiting files out of the line.
-    let ticket = cancel.places().map(FilePlaces::join);
+    let ticket = cancel
+        .places()
+        .map(|places| Arc::new(FilePlaces::join(places)));
+    // Files waiting for a slot, seen by copies in parts before they take one freed.
+    let files_waiting = Arc::new(AtomicUsize::new(0));
+    // Without the app's records, a paused copy in parts still continues in this run.
+    let records = cancel
+        .split_records()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(SplitRecords::in_memory()));
     let forget = |item: &PlanItem| {
         if let Some(ticket) = &ticket {
             ticket.forget(item.id);
@@ -257,6 +316,10 @@ pub(super) async fn copy_items(
             // Pausing the whole job keeps the partial copy for resuming it.
             if !cancel.is_paused() {
                 let _ = dst.remove_file(&partial_path(&item.dest)).await;
+                if job.split && item.size >= parts::SPLIT_FROM {
+                    let _ = dst.remove_file(&parts_path(&item.dest)).await;
+                    records.forget(&record::key(&item));
+                }
             }
             finish(&mut outcomes, item.id, end);
         }
@@ -304,6 +367,12 @@ pub(super) async fn copy_items(
                 Arc::clone(sink),
                 Arc::clone(&times),
             );
+            let spare = job.split.then(|| Spare {
+                slots: Arc::clone(&slots),
+                ticket: ticket.clone(),
+                records: Arc::clone(&records),
+                files_waiting: Arc::clone(&files_waiting),
+            });
             running.spawn(async move {
                 // Holding the slot and the place until the copy ends lets the next file
                 // start.
@@ -323,6 +392,7 @@ pub(super) async fn copy_items(
                             replace,
                             verify,
                             place.as_ref(),
+                            spare.as_ref(),
                             &cancel,
                             &sink,
                             &times,
@@ -337,6 +407,7 @@ pub(super) async fn copy_items(
             most_at_once = most_at_once.max(at_once - slots.available_permits());
         }
 
+        files_waiting.store(waiting.len(), Ordering::Relaxed);
         if running.is_empty() && waiting.is_empty() && paused.is_empty() {
             break;
         }
@@ -593,6 +664,9 @@ async fn finish_source(item: &PlanItem, src: &Endpoint, delete_source: bool) -> 
 /// there is one, then give it its real name (replacing the existing file if `replace`)
 /// and delete the source if moving, once the copy is checked against it if `verify`
 /// says so. A completed copy's times are added to `times`.
+///
+/// With `spare` (the job copies in parts), a large file is copied in parts over the
+/// job's free connections, where that is faster (see [`copy_file_in_parts`]).
 #[allow(clippy::too_many_arguments)]
 async fn copy_file(
     item: &PlanItem,
@@ -602,15 +676,51 @@ async fn copy_file(
     replace: bool,
     verify: Verify,
     place: Option<&Place>,
+    spare: Option<&Spare>,
     cancel: &CancelFlag,
     sink: &Sink,
     times: &Mutex<JobTimes>,
 ) -> FileEnd {
     let started = Instant::now();
+    let finish = Finish {
+        delete_source,
+        replace,
+        verify,
+        started,
+    };
+    // A whole-file partial copy from an earlier run is continued as it is.
+    let splittable = item.partial == 0
+        && item.size >= parts::SPLIT_FROM
+        && parts::faster_in_parts(src.parts_host(), dst.parts_host());
+    if let Some(spare) = spare
+        && splittable
+    {
+        let resumed = resumable_parts(item, dst, &spare.records).await;
+        let wanted = resumed.as_ref().map_or_else(
+            || parts::parts_for(item.size, usize::MAX),
+            |parts| parts.iter().filter(|part| !part.is_done()).count(),
+        );
+        let extra = spare.take(wanted.saturating_sub(1));
+        // With no connection free yet, it starts as one part over its own: connections
+        // freed later join in, each taking half of the part with the most left.
+        if extra.is_empty() && resumed.is_none() {
+            tracing::debug!(
+                "no connection free yet to copy {} in parts: starting with one part",
+                item.source
+            );
+        }
+        let parts = PartsCopy {
+            place,
+            extra,
+            resumed,
+            spare,
+        };
+        return copy_file_in_parts(item, src, dst, parts, &finish, cancel, sink, times).await;
+    }
     let partial = partial_path(&item.dest);
     let with_server = matches!(src, Endpoint::Remote(_)) || matches!(dst, Endpoint::Remote(_));
     let (mut have, mut tries) = (item.partial, 0);
-    let (mut took, offset) = loop {
+    let (took, offset) = loop {
         // Given up when the user asks to end: the copy below then ends at once.
         let offset = cancel
             .unless_ended(item.id, resume_offset(item, have, src, dst, &partial))
@@ -671,11 +781,53 @@ async fn copy_file(
             }
         }
     };
+    put_in_place(
+        item, src, dst, &partial, offset, took, &finish, cancel, sink, times,
+    )
+    .await
+}
+
+/// How a copied file is finished, the same whether it was copied whole or in parts.
+#[derive(Clone, Copy)]
+struct Finish {
+    delete_source: bool,
+    replace: bool,
+    verify: Verify,
+    /// When the file's copy started.
+    started: Instant,
+}
+
+/// Give the finished copy at `from` its real name (replacing the existing file if
+/// asked), its date, check it if asked, and delete the source if moving.
+///
+/// # Arguments
+///
+/// * `offset` - Bytes copied by an earlier, interrupted run (for the log)
+/// * `took` - Where this run's time went
+#[allow(clippy::too_many_arguments)]
+async fn put_in_place(
+    item: &PlanItem,
+    src: &Endpoint,
+    dst: &Endpoint,
+    from: &SidePath,
+    offset: u64,
+    mut took: FileTimes,
+    finish: &Finish,
+    cancel: &CancelFlag,
+    sink: &Sink,
+    times: &Mutex<JobTimes>,
+) -> FileEnd {
+    let Finish {
+        delete_source,
+        replace,
+        verify,
+        started,
+    } = *finish;
     let finishing = Instant::now();
     if replace && let Err(error) = dst.remove_file(&item.dest).await {
         return ItemOutcome::Failed(error).into();
     }
-    if let Err(error) = dst.rename(&partial, &item.dest).await {
+    if let Err(error) = dst.rename(from, &item.dest).await {
         return ItemOutcome::Failed(error).into();
     }
     if let Some(modified) = item.modified
@@ -707,6 +859,192 @@ async fn copy_file(
         }
     }
     outcome.into()
+}
+
+/// What a file is copied in parts with: its own place, the extra connections, the
+/// parts of a copy under way if it continues one, and the job's room to spare (for
+/// connections freed later, and where the parts are recorded).
+struct PartsCopy<'a> {
+    place: Option<&'a Place>,
+    extra: Vec<ExtraPart>,
+    resumed: Option<Vec<parts::Part>>,
+    spare: &'a Spare,
+}
+
+/// The parts of `item`'s copy in parts under way, if it can be continued: its record
+/// is for the source as it is now, and the copy is there at full size. A record that
+/// cannot be used is forgotten.
+async fn resumable_parts(
+    item: &PlanItem,
+    dst: &Endpoint,
+    records: &SplitRecords,
+) -> Option<Vec<parts::Part>> {
+    let key = record::key(item);
+    let record = records.get(&key)?;
+    let copy = parts_path(&item.dest);
+    let there = dst.stat(&copy, false).await.ok();
+    if record.fits(item) && there.is_some_and(|node| node.size == item.size) {
+        return Some(record.parts);
+    }
+    tracing::info!("{copy} cannot be continued (gone, or its source changed); starting over");
+    records.forget(&key);
+    None
+}
+
+/// Copy a large file in parts, one over each of the extra connections and one over the
+/// file's own (or continue such a copy, as many parts at a time as there are
+/// connections; connections freed later join in), check it, then finish it as any
+/// copy.
+///
+/// A copy in parts paused, held back or failing partway is kept with its record, to be
+/// continued; stopped or cancelled, it is deleted.
+#[allow(clippy::too_many_arguments)]
+async fn copy_file_in_parts(
+    item: &PlanItem,
+    src: &Endpoint,
+    dst: &Endpoint,
+    parts: PartsCopy<'_>,
+    finish: &Finish,
+    cancel: &CancelFlag,
+    sink: &Sink,
+    times: &Mutex<JobTimes>,
+) -> FileEnd {
+    let PartsCopy {
+        place,
+        extra,
+        resumed,
+        spare,
+    } = parts;
+    let copy = parts_path(&item.dest);
+    let run = parts::Copying {
+        item,
+        src,
+        dst,
+        copy: &copy,
+        cancel,
+        sink,
+    };
+    let connections = 1 + extra.len();
+    let fresh = resumed.is_none();
+    let parts = resumed.unwrap_or_else(|| {
+        parts::ranges(item.size, connections)
+            .into_iter()
+            .map(parts::Part::new)
+            .collect()
+    });
+    // Copied before a restart: left out of this run's speed in the log.
+    let done_before = parts.iter().map(parts::Part::done).sum();
+    let recorder = parts::Recorder::new(&spare.records, item, &parts);
+    let connections = parts::Connections {
+        own: place,
+        extra,
+        spare: Some(spare),
+        min_part: parts::MIN_PART,
+    };
+    // The extra connections are let go at its end: free again for other files, while
+    // this one finishes.
+    let copied = parts::copy_in_parts(&run, parts, fresh, connections, Some(&recorder)).await;
+    let (mut took, mut pieces) = match copied {
+        Ok(copied) => copied,
+        Err(unfinished) => return give_up_parts(&run, &recorder, unfinished).await,
+    };
+    if let Err(error) = parts::cover_the_file(&pieces, item.size) {
+        // Cannot happen unless the parts are wrong: never put such a copy in place.
+        tracing::error!("{}: {error}", item.dest);
+        return discard_parts(&run, &recorder, error).await;
+    }
+    // Always checked, whatever the site's setting: splitting is what could misplace
+    // bytes. A piece that differs is copied again, and checked again, once.
+    let checked = parts::check_pieces(item, dst, &copy, &pieces, cancel, sink).await;
+    let bad = match checked {
+        Ok(bad) => bad,
+        Err(unfinished) => return give_up_parts(&run, &recorder, unfinished).await,
+    };
+    if !bad.is_empty() {
+        let again = Instant::now();
+        if let Err(unfinished) = parts::copy_again(&run, &bad, &mut pieces, place).await {
+            return give_up_parts(&run, &recorder, unfinished).await;
+        }
+        took.data += again.elapsed();
+        match parts::check_pieces(item, dst, &copy, &pieces, cancel, sink).await {
+            Ok(still) if still.is_empty() => {}
+            Ok(_) => {
+                return discard_parts(&run, &recorder, crate::tr!("verify-parts-mismatch")).await;
+            }
+            Err(unfinished) => return give_up_parts(&run, &recorder, unfinished).await,
+        }
+    }
+    recorder.forget();
+    put_in_place(
+        item,
+        src,
+        dst,
+        &copy,
+        done_before,
+        took,
+        finish,
+        cancel,
+        sink,
+        times,
+    )
+    .await
+}
+
+/// End a copy in parts that did not complete, for the reason `unfinished`. Paused,
+/// held back, or failing partway, the copy and its record are kept, to continue it;
+/// the file ends with nothing in a whole-file partial copy. Stopped or cancelled
+/// (unless the whole job was paused), the copy is deleted.
+async fn give_up_parts(
+    run: &parts::Copying<'_>,
+    recorder: &parts::Recorder<'_>,
+    unfinished: Unfinished,
+) -> FileEnd {
+    let item = run.item;
+    match unfinished {
+        Unfinished::Partway(error) => {
+            tracing::warn!("{error}; the copy in parts is kept for resuming");
+            ItemOutcome::Failed(error).into()
+        }
+        Unfinished::End(FileEnd::Paused(_)) => {
+            tracing::info!("paused {}, copied in parts", item.dest);
+            FileEnd::Paused(0)
+        }
+        Unfinished::End(FileEnd::Held(_)) => FileEnd::Held(0),
+        Unfinished::End(FileEnd::Outcome(ItemOutcome::Cancelled)) if run.cancel.is_paused() => {
+            tracing::info!("paused {}, copied in parts", item.dest);
+            ItemOutcome::Cancelled.into()
+        }
+        Unfinished::End(FileEnd::Outcome(
+            outcome @ (ItemOutcome::Cancelled | ItemOutcome::Stopped),
+        )) => {
+            // Cancelling (or stopping this file) means the user wants the copy gone.
+            let _ = run.dst.remove_file(run.copy).await;
+            recorder.forget();
+            if outcome == ItemOutcome::Stopped {
+                tracing::info!("stopped by the user: {}", item.source);
+            }
+            outcome.into()
+        }
+        Unfinished::End(FileEnd::Outcome(outcome)) => {
+            if let ItemOutcome::Failed(error) = &outcome {
+                tracing::warn!("{error}; the copy in parts is kept for resuming");
+            }
+            outcome.into()
+        }
+    }
+}
+
+/// Fail a copy in parts that cannot be right (`error` says why): it is deleted with
+/// its record, so the file starts over next time.
+async fn discard_parts(
+    run: &parts::Copying<'_>,
+    recorder: &parts::Recorder<'_>,
+    error: String,
+) -> FileEnd {
+    tracing::warn!("{error}; the copy in parts starts over next time");
+    let _ = run.dst.remove_file(run.copy).await;
+    recorder.forget();
+    ItemOutcome::Failed(error).into()
 }
 
 /// Check the copy at `item.dest` against `item.source` by their SHA-256 checksums

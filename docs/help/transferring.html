@@ -146,6 +146,36 @@ class="ui">Start now</span>. Each site also has its own <span class="ui">Files a
 once</span> (under <span class="ui">Advanced</span> in the Login dialog), for servers that
 refuse many connections.</p>
 
+<h2 id="parts">Large files in parts</h2>
+<p>Many FTP servers limit how fast each connection goes, and over SFTP one file uses only
+part of what the network can carry. A large file then goes much faster in parts, each
+copied at the same time as the others. To do that, right-click the file and choose <span
+class="ui">Multi-part Download to this computer</span> (or <span class="ui">Multi-part
+Upload to …</span>, <span class="ui">Multi-part Copy to …</span>), shown in colour in the
+menu.</p>
+<ul>
+  <li>The item is there only where it helps: for a file of 1&nbsp;GiB or more, copied from
+    an FTP server (to this computer or to an SFTP server), or uploaded from this computer to
+    an SFTP server. Other files in the selection, and
+    folders, are copied as usual. Dragging and the plain <span class="ui">Download</span>
+    always copy whole files.</li>
+  <li>The parts use the places of <a href="#limit">Files at once</a>: a file in parts never
+    opens more connections than the limit allows, and each part is at least 256&nbsp;MiB.
+    Whole files waiting go first. When a connection frees up, it joins in, taking the second
+    half of the part with the most left; with none free at the start, the file starts as
+    one part and is split as connections free up.</li>
+  <li>The file's bar is cut into a piece per part, as wide as its share of the file: solid
+    when done, striped while it moves.</li>
+  <li>While it is copied it is called <code>name.fileparts</code>. Pausing, a dropped
+    connection or closing ShuttleSCP keeps it, and the copy continues where each part was.
+    Stopping or cancelling deletes it.</li>
+</ul>
+<p>A copy in parts is always checked, even with checking turned off: each part's checksum is
+computed as it arrives, and once all are in, the copy is checked against them, part by part
+(<span class="ui">Checking parts</span>). A part that differs is copied again; if it still
+differs, the file fails and the copy is deleted. It is then checked against the original
+too, as any copy, if checking is on.</p>
+
 <h2 id="verify">Checking copies</h2>
 <p>After each file is copied, ShuttleSCP checks that the copy is identical to the original,
 by comparing their <em>checksums</em>: a long number computed from a file's contents, which

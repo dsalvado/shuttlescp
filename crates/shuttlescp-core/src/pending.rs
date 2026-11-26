@@ -123,6 +123,7 @@ mod tests {
             site_id: site.to_owned(),
             left_site_id: None,
             job: Job {
+                split: false,
                 permissions: None,
                 kind: JobKind::Copy,
                 side: Side::Local,

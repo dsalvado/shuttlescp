@@ -24,6 +24,8 @@ russh-sftp = "3"
 suppaftp = { version = "12", features = ["deprecated", "tokio-rustls-ring"] }
 # TCP keepalive on FTP control connections (already used by tokio).
 socket2 = "0.6"
+# Running a file's parts side by side (already built for russh).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 sha2 = "0.11"

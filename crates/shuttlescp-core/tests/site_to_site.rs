@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use shuttlescp_core::transfer::{
-    CancelFlag, FilePlaces, ItemOutcome, Job, JobKind, JobSummary, Side, TransferEvent,
-    Verification, Verify, run,
+    CancelFlag, FilePlaces, ItemOutcome, Job, JobKind, JobSummary, Side, SplitRecords,
+    TransferEvent, Verification, Verify, run,
 };
 
 /// A test server, from `SHUTTLESCP_TEST_SFTP` or `SHUTTLESCP_TEST_FTP`.
@@ -126,6 +126,7 @@ async fn run_job(job: Job, remote: &Remote, dest: Option<&Remote>) -> (JobSummar
 /// A job; copies and moves from one server to another are site to site.
 fn job(kind: JobKind, side: Side, sources: Vec<SidePath>, dest_dir: SidePath) -> Job {
     Job {
+        split: false,
         permissions: None,
         between_servers: !kind.in_place()
             && side == Side::Remote
@@ -1421,4 +1422,366 @@ async fn a_permissions_job_uses_sudo_for_a_whole_folder() {
         .find(|entry| entry.name() == "root-file")
         .expect("root-file");
     assert_eq!(file.mode(), Some(0o640));
+}
+
+/// Write `whole` onto `remote` at `path` as a copy in parts does: the size set first,
+/// then three parts, the last one first.
+async fn write_in_parts(remote: &Remote, path: &RemotePath, whole: &[u8]) {
+    remote
+        .set_size(path, whole.len() as u64)
+        .await
+        .expect("set the size");
+    let (one, two) = (whole.len() / 3, 2 * whole.len() / 3);
+    for (start, end) in [(two, whole.len()), (0, one), (one, two)] {
+        let mut writer = remote
+            .open_write_range(path, start as u64)
+            .await
+            .expect("open a part");
+        writer.write_all(&whole[start..end]).await.expect("write");
+        writer.shutdown().await.expect("close a part");
+    }
+}
+
+/// SFTP servers take a file written in parts, in any order, at the right size; one with
+/// a shell confirms the bytes by their checksum. FTP refuses, saying why.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn servers_that_can_write_parts_put_them_together() {
+    let whole = pattern(3_000_000);
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = temp.path().join("whole.bin");
+    std::fs::write(&local, &whole).expect("write");
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("local checksum");
+
+    // SFTP without a shell: the file is whole-sized.
+    let sftp = Server::from_env("SHUTTLESCP_TEST_SFTP");
+    let remote = sftp.connect().await;
+    assert!(remote.can_write_parts());
+    let path = sftp.dir.join("in-parts.bin");
+    write_in_parts(&remote, &path, &whole).await;
+    let listed = remote.list_dir(&sftp.dir).await.expect("list");
+    let entry = listed
+        .iter()
+        .find(|entry| entry.name() == "in-parts.bin")
+        .expect("the file is there");
+    assert_eq!(entry.size(), whole.len() as u64);
+    // Without a shell, a range's checksum cannot be computed there (so a copy in parts
+    // is read back to check it).
+    assert!(remote.range_sha256(&path, 0, 1000).await.is_err());
+
+    // SFTP with a shell: the bytes are right, and so is a range's checksum.
+    let shell = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = shell.connect().await;
+    let path = shell.dir.join("in-parts.bin");
+    write_in_parts(&remote, &path, &whole).await;
+    assert_eq!(remote.sha256(&path).await.expect("checksum"), here);
+    let range = temp.path().join("range.bin");
+    std::fs::write(&range, &whole[1_000_001..2_500_000]).expect("write");
+    assert_eq!(
+        remote
+            .range_sha256(&path, 1_000_001, 2_500_000)
+            .await
+            .expect("range checksum"),
+        shuttlescp_core::checksum::local_sha256(range)
+            .await
+            .expect("local checksum")
+    );
+
+    // FTP: refused, before anything is sent.
+    let ftp = Server::from_env("SHUTTLESCP_TEST_FTP");
+    let remote = ftp.connect().await;
+    assert!(!remote.can_write_parts());
+    let path = ftp.dir.join("in-parts.bin");
+    let refused = remote.set_size(&path, 10).await.expect_err("FTP cannot");
+    assert!(refused.contains("in parts"), "{refused}");
+    assert!(remote.open_write_range(&path, 0).await.is_err());
+}
+
+/// A large file from an FTP server is copied in parts, each over a connection of its
+/// own; paused partway, it continues where its parts were, even with the records read
+/// back from their file. It comes out whole; nothing of the copy in parts is left.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_large_file_from_ftp_is_copied_in_parts() {
+    use std::io::Write;
+    // Arrange: just over 1 GiB on the FTP server, written in chunks that keep the
+    // pattern's place (a multiple of 251), so a part in the wrong place shows.
+    let ftp = Server::from_env("SHUTTLESCP_TEST_FTP");
+    let remote = ftp.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = temp.path().join("big.bin");
+    let chunk = pattern(251 * 4096);
+    let mut file = std::io::BufWriter::new(std::fs::File::create(&local).expect("create"));
+    let mut size = 0;
+    while size < (1 << 30) {
+        file.write_all(&chunk).expect("write");
+        size += chunk.len();
+    }
+    file.flush().expect("flush");
+    drop(file);
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(ftp.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+
+    // Act: download it in parts, pause the job partway (as when closing the app),
+    // then run it again with the records read back from their file.
+    let down = temp.path().join("down");
+    std::fs::create_dir(&down).expect("create");
+    let mut download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![SidePath::Remote(ftp.dir.join("big.bin"))],
+        SidePath::Local(down.clone()),
+    );
+    download.split = true;
+    let records_file = temp.path().join("split-copies.json");
+    let records = Arc::new(SplitRecords::load(&records_file));
+    let first = CancelFlag::default().with_split_records(Arc::clone(&records));
+    let announced = Arc::new(Mutex::new(None));
+    let (seen, pausing) = (Arc::clone(&announced), first.clone());
+    let paused = run(
+        download.clone(),
+        Some(remote.clone()),
+        None,
+        first,
+        move |event| match event {
+            TransferEvent::Parts { parts, .. } => {
+                // The parts as they started.
+                let ranges: Vec<(u64, u64)> =
+                    parts.iter().map(|part| (part.start, part.end)).collect();
+                seen.lock().expect("lock").get_or_insert(ranges);
+            }
+            TransferEvent::Progress { done, .. } if done > (2 << 30) / 5 => pausing.pause(),
+            _ => {}
+        },
+    )
+    .await;
+    let kept = std::fs::metadata(down.join("big.bin.fileparts")).map(|kept| kept.len());
+    drop(records);
+    let resumed_from = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&resumed_from);
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    let failed = Arc::clone(&failures);
+    let again =
+        CancelFlag::default().with_split_records(Arc::new(SplitRecords::load(&records_file)));
+    let summary = run(
+        download,
+        Some(remote.clone()),
+        None,
+        again,
+        move |event| match event {
+            TransferEvent::Resumed { from, .. } => *seen.lock().expect("lock") = Some(from),
+            TransferEvent::ItemFinished {
+                outcome: ItemOutcome::Failed(error),
+                ..
+            } => failed.lock().expect("lock").push(error),
+            _ => {}
+        },
+    )
+    .await;
+
+    // Assert: 4 parts of at least 256 MiB; paused with the copy kept at full size;
+    // continued from where the parts were; the bytes right; nothing of it left.
+    assert!(!paused.is_complete(), "paused: {paused:?}");
+    assert_eq!(kept.ok(), Some(size as u64), "the copy in parts is kept");
+    assert!(
+        summary.is_complete(),
+        "download: {summary:?}, failed: {:?}",
+        failures.lock().expect("lock")
+    );
+    let ranges = announced
+        .lock()
+        .expect("lock")
+        .clone()
+        .expect("copied in parts");
+    assert_eq!(ranges.len(), 4, "{ranges:?}");
+    let from = resumed_from.lock().expect("lock").expect("continued");
+    assert!(
+        from > (1 << 30) / 10 && from < size as u64,
+        "continued from {from}"
+    );
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("checksum");
+    let copied = shuttlescp_core::checksum::local_sha256(down.join("big.bin"))
+        .await
+        .expect("checksum");
+    assert_eq!(copied, here);
+    let left: Vec<_> = std::fs::read_dir(&down)
+        .expect("list")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(left, vec![std::ffi::OsString::from("big.bin")]);
+}
+
+/// A large file uploaded to an SFTP server is copied in parts, its pieces checked by
+/// the server itself (`sha256sum` over its shell); it comes out whole, with nothing of
+/// the copy in parts left.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_large_file_uploaded_to_sftp_is_copied_in_parts() {
+    // Arrange
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = big_local_file(temp.path(), "big-up.bin");
+    let mut upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    upload.split = true;
+
+    // Act
+    let seen = Arc::new(Mutex::new((None, false, Vec::new())));
+    let events = Arc::clone(&seen);
+    let summary = run(
+        upload,
+        Some(remote.clone()),
+        None,
+        CancelFlag::default(),
+        move |event| {
+            let mut events = events.lock().expect("lock");
+            match event {
+                TransferEvent::Parts { parts, .. } => {
+                    events.0.get_or_insert(parts.len());
+                }
+                TransferEvent::PartsChecked { .. } => events.1 = true,
+                TransferEvent::ItemFinished {
+                    outcome: ItemOutcome::Failed(error),
+                    ..
+                } => events.2.push(error),
+                _ => {}
+            }
+        },
+    )
+    .await;
+
+    // Assert
+    let (parts, checked, failures) = seen.lock().expect("lock").clone();
+    assert!(
+        summary.is_complete(),
+        "upload: {summary:?}, failed: {failures:?}"
+    );
+    assert_eq!(parts, Some(4), "copied in 4 parts");
+    assert!(checked, "its parts were checked");
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("checksum");
+    let there = remote
+        .sha256(&server.dir.join("big-up.bin"))
+        .await
+        .expect("checksum on the server");
+    assert_eq!(there, here);
+    let listed = remote.list_dir(&server.dir).await.expect("list");
+    assert!(
+        !listed
+            .iter()
+            .any(|entry| entry.name().to_string_lossy().contains("big-up.bin.")),
+        "nothing of the copy in parts left: {listed:?}"
+    );
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![SidePath::Remote(server.dir.join("big-up.bin"))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (removed, _) = run_job(remove, &remote, None).await;
+    assert!(removed.is_complete(), "clean up: {removed:?}");
+}
+
+/// Write a file of just over 1 GiB, large enough to copy in parts, in chunks that keep
+/// the pattern's place.
+fn big_local_file(dir: &Path, name: &str) -> PathBuf {
+    use std::io::Write;
+    let path = dir.join(name);
+    let chunk = pattern(251 * 4096);
+    let mut file = std::io::BufWriter::new(std::fs::File::create(&path).expect("create"));
+    let mut size = 0;
+    while size < (1 << 30) {
+        file.write_all(&chunk).expect("write");
+        size += chunk.len();
+    }
+    file.flush().expect("flush");
+    path
+}
+
+/// Asked to copy in parts with no connection free, an upload starts as one part; places
+/// freed later join in, each taking half of the part with the most left. It comes out
+/// whole.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn connections_freed_later_join_a_copy_started_as_one_part() {
+    // Arrange: one place only; 3 s in, four.
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = big_local_file(temp.path(), "joined-up.bin");
+    let mut upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    upload.split = true;
+    let places = FilePlaces::new(Some(1));
+    let limits = Arc::clone(&places);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        limits.set_limit(Some(4));
+    });
+
+    // Act: the number of parts in each report.
+    let seen = Arc::new(Mutex::new((Vec::new(), Vec::new())));
+    let events = Arc::clone(&seen);
+    let cancel = CancelFlag::default().with_places(Arc::clone(&places));
+    let summary = run(upload, Some(remote.clone()), None, cancel, move |event| {
+        let mut events = events.lock().expect("lock");
+        match event {
+            TransferEvent::Parts { parts, .. } => {
+                if events.0.last() != Some(&parts.len()) {
+                    events.0.push(parts.len());
+                }
+            }
+            TransferEvent::ItemFinished {
+                outcome: ItemOutcome::Failed(error),
+                ..
+            } => events.1.push(error),
+            _ => {}
+        }
+    })
+    .await;
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![SidePath::Remote(server.dir.join("joined-up.bin"))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("checksum");
+    let there = remote.sha256(&server.dir.join("joined-up.bin")).await;
+    let (removed, _) = run_job(remove, &remote, None).await;
+
+    // Assert: one part first, more once places were freed; whole.
+    let (counts, failures) = seen.lock().expect("lock").clone();
+    assert!(
+        summary.is_complete(),
+        "upload: {summary:?}, failed: {failures:?}"
+    );
+    assert_eq!(counts.first(), Some(&1), "started as one part: {counts:?}");
+    assert!(
+        counts.iter().any(|&count| count > 1),
+        "freed places joined in: {counts:?}"
+    );
+    assert_eq!(there.expect("checksum on the server"), here);
+    assert!(removed.is_complete(), "clean up: {removed:?}");
 }

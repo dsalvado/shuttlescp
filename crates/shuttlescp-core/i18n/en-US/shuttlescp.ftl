@@ -344,6 +344,12 @@ pane-transfer-to =
         [download] _Download to { $name }
        *[copy] _Copy to { $name }
     }
+pane-transfer-in-parts =
+    { $kind ->
+        [upload] Multi-_part Upload to { $name }
+        [download] Multi-_part Download to { $name }
+       *[copy] Multi-_part Copy to { $name }
+    }
 pane-move = _Move
 pane-move-to = _Move to { $name }
 pane-menu-new-folder = _New Folder…
@@ -781,6 +787,8 @@ error-no-such-item = no such file or folder
 # $path: a file whose date is before 1970 or after 2106.
 error-sftp-date = { $path } has a date SFTP cannot store
 error-ftp-no-owner = FTP cannot change who owns a file
+error-ftp-no-parts = FTP cannot write a file in parts
+error-source-ended-early = { $path } ended before its expected size
 error-owner-unknown = the server did not say who owns it now
 error-mode-unknown = its permissions now are unknown, so every box must be ticked or cleared
 error-no-such-user = there is no user or group { $name }
@@ -797,8 +805,10 @@ checksum-unsupported = the server cannot compute checksums
 checksum-no-answer = the server's answer held no checksum
 ftp-no-transfer-reply = the server did not confirm the transfer within { $seconds } s
 verify-mismatch = the copy's checksum differs from the original's: the copy is not what was copied
+verify-parts-mismatch = pieces of the copy still differ from what was copied, after copying them again
 verify-skipped = skipped by the user
 item-verifying = Verifying…
+item-checking-parts = Checking parts…
 item-verified = { $size } · verified
 item-not-verified = { $size } · not verified
 item-not-verified-large = { $size } · not verified (large file)

@@ -4,11 +4,13 @@ use std::ffi::OsString;
 use std::io::SeekFrom;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite};
 
-use crate::checksum::{Checksum, local_sha256, sha256_of};
+use crate::checksum::{Checksum, local_range_sha256, local_sha256, sha256_of};
 use crate::path::{RemotePath, SidePath};
 use crate::remote::{Remote, RemoteMeta};
 
@@ -114,6 +116,42 @@ impl Endpoint {
                 .map_err(|error| crate::i18n::cannot("read", path.display(), &error)),
             Target::Remote(remote, path) => remote.sha256(path).await,
         }
+    }
+
+    /// The SHA-256 of the bytes `start..end` of a file: hashed here for this computer;
+    /// for a server's, computed by the server if it can, else read back. `read` is
+    /// added the bytes read as they are (nothing, when the server computes it).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of reading the file
+    pub(super) async fn range_sha256(
+        &self,
+        path: &SidePath,
+        start: u64,
+        end: u64,
+        read: &Arc<AtomicU64>,
+    ) -> Result<Checksum, String> {
+        let (remote, at) = match self.target(path)? {
+            Target::Local(local) => {
+                return local_range_sha256(local.to_owned(), start, end, Arc::clone(read))
+                    .await
+                    .map_err(|error| crate::i18n::cannot("read", local.display(), &error));
+            }
+            Target::Remote(remote, at) => (remote, at),
+        };
+        match remote.range_sha256(at, start, end).await {
+            Ok(checksum) => return Ok(checksum),
+            Err(reason) => tracing::debug!("{path}: {reason}; reading {start}..{end} back"),
+        }
+        let reader = self.open_at(path, start).await?;
+        let mut counted = 0;
+        sha256_of(reader.take(end - start), |done| {
+            read.fetch_add(done - counted, Ordering::Relaxed);
+            counted = done;
+        })
+        .await
+        .map_err(|error| crate::i18n::cannot("read", path, &error))
     }
 
     /// The SHA-256 of a file, by reading all of it here (from a server: a second
@@ -227,6 +265,61 @@ impl Endpoint {
         })
     }
 
+    /// What this end is, for deciding whether to copy in parts (see
+    /// [`super::faster_in_parts`]).
+    pub(super) fn parts_host(&self) -> super::PartsHost {
+        match self {
+            Self::Local => super::PartsHost::ThisComputer,
+            Self::Remote(remote) => remote.parts_host(),
+        }
+    }
+
+    /// Open a file to write one part of it, at `position`, keeping what the file holds
+    /// before and after; it is created if missing. Unlike
+    /// [`Endpoint::open_write_at`], which continues a copy written from the start and
+    /// so cuts off anything past `offset`, this leaves the other parts alone.
+    pub(super) async fn open_write_range(
+        &self,
+        path: &SidePath,
+        position: u64,
+    ) -> Result<Writer, String> {
+        Ok(match self.target(path)? {
+            Target::Local(path) => {
+                let mut file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)
+                    .await
+                    .map_err(|error| crate::i18n::cannot("create", path.display(), &error))?;
+                file.seek(SeekFrom::Start(position))
+                    .await
+                    .map_err(|error| crate::i18n::cannot("write", path.display(), &error))?;
+                Box::pin(file)
+            }
+            Target::Remote(remote, path) => remote.open_write_range(path, position).await?,
+        })
+    }
+
+    /// Make a file exactly `size` bytes long, creating it if missing: the first step of
+    /// a copy in parts, so every part writes inside the file. Meant for a new copy.
+    pub(super) async fn set_size(&self, path: &SidePath, size: u64) -> Result<(), String> {
+        match self.target(path)? {
+            Target::Local(path) => {
+                let failed = |error| crate::i18n::cannot("write", path.display(), &error);
+                let file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)
+                    .await
+                    .map_err(failed)?;
+                file.set_len(size).await.map_err(failed)
+            }
+            Target::Remote(remote, path) => remote.set_size(path, size).await,
+        }
+    }
+
     /// Read `len` bytes starting at `offset`.
     pub(super) async fn read_range(
         &self,
@@ -330,6 +423,14 @@ impl Endpoint {
 pub(super) fn partial_path(dest: &SidePath) -> SidePath {
     let mut name = dest.file_name().map(OsString::from).unwrap_or_default();
     name.push(super::PARTIAL_SUFFIX);
+    dest.with_file_name(name)
+}
+
+/// Where a file is copied in parts before it gets its real name (see
+/// [`super::PARTS_SUFFIX`]).
+pub(super) fn parts_path(dest: &SidePath) -> SidePath {
+    let mut name = dest.file_name().map(OsString::from).unwrap_or_default();
+    name.push(super::PARTS_SUFFIX);
     dest.with_file_name(name)
 }
 

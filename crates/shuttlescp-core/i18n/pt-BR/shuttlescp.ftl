@@ -274,6 +274,12 @@ pane-transfer-to =
         [download] _Baixar para { $name }
        *[copy] _Copiar para { $name }
     }
+pane-transfer-in-parts =
+    { $kind ->
+        [upload] Envio multi_parte para { $name }
+        [download] Download multi_parte para { $name }
+       *[copy] Cópia multi_parte para { $name }
+    }
 pane-move = _Mover
 pane-move-to = _Mover para { $name }
 pane-menu-new-folder = _Nova pasta…
@@ -642,6 +648,8 @@ error-cannot-rename-bare = não é possível renomear { $from } para { $to }
 error-no-such-item = arquivo ou pasta inexistente
 error-sftp-date = { $path } tem uma data que o SFTP não consegue gravar
 error-ftp-no-owner = o FTP não permite alterar o proprietário de um arquivo
+error-ftp-no-parts = o FTP não consegue gravar um arquivo em partes
+error-source-ended-early = { $path } terminou antes do tamanho esperado
 error-owner-unknown = o servidor não informou o proprietário atual
 error-mode-unknown = as permissões atuais são desconhecidas: cada caixa precisa ser marcada ou desmarcada
 error-no-such-user = não existe usuário ou grupo { $name }
@@ -657,8 +665,10 @@ checksum-unsupported = o servidor não consegue calcular somas de verificação
 checksum-no-answer = a resposta do servidor não continha nenhuma soma de verificação
 ftp-no-transfer-reply = o servidor não confirmou a transferência em { $seconds } s
 verify-mismatch = a soma de verificação da cópia difere da do original: a cópia não é o que foi copiado
+verify-parts-mismatch = partes da cópia ainda diferem do que foi copiado, mesmo depois de copiá-las de novo
 verify-skipped = ignorada pelo usuário
 item-verifying = Verificando…
+item-checking-parts = Verificando as partes…
 item-verified = { $size } · verificado
 item-not-verified = { $size } · não verificado
 item-not-verified-large = { $size } · não verificado (arquivo grande)

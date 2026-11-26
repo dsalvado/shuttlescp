@@ -35,6 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+pub use copy::{PartsHost, SPLIT_FROM, SplitRecords, faster_in_parts};
 pub use meter::{RateMeter, fraction, percent};
 pub use ops::{
     check_name, check_same_side, create_folder, rename, windows_name_problem,
@@ -59,6 +60,12 @@ pub const FILES_AT_ONCE: usize = 4;
 /// Ending added to a file's name while it is being copied; the file gets its real name
 /// once complete. The same convention as WinSCP.
 pub const PARTIAL_SUFFIX: &str = ".filepart";
+
+/// Added to a file's name while it is being copied in parts. Different from
+/// [`PARTIAL_SUFFIX`] on purpose: a copy in parts has gaps until every part is done, so
+/// it must never be taken for a whole-file partial copy, whose length tells how much is
+/// done.
+pub const PARTS_SUFFIX: &str = ".fileparts";
 
 /// Where files are: this computer or the connected server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +148,21 @@ pub struct Job {
     /// What a [`JobKind::Permissions`] job changes; `None` for other jobs. Such jobs
     /// are never saved to resume (they may hold a sudo password).
     pub permissions: Option<crate::permissions::PermissionsJob>,
+    /// Copy large files in parts, each over a connection of its own, where that is
+    /// faster (see [`copy`]'s `parts_for`). Chosen with "Multi-part Download" and the
+    /// like; saved, so a resumed job splits again.
+    pub split: bool,
+}
+
+/// Where one part of a file copied in parts has got to (see [`TransferEvent::Parts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartProgress {
+    /// Where the part starts in the file.
+    pub start: u64,
+    /// How far it has been copied: `start..at` is done.
+    pub at: u64,
+    /// Where it ends (moved back when a connection joining late takes its second half).
+    pub end: u64,
 }
 
 /// Whether and how copies are checked against their sources once made: by comparing
@@ -375,6 +397,8 @@ struct JobRecord {
     left_server: bool,
     #[serde(default)]
     resume: bool,
+    #[serde(default)]
+    split: bool,
 }
 
 impl JobRecord {
@@ -408,6 +432,7 @@ impl From<JobRecord> for Job {
             resume: record.resume,
             verify: Verify::default(),
             permissions: None,
+            split: record.split,
         };
         job.sources = record
             .sources
@@ -430,6 +455,7 @@ impl From<Job> for JobRecord {
             between_servers: job.between_servers,
             left_server: job.left_server,
             resume: job.resume,
+            split: job.split,
         }
     }
 }
@@ -499,6 +525,30 @@ pub struct PlanItem {
 }
 
 impl PlanItem {
+    /// Development aid: a file to show in the transfer list without planning a job (the
+    /// UI gallery). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub fn demo_file(id: usize, size: u64, source: SidePath, dest: SidePath) -> Self {
+        Self {
+            id,
+            parent: None,
+            name: source
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            kind: ItemKind::File,
+            size,
+            source,
+            dest,
+            existing: None,
+            modified: None,
+            existing_is_dir: false,
+            partial: 0,
+            mode: None,
+            is_link: false,
+        }
+    }
+
     /// Size and date of the source, for comparing with an existing copy.
     pub fn info(&self) -> FileInfo {
         FileInfo {
@@ -615,6 +665,16 @@ pub enum TransferEvent {
         /// Where the answer goes.
         reply: ConflictReply,
     },
+    /// A file is copied in parts, each over a connection of its own: where each part
+    /// has got to. Sent as the copy starts, with its progress, and when a connection
+    /// joining late takes the second half of a part (so there is one part more).
+    Parts {
+        /// Item id.
+        id: usize,
+        /// The parts, which cover the file from start to end; in the order they were
+        /// made, not by position.
+        parts: Vec<PartProgress>,
+    },
     /// A file continues an earlier, interrupted copy: its first `from` bytes were
     /// copied before (they count as done, but not towards the current speed).
     Resumed {
@@ -650,6 +710,13 @@ pub enum TransferEvent {
         /// Bytes read back so far.
         done: u64,
     },
+    /// A file copied in parts has had its pieces checked (after [`Self::Verifying`]):
+    /// whether they matched shows in how the file ends. It may be checked against its
+    /// source next, as any copy.
+    PartsChecked {
+        /// Item id.
+        id: usize,
+    },
     /// A copied file was checked against its source (before [`Self::ItemFinished`]).
     Verified {
         /// Item id.
@@ -683,6 +750,9 @@ pub struct CancelFlag {
     /// The limit on files copied at once that the job shares with every other one;
     /// `None` for no shared limit.
     places: Option<Arc<FilePlaces>>,
+    /// Where copies in parts record how far they have got, to be continued after the
+    /// app was closed; `None` keeps that for the job's run only.
+    split_records: Option<Arc<SplitRecords>>,
     /// Start now was asked for: the job goes first in the shared limit's line.
     start_now: Arc<AtomicBool>,
     /// Wakes whatever waits on a slow server when the user cancels, pauses or stops,
@@ -743,6 +813,19 @@ impl CancelFlag {
     /// The shared limit, if the job has one.
     pub(super) fn places(&self) -> Option<&Arc<FilePlaces>> {
         self.places.as_ref()
+    }
+
+    /// Record how far copies in parts have got in `records` (shared by every job), so
+    /// they continue where they were even after the app was closed.
+    #[must_use]
+    pub fn with_split_records(mut self, records: Arc<SplitRecords>) -> Self {
+        self.split_records = Some(records);
+        self
+    }
+
+    /// Where copies in parts record how far they have got, if the job was given that.
+    pub(super) fn split_records(&self) -> Option<&Arc<SplitRecords>> {
+        self.split_records.as_ref()
     }
 
     /// Ask for the job to go first in the shared limit's line ("Start now"): its next
@@ -1003,6 +1086,18 @@ pub async fn discard_partials(
                 removed += 1;
             }
             Err(error) => tracing::warn!("{error}"),
+        }
+    }
+    // Copies in parts, which the plan does not see (they are named apart): only where
+    // one could be, and quietly, as most such files are not there.
+    let could_be_split = |item: &&PlanItem| {
+        job.split && item.kind == ItemKind::File && item.size >= copy::SPLIT_FROM
+    };
+    for item in items.iter().filter(could_be_split) {
+        let copy = endpoint::parts_path(&item.dest);
+        if dst.remove_file(&copy).await.is_ok() {
+            tracing::info!("deleted the copy in parts {copy}");
+            removed += 1;
         }
     }
     Ok(removed)

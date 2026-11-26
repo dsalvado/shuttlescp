@@ -156,6 +156,25 @@ impl Ticket {
             state.waiting.insert((position, item));
             return None;
         }
+        Some(self.give(&mut state))
+    }
+
+    /// A place for one more part of a file already being copied, only if one is free
+    /// right now: unlike [`Ticket::try_take`], a part never waits in line, so it never
+    /// holds up another job's files. Copying in parts is a way to use idle places, not
+    /// a claim on them.
+    pub fn try_take_extra(&self) -> Option<Place> {
+        let mut state = self.places.state();
+        let room = state.limit.is_none_or(|limit| state.running.len() < limit);
+        // Anyone waiting at all, this job's own files included, goes first.
+        if !room || !state.waiting.is_empty() {
+            return None;
+        }
+        Some(self.give(&mut state))
+    }
+
+    /// A new place for this job, counted as running.
+    fn give(&self, state: &mut State) -> Place {
         let place = state.next_place;
         state.next_place += 1;
         let held = Arc::new(AtomicBool::new(false));
@@ -164,11 +183,11 @@ impl Ticket {
             ticket: self.id,
             held: Arc::clone(&held),
         });
-        Some(Place {
+        Place {
             places: Arc::clone(&self.places),
             id: place,
             held,
-        })
+        }
     }
 
     /// `item` no longer wants a place (stopped, cancelled or paused while waiting).
@@ -356,5 +375,25 @@ mod tests {
         let c1 = c.try_take(0);
         assert!(c1.is_some());
         assert_eq!(places.counts(), (Some(1), 1, 0));
+    }
+
+    #[test]
+    fn extra_parts_take_only_free_places_and_never_wait() {
+        let places = FilePlaces::new(Some(3));
+        let (a, b) = (places.join(), places.join());
+        let _a1 = a.try_take(0).expect("room");
+
+        // A's large file takes the two free places for its parts...
+        let part1 = a.try_take_extra().expect("free");
+        let _part2 = a.try_take_extra().expect("free");
+        // ...and with none left, asking leaves nothing waiting behind.
+        assert!(a.try_take_extra().is_none());
+        assert_eq!(places.counts(), (Some(3), 3, 0));
+
+        // A file waiting in line goes before any more parts.
+        assert!(b.try_take(0).is_none());
+        drop(part1);
+        assert!(a.try_take_extra().is_none(), "B's file is waiting");
+        assert!(b.try_take(0).is_some());
     }
 }

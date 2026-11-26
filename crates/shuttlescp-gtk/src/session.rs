@@ -27,7 +27,7 @@ use shuttlescp_core::listing_cache::ListingCache;
 use shuttlescp_core::path::{RemotePath, SidePath};
 use shuttlescp_core::remote::Remote;
 use shuttlescp_core::sites::{Site, SiteVerify};
-use shuttlescp_core::transfer::{FilePlaces, Job, Side, Verify};
+use shuttlescp_core::transfer::{FilePlaces, Job, PartsHost, Side, Verify};
 
 use crate::app::{App, AppMsg, not_connected};
 use crate::file_pane::{FilePane, FilePaneInit, FilePaneMsg, FilePaneOutput, Peer};
@@ -434,10 +434,12 @@ impl Session {
             Some(left) => Peer {
                 name: left.host.clone(),
                 is_server: true,
+                host: left.remote.parts_host(),
             },
             None => Peer {
                 name: tr!("this-computer"),
                 is_server: false,
+                host: PartsHost::ThisComputer,
             },
         })));
         self.set_right(pane.widget());
@@ -458,6 +460,7 @@ impl Session {
         self.local_pane.emit(FilePaneMsg::Peer(Some(Peer {
             name: remote.host().to_owned(),
             is_server: true,
+            host: remote.parts_host(),
         })));
         tracing::info!("session {id}: connected to {}", site.display_name());
         self.connection = Some(Connection {
@@ -870,11 +873,12 @@ fn pane_message(session: SessionId, side: Side, output: FilePaneOutput) -> AppMs
             (SidePath::Remote(dir), Side::Local) => AppMsg::LeftDirChanged { session, dir },
             (SidePath::Remote(dir), Side::Remote) => AppMsg::RemoteDirChanged { session, dir },
         },
-        FilePaneOutput::Request { kind, paths } => AppMsg::PaneRequest {
+        FilePaneOutput::Request { kind, paths, split } => AppMsg::PaneRequest {
             session,
             side,
             kind,
             paths,
+            split,
         },
         FilePaneOutput::ColumnsChanged(hidden) => AppMsg::ColumnsChanged(hidden),
         FilePaneOutput::PermissionsJob { paths, change } => AppMsg::PermissionsJob {
@@ -965,6 +969,7 @@ mod tests {
     /// A job as a pane makes it: `pane` holds the sources.
     fn pane_job(kind: JobKind, pane: Side, same_side: bool) -> Job {
         Job {
+            split: false,
             permissions: None,
             kind,
             side: pane,

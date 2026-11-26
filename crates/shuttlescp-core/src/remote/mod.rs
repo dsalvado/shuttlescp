@@ -432,6 +432,25 @@ impl Remote {
         }
     }
 
+    /// The SHA-256 of the bytes `start..end` of a file, computed by the server (to check
+    /// a copy made in parts, a part at a time).
+    ///
+    /// # Errors
+    ///
+    /// Returns why there is none: FTP servers cannot (HASH ranges are rarely offered),
+    /// nor can SFTP accounts that may not run commands; or the file cannot be read
+    pub async fn range_sha256(
+        &self,
+        path: &RemotePath,
+        start: u64,
+        end: u64,
+    ) -> Result<Checksum, String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.range_sha256(path, start, end).await,
+            Backend::Ftp(_) => Err(crate::tr!("checksum-unsupported")),
+        }
+    }
+
     /// Details of `path`, following a symbolic link to what it points to.
     pub(crate) async fn stat(&self, path: &RemotePath) -> Result<RemoteMeta, String> {
         match &self.0.backend {
@@ -485,6 +504,55 @@ impl Remote {
         match &self.0.backend {
             Backend::Sftp(sftp) => sftp.open_write_at(path, offset).await,
             Backend::Ftp(ftp) => ftp.open_write_at(path, offset).await,
+        }
+    }
+
+    /// What this server is, for deciding whether a copy is faster in parts (see
+    /// [`crate::transfer::faster_in_parts`]).
+    pub fn parts_host(&self) -> crate::transfer::PartsHost {
+        match self.0.backend {
+            Backend::Sftp(_) => crate::transfer::PartsHost::Sftp,
+            Backend::Ftp(_) => crate::transfer::PartsHost::Ftp,
+        }
+    }
+
+    /// Whether files on this server can be written in parts: a part at any position,
+    /// keeping the rest (SFTP yes; FTP no, it only writes from the start or appends).
+    pub fn can_write_parts(&self) -> bool {
+        matches!(self.0.backend, Backend::Sftp(_))
+    }
+
+    /// Open a file to write one part of it, at `position`: what the file holds before
+    /// and after stays. The file is created if missing. For copying a file in parts,
+    /// each over its own connection, into one copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses, or cannot write in parts (FTP;
+    /// see [`Remote::can_write_parts`])
+    pub async fn open_write_range(
+        &self,
+        path: &RemotePath,
+        position: u64,
+    ) -> Result<RemoteWriter, String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.open_write_range(path, position).await,
+            Backend::Ftp(_) => Err(no_parts_on_ftp(path)),
+        }
+    }
+
+    /// Make a file exactly `size` bytes long, creating it if missing: done first when
+    /// copying a file in parts, so each part writes inside it. Meant for a new copy,
+    /// whose contents do not matter yet. (A server that cannot set sizes gets a byte
+    /// written at the end, which only makes the file longer.)
+    ///
+    /// # Errors
+    ///
+    /// Returns a readable message if the server refuses, or cannot write in parts (FTP)
+    pub async fn set_size(&self, path: &RemotePath, size: u64) -> Result<(), String> {
+        match &self.0.backend {
+            Backend::Sftp(sftp) => sftp.set_size(path, size).await,
+            Backend::Ftp(_) => Err(no_parts_on_ftp(path)),
         }
     }
 
@@ -622,6 +690,11 @@ impl Remote {
     pub fn can_set_owner(&self) -> bool {
         matches!(self.0.backend, Backend::Sftp(_))
     }
+}
+
+/// Why a file on an FTP server cannot be written in parts.
+fn no_parts_on_ftp(path: &RemotePath) -> String {
+    crate::i18n::cannot("write", path, crate::tr!("error-ftp-no-parts"))
 }
 
 /// A server path as the text the protocols expect.

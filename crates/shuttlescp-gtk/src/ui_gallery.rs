@@ -51,12 +51,14 @@ type Step = (&'static str, Box<dyn Fn(&gtk::Window)>);
 /// * `open_login` - Opens the Login dialog
 /// * `open_sessions` - Opens a second session tab, with the first one busy
 /// * `focus_first` - Brings the first session tab forward again
+/// * `show_parts` - Adds a made-up download in parts to the first session's Queue
 pub fn run(
     main: &gtk::ApplicationWindow,
     dir: PathBuf,
     open_login: impl Fn() + 'static,
     open_sessions: impl Fn() + 'static,
     focus_first: impl Fn() + 'static,
+    show_parts: impl Fn() + 'static,
 ) {
     if let Err(error) = std::fs::create_dir_all(&dir) {
         tracing::error!("UI gallery: cannot create {}: {error}", dir.display());
@@ -78,6 +80,7 @@ pub fn run(
         ),
         ("sessions", Box::new(move |_| open_sessions())),
         ("sessions-first", Box::new(move |_| focus_first())),
+        ("transfers-in-parts", Box::new(move |_| show_parts())),
         // Shows whatever tab is in front: the site-to-site one, if `PAIR_VAR` opened one
         // (it comes forward once both servers are connected).
         (
