@@ -7,6 +7,16 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Security
+
+- Updated the SSH library (russh 0.65.4): security fixes for a server that could make
+  ShuttleSCP's memory grow without limit before login, offer a host key of another type
+  than the one agreed, or answer for channels that were never opened.
+- Updated the password store library on Linux (oo7 0.7.3): crafted keyring files no
+  longer crash it. Saved passwords stay where they are.
+- Also updated: the web library used for update checks (ureq 3.5.2), the macOS and
+  Windows password store (keyring-core 1.1.0) and zeroize 1.9.2.
+
 ## [0.28.0] - 2026-11-26
 
 ### Added
