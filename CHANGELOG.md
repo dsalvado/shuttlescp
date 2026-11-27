@@ -7,6 +7,8 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-26
+
 ### Added
 
 - A site's "Parts per file" (under Advanced in the Login dialog, usually 8): how many
@@ -726,7 +728,8 @@ The first public release: a public beta. Feedback and bug reports are welcome on
 - Update checks (Help › Check for Updates, and daily at startup, which can be turned
   off). Updates are installed only when signed with the ShuttleSCP release key.
 
-[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.28.1...HEAD
+[Unreleased]: https://github.com/dsalvado/shuttlescp/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/dsalvado/shuttlescp/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/dsalvado/shuttlescp/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/dsalvado/shuttlescp/compare/v0.27.3...v0.28.0
 [0.27.3]: https://github.com/dsalvado/shuttlescp/compare/v0.27.2...v0.27.3
