@@ -709,8 +709,8 @@ impl SimpleComponent for App {
                         right,
                         resume,
                     } => AppMsg::ConnectedPair {
-                        left,
-                        right,
+                        left: *left,
+                        right: *right,
                         resume,
                     },
                 }),

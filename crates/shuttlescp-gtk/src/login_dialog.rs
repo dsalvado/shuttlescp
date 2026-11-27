@@ -273,12 +273,13 @@ pub enum LoginOutput {
         resume: Option<Resume>,
     },
     /// Logged in to two sites, for copying between them: `left` for the left pane and
-    /// `right` for the right one.
+    /// `right` for the right one. Boxed, so this variant (two sites) doesn't make
+    /// every message as big as itself.
     ConnectedPair {
         /// The left pane's site and its connection.
-        left: (Site, Remote),
+        left: Box<(Site, Remote)>,
         /// The right pane's site and its connection.
-        right: (Site, Remote),
+        right: Box<(Site, Remote)>,
         /// Unfinished transfers to resume in it.
         resume: Option<Resume>,
     },
@@ -2797,8 +2798,8 @@ impl Component for LoginDialog {
                         };
                         let output = match left {
                             Some(left) => LoginOutput::ConnectedPair {
-                                left,
-                                right: (site, remote),
+                                left: Box::new(left),
+                                right: Box::new((site, remote)),
                                 resume,
                             },
                             None => LoginOutput::Connected {
