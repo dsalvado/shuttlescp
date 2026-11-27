@@ -7,6 +7,21 @@ becomes its release notes on GitHub.
 
 ## [Unreleased]
 
+### Added
+
+- A site's "Parts per file" (under Advanced in the Login dialog, usually 8): how many
+  connections a Multi-part copy may use, apart from "Files at once", which counts whole
+  files. It used to be held to Files at once (usually 4). A server that refuses that many
+  connections gets fewer; the other parts wait for one.
+- "Raise Priority" on a file being copied in parts (right-click its line in Transfers):
+  other files step back, newest first, only as many as it can use more connections, and
+  their places go to its parts. They continue from their partial copies afterwards. A
+  file waiting for a place can be raised too, to go first. It is also a button beside
+  Pause and Cancel.
+- Hovering over "Files:" in the status bar lists what uses the places, under each tab:
+  every file copied and its connections, every file waiting for a place, and how many
+  more wait to start.
+
 ## [0.28.1] - 2026-11-26
 
 ### Security

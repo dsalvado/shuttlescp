@@ -29,6 +29,15 @@ preferences-restart = Restart { -app-name } to use the new language.
 status-transfers-unlimited = Files: unlimited
 status-transfers-limited = Files: { $running } of { $limit }
 status-transfers-waiting = { $count } waiting
+status-transfers-file-uses = { $name }: { $count ->
+    [one] 1 connection
+   *[other] { $count } connections
+}
+status-transfers-file-held = { $name }: paused, waiting for a place
+status-transfers-not-started = { $count ->
+    [one] 1 more file waits to start
+   *[other] { $count } more files wait to start
+}
 dialog-cancel = Cancel
 
 ## The Quit dialog, when transfers are unfinished (quit_dialog.rs). $count is a number
@@ -420,6 +429,7 @@ job-cancel-paused = Cancel the paused transfer
 job-pause = Pause: stop for now, keeping what is copied
 job-resume = Resume: continue where it was paused
 job-start-now = Start now
+item-raise-priority = Raise Priority
 job-retry = Retry: continue where it stopped
 job-remove = Remove from the list
 
@@ -556,6 +566,8 @@ login-description = Description:
 login-advanced = Advanced
 login-files-at-once-tooltip = Files copied at the same time. More can be faster when the server limits each connection's speed; FTP opens a connection for each, and some servers allow only a few.
 login-files-at-once = Files at once:
+login-parts-per-file-tooltip = Most connections one file copied with Multi-part may use, apart from Files at once, which counts whole files. More can be faster when the server limits each connection's speed; some servers allow only a few.
+login-parts-per-file = Parts per file:
 login-save = Save
 login-tab-direct = Direct
 login-site-to-site-intro = Copies between the two servers are transferred through this computer. Pick a saved site for each connection, then Login.

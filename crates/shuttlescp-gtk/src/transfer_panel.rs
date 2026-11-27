@@ -43,9 +43,10 @@ const BAR_WIDTH: i32 = 160;
 const PART_GAP: i32 = 2;
 /// Indent of each tree level, in pixels.
 const INDENT: i32 = 18;
-/// Width of the slot at the end of each line for the result icon (or a job's Cancel /
-/// Retry button), so bars and texts stay lined up whatever it shows.
-const END_SLOT_WIDTH: i32 = 48;
+/// Width of the slot at the end of each line for the result icon (or its buttons: at
+/// most Raise Priority, Pause and Cancel), so bars and texts stay lined up whatever it
+/// shows.
+const END_SLOT_WIDTH: i32 = 72;
 /// A finished job flashes (green, or red if it failed) in the Queue this long...
 const FLASH_FOR: Duration = Duration::from_millis(900);
 /// ...or this long when it ended with an error, so the message can be read.
@@ -277,6 +278,14 @@ pub enum TransferPanelMsg {
     /// Start this waiting, held-back or paused job now, ahead of the others: at the
     /// transfer limit, the job started last steps back ("Start now").
     StartNow(u64),
+    /// Raise a file copied in parts above the others: other files step back, as many
+    /// as it can use more connections, and their places go to its parts.
+    RaisePriority {
+        /// The job.
+        job: u64,
+        /// The file.
+        item: usize,
+    },
     Retry(u64),
     /// Show or hide the contents of a job (`item` is `None`) or folder.
     Toggle {
@@ -454,6 +463,8 @@ struct RowWidgets {
     part_bars: gtk::Box,
     info: gtk::Label,
     status: gtk::Image,
+    /// Raise Priority, on a file moving in parts or waiting for a place.
+    raise: gtk::Button,
     pause: gtk::Button,
     cancel: gtk::Button,
     retry: gtk::Button,
@@ -463,6 +474,9 @@ struct RowWidgets {
     remove: gtk::Button,
     /// The row shows a job that can start now (see [`RowView::can_start_now`]).
     can_start_now: Rc<Cell<bool>>,
+    /// The row shows a file that can be raised above the others (see
+    /// [`RowView::can_raise`]).
+    can_raise: Rc<Cell<bool>>,
 }
 
 /// State shared by the panel and its list rows.
@@ -482,6 +496,15 @@ impl Shared {
     fn hides_finished(&self, job: &JobState) -> bool {
         self.hide_finished && job.list == ListKind::Queue
     }
+}
+
+/// A file of a running transfer that uses places in the transfer limit, or was held back
+/// from one (for the status bar's tooltip, see [`TransferPanel::place_uses`]).
+pub struct PlaceUse {
+    /// The file's name.
+    pub name: String,
+    /// Connections it copies over now (one per part moving); 0 while held back.
+    pub connections: usize,
 }
 
 /// The transfers panel component. Its root is the Queue page; the Completed and Failed
@@ -758,6 +781,14 @@ impl Component for TransferPanel {
             TransferPanelMsg::DiscardAll => self.discard_all(&sender),
             TransferPanelMsg::Retry(id) => self.retry(id, &sender),
             TransferPanelMsg::StartNow(id) => self.start_now(id, &sender),
+            TransferPanelMsg::RaisePriority { job: id, item } => {
+                if let Some(job) = self.shared.borrow().jobs.get(&id)
+                    && job.items.get(item).is_some()
+                {
+                    tracing::info!("raising file {item} of transfer {id} above the others");
+                    job.cancel.raise_priority(item);
+                }
+            }
             TransferPanelMsg::Toggle { job, item } => self.toggle(RowKey { job, item }),
             TransferPanelMsg::Clear(kind) => self.clear(kind),
             TransferPanelMsg::Dismiss(id) => {
@@ -937,6 +968,40 @@ impl Drop for TransferPanel {
 }
 
 impl TransferPanel {
+    /// The files of its running transfers that use places in the transfer limit (and
+    /// how many connections each), then those held back from one; and how many more
+    /// wait to start.
+    pub fn place_uses(&self) -> (Vec<PlaceUse>, usize) {
+        let shared = self.shared.borrow();
+        let (mut using, mut held, mut not_started) = (Vec::new(), Vec::new(), 0);
+        let files = shared
+            .jobs
+            .values()
+            .filter(|job| job.is_running() && !job.paused)
+            .flat_map(|job| &job.items)
+            .filter(|item| item.kind == ItemKind::File && item.outcome.is_none() && !item.paused);
+        for item in files {
+            match &item.meter {
+                _ if item.held => held.push(PlaceUse {
+                    name: item.name.clone(),
+                    connections: 0,
+                }),
+                Some(_) => using.push(PlaceUse {
+                    name: item.name.clone(),
+                    connections: item
+                        .parts
+                        .iter()
+                        .filter(|part| part.at < part.end)
+                        .count()
+                        .max(1),
+                }),
+                None => not_started += 1,
+            }
+        }
+        using.extend(held);
+        (using, not_started)
+    }
+
     /// Add a job to the list and start it in the background.
     ///
     /// # Arguments
@@ -2292,6 +2357,9 @@ struct RowView {
     can_remove: bool,
     /// A job's header that can start now, ahead of the others (its right-click menu).
     can_start_now: bool,
+    /// A file being copied in parts, which can be raised above the others (its
+    /// right-click menu).
+    can_raise: bool,
 }
 
 /// Show a row's current state in its widgets.
@@ -2342,6 +2410,7 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
     widgets
         .cancel
         .set_tooltip_if_changed(Some(&row.cancel_tooltip));
+    widgets.raise.set_visible(row.can_raise);
     widgets.pause.set_visible(row.can_pause);
     widgets
         .pause
@@ -2356,6 +2425,7 @@ fn fill(widgets: &RowWidgets, shared: &Shared, key: RowKey, now: Instant) {
         .set_visible(!row.can_cancel && !row.can_retry);
     widgets.remove.set_visible(row.can_remove);
     widgets.can_start_now.set(row.can_start_now);
+    widgets.can_raise.set(row.can_raise);
     let complete = job.summary.as_ref().is_some_and(JobSummary::is_complete);
     set_class(&widgets.line, "finished-ok", job.flashing && complete);
     set_class(&widgets.line, "finished-bad", job.flashing && !complete);
@@ -2661,6 +2731,7 @@ fn job_row(job: &JobState, now: Instant) -> RowView {
                     && (item.meter.is_none() || item.held)
             }))
             || (!job.is_running() && job.paused),
+        can_raise: false,
     }
 }
 
@@ -2896,6 +2967,17 @@ fn item_row(job: &JobState, item: &ItemState, now: Instant) -> RowView {
         },
         can_remove: false,
         can_start_now: false,
+        // Moving in parts (not checking them yet), or waiting for a place: not started,
+        // or held back (for another file raised above it, say).
+        can_raise: job.is_running()
+            && !job.paused
+            && item.kind == ItemKind::File
+            && item.outcome.is_none()
+            && !item.paused
+            && !item.verifying
+            && ((item.meter.is_some() && !item.held && !item.parts.is_empty())
+                || item.meter.is_none()
+                || item.held),
     }
 }
 
@@ -3000,12 +3082,14 @@ fn build_row() -> (gtk::Box, RowWidgets) {
     show_status_on_hover(&bar, &info);
     show_status_on_hover(&part_bars, &info);
     let status = gtk::Image::new();
+    let raise = small_button("go-up-symbolic", Some(&tr!("item-raise-priority")));
     let pause = small_button("media-playback-pause-symbolic", Some(&tr!("job-pause")));
     let cancel = small_button("window-close-symbolic", Some(&tr!("dialog-cancel")));
     let retry = small_button("view-refresh-symbolic", Some(&tr!("job-retry")));
     let end_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     end_slot.set_size_request(END_SLOT_WIDTH, -1);
     end_slot.append(&status);
+    end_slot.append(&raise);
     end_slot.append(&pause);
     end_slot.append(&cancel);
     end_slot.append(&retry);
@@ -3037,13 +3121,16 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         });
     };
     send(&expander, "toggle");
+    send(&raise, "raise-priority");
     send(&pause, "pause");
     send(&cancel, "cancel");
     send(&retry, "retry");
     send(&remove, "dismiss");
 
-    // Right-click on a job's line: "Start now", for a job waiting, held back or paused.
+    // Right-click on a job's line: "Start now", for a job waiting, held back or paused;
+    // on a file's: "Raise Priority", for a file moving in parts.
     let can_start_now: Rc<Cell<bool>> = Rc::default();
+    let can_raise: Rc<Cell<bool>> = Rc::default();
     let menu = gio::Menu::new();
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
     popover.set_parent(&line);
@@ -3052,18 +3139,32 @@ fn build_row() -> (gtk::Box, RowWidgets) {
         .button(gtk::gdk::BUTTON_SECONDARY)
         .build();
     {
-        let (key, can_start_now) = (Rc::clone(&key), Rc::clone(&can_start_now));
+        let (key, can_start_now, can_raise) = (
+            Rc::clone(&key),
+            Rc::clone(&can_start_now),
+            Rc::clone(&can_raise),
+        );
         right_click.connect_pressed(move |_, _, x, y| {
-            let Some(RowKey { job, item: None }) = key.get() else {
-                return;
+            let entry = match key.get() {
+                Some(RowKey { job, item: None }) if can_start_now.get() => {
+                    (tr!("job-start-now"), "start-now", job, -1_i64)
+                }
+                Some(RowKey {
+                    job,
+                    item: Some(item),
+                }) if can_raise.get() => (
+                    tr!("item-raise-priority"),
+                    "raise-priority",
+                    job,
+                    i64::try_from(item).unwrap_or(-1),
+                ),
+                _ => return,
             };
-            if !can_start_now.get() {
-                return;
-            }
-            let start = gio::MenuItem::new(Some(&tr!("job-start-now")), None);
+            let (label, action, job, item) = entry;
+            let start = gio::MenuItem::new(Some(&label), None);
             start.set_action_and_target_value(
-                Some(&format!("{ACTION_GROUP}.start-now")),
-                Some(&(job, -1_i64).to_variant()),
+                Some(&format!("{ACTION_GROUP}.{action}")),
+                Some(&(job, item).to_variant()),
             );
             menu.remove_all();
             menu.append_item(&start);
@@ -3085,12 +3186,14 @@ fn build_row() -> (gtk::Box, RowWidgets) {
             part_bars,
             info,
             status,
+            raise,
             pause,
             cancel,
             retry,
             line,
             remove,
             can_start_now,
+            can_raise,
         },
     )
 }
@@ -3130,6 +3233,13 @@ fn register_actions(page: &gtk::Box, sender: &ComponentSender<TransferPanel>) {
     });
     add("dismiss", |job, _| TransferPanelMsg::Dismiss(job));
     add("start-now", |job, _| TransferPanelMsg::StartNow(job));
+    // Only ever sent for a file; a job's own line names no file, which nothing matches.
+    add("raise-priority", |job, item| {
+        TransferPanelMsg::RaisePriority {
+            job,
+            item: item.unwrap_or(usize::MAX),
+        }
+    });
     add("retry", |job, item| match item {
         None => TransferPanelMsg::Retry(job),
         Some(item) => TransferPanelMsg::ResumeItem { job, item },

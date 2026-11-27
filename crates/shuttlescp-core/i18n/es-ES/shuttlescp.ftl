@@ -17,6 +17,15 @@ preferences-restart = Reinicie { -app-name } para usar el nuevo idioma.
 status-transfers-unlimited = Archivos: sin límite
 status-transfers-limited = Archivos: { $running } de { $limit }
 status-transfers-waiting = { $count } en espera
+status-transfers-file-uses = { $name }: { $count ->
+    [one] 1 conexión
+   *[other] { $count } conexiones
+}
+status-transfers-file-held = { $name }: en pausa, esperando un hueco
+status-transfers-not-started = { $count ->
+    [one] 1 archivo más espera para empezar
+   *[other] { $count } archivos más esperan para empezar
+}
 dialog-cancel = Cancelar
 
 quit-title = Salir
@@ -336,6 +345,7 @@ job-cancel-paused = Cancelar la transferencia en pausa
 job-pause = Pausar: detener por ahora, conservando lo copiado
 job-resume = Reanudar: continuar donde se pausó
 job-start-now = Iniciar ahora
+item-raise-priority = Subir prioridad
 job-retry = Reintentar: continuar donde se detuvo
 job-remove = Quitar de la lista
 
@@ -447,6 +457,8 @@ login-description = Descripción:
 login-advanced = Avanzado
 login-files-at-once-tooltip = Archivos copiados a la vez. Más puede ser más rápido cuando el servidor limita la velocidad de cada conexión; FTP abre una conexión para cada uno, y algunos servidores solo permiten unas pocas.
 login-files-at-once = Archivos a la vez:
+login-parts-per-file-tooltip = Máximo de conexiones que puede usar un archivo copiado en multiparte, aparte de «Archivos a la vez», que cuenta archivos enteros. Más puede ser más rápido cuando el servidor limita la velocidad de cada conexión; algunos servidores solo permiten unas pocas.
+login-parts-per-file = Partes por archivo:
 login-save = Guardar
 login-tab-direct = Directo
 login-site-to-site-intro = Las copias entre los dos servidores pasan por este equipo. Elija un sitio guardado para cada conexión y luego Iniciar sesión.

@@ -65,7 +65,11 @@ const PARTWAY_PAUSE: Duration = Duration::from_secs(2);
 /// Room a job has to spare for copying a file in parts: its free slots, and free places
 /// in the limit shared by every job; and where copies in parts record how far they got.
 struct Spare {
+    /// The file this room is for (each file has its own).
+    item: usize,
     slots: Arc<Semaphore>,
+    /// Most connections one file in parts may use (the sites' parts per file).
+    max_parts: usize,
     ticket: Option<Arc<Ticket>>,
     records: Arc<SplitRecords>,
     /// How many of the job's files wait for a slot: they go before parts joining late.
@@ -94,7 +98,7 @@ impl Spare {
                 break;
             };
             let place = match &self.ticket {
-                Some(ticket) => match ticket.try_take_extra() {
+                Some(ticket) => match ticket.try_take_extra(self.item) {
                     Some(place) => Some(place),
                     None => break,
                 },
@@ -253,8 +257,22 @@ pub(super) async fn copy_items(
         .flatten()
         .min()
         .unwrap_or(FILES_AT_ONCE);
-    tracing::debug!("copying up to {at_once} files at once");
-    let slots = Arc::new(Semaphore::new(at_once));
+    // A file copied in parts may use more connections than whole files do: up to the
+    // sites' parts per file (site to site, the lower of the two).
+    let max_parts = [src.parts_per_file(), dst.parts_per_file()]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(at_once);
+    let connections = if job.split {
+        at_once.max(max_parts)
+    } else {
+        at_once
+    };
+    tracing::debug!("copying up to {at_once} files at once, over up to {connections} connections");
+    // Whole files hold one of each; the extra parts of a file in parts only a slot.
+    let files = Arc::new(Semaphore::new(at_once));
+    let slots = Arc::new(Semaphore::new(connections));
     let times = Arc::new(Mutex::new(JobTimes::default()));
     let files_started = Instant::now();
     let mut most_at_once = 0;
@@ -297,6 +315,24 @@ pub(super) async fn copy_items(
         {
             tracing::info!("starting a file of this job now, ahead of the others");
             ticket.start_now();
+        }
+        // Raise Priority on a file waiting for a place (held back, or not started): it
+        // goes first, in this job and in the shared limit, the newest file elsewhere
+        // stepping back to make room. (A file copying in parts takes its own request.)
+        if let Some(index) = waiting
+            .iter()
+            .position(|(item, _)| cancel.take_raised(item.id))
+            && let Some(raised) = waiting.remove(index)
+        {
+            if let Some(ticket) = &ticket {
+                let free = files.available_permits().min(slots.available_permits());
+                let held = ticket.prioritize(raised.0.id, 1, free);
+                tracing::info!(
+                    "raised above the others: {}, {held} other files held back",
+                    raised.0.dest
+                );
+            }
+            waiting.push_front(raised);
         }
         // Paused files that were resumed queue up again; stopped or cancelled ones end.
         let mut still_paused = Vec::new();
@@ -343,7 +379,12 @@ pub(super) async fn copy_items(
                 paused.push((item, action));
                 continue;
             }
+            let Ok(file) = Arc::clone(&files).try_acquire_owned() else {
+                waiting.push_front((item, action));
+                break;
+            };
             let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                drop(file);
                 waiting.push_front((item, action));
                 break;
             };
@@ -353,7 +394,7 @@ pub(super) async fn copy_items(
                 Some(ticket) => match ticket.try_take(item.id) {
                     Some(place) => Some(place),
                     None => {
-                        drop(slot);
+                        drop((file, slot));
                         waiting.push_front((item, action));
                         break;
                     }
@@ -368,7 +409,9 @@ pub(super) async fn copy_items(
                 Arc::clone(&times),
             );
             let spare = job.split.then(|| Spare {
+                item: item.id,
                 slots: Arc::clone(&slots),
+                max_parts,
                 ticket: ticket.clone(),
                 records: Arc::clone(&records),
                 files_waiting: Arc::clone(&files_waiting),
@@ -376,7 +419,7 @@ pub(super) async fn copy_items(
             running.spawn(async move {
                 // Holding the slot and the place until the copy ends lets the next file
                 // start.
-                let _slot = slot;
+                let _slot = (file, slot);
                 let end = match action {
                     FileAction::AlreadyThere => {
                         tracing::info!("already copied earlier: {}", item.dest);
@@ -404,7 +447,7 @@ pub(super) async fn copy_items(
             });
             // Counted by slots held, not tasks: a finished task stays in `running`
             // until joined, after its slot went to the next file.
-            most_at_once = most_at_once.max(at_once - slots.available_permits());
+            most_at_once = most_at_once.max(at_once - files.available_permits());
         }
 
         files_waiting.store(waiting.len(), Ordering::Relaxed);
@@ -697,8 +740,11 @@ async fn copy_file(
     {
         let resumed = resumable_parts(item, dst, &spare.records).await;
         let wanted = resumed.as_ref().map_or_else(
-            || parts::parts_for(item.size, usize::MAX),
-            |parts| parts.iter().filter(|part| !part.is_done()).count(),
+            || parts::parts_for(item.size, spare.max_parts),
+            |parts| {
+                let left = parts.iter().filter(|part| !part.is_done()).count();
+                left.min(spare.max_parts)
+            },
         );
         let extra = spare.take(wanted.saturating_sub(1));
         // With no connection free yet, it starts as one part over its own: connections
@@ -939,6 +985,7 @@ async fn copy_file_in_parts(
         own: place,
         extra,
         spare: Some(spare),
+        max: spare.max_parts,
         min_part: parts::MIN_PART,
     };
     // The extra connections are let go at its end: free again for other files, while

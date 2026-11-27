@@ -68,6 +68,7 @@ impl Server {
                     passphrase_saved: false,
                 },
                 files_at_once: shuttlescp_core::sites::DEFAULT_FILES_AT_ONCE,
+                parts_per_file: shuttlescp_core::sites::DEFAULT_PARTS_PER_FILE,
                 alias: String::new(),
                 description: String::new(),
                 folder: String::new(),
@@ -1783,5 +1784,207 @@ async fn connections_freed_later_join_a_copy_started_as_one_part() {
         "freed places joined in: {counts:?}"
     );
     assert_eq!(there.expect("checksum on the server"), here);
+    assert!(removed.is_complete(), "clean up: {removed:?}");
+}
+
+/// A Multi-part copy uses up to the site's parts per file, whatever its files at once:
+/// with one file at once, a 1 GiB upload still goes in 4 parts (of 256 MiB each).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn parts_per_file_is_apart_from_files_at_once() {
+    // Arrange: a site copying one file at once.
+    let mut server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    server.site.files_at_once = 1;
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = big_local_file(temp.path(), "parts-apart.bin");
+    let mut upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    upload.split = true;
+
+    // Act
+    let first = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&first);
+    let summary = run(
+        upload,
+        Some(remote.clone()),
+        None,
+        CancelFlag::default(),
+        move |event| {
+            if let TransferEvent::Parts { parts, .. } = event {
+                seen.lock().expect("lock").get_or_insert(parts.len());
+            }
+        },
+    )
+    .await;
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("checksum");
+    let there = remote.sha256(&server.dir.join("parts-apart.bin")).await;
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![SidePath::Remote(server.dir.join("parts-apart.bin"))],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (removed, _) = run_job(remove, &remote, None).await;
+
+    // Assert
+    assert!(summary.is_complete(), "upload: {summary:?}");
+    assert_eq!(*first.lock().expect("lock"), Some(4), "started in 4 parts");
+    assert_eq!(there.expect("checksum on the server"), here);
+    assert!(removed.is_complete(), "clean up: {removed:?}");
+}
+
+/// A file downloaded in more parts than its FTP server allows connections: the server
+/// refuses the extra ones, those parts wait for a connection instead of failing, and
+/// the file arrives whole. The script's `SHUTTLESCP_TEST_FTP_LIMITED` server takes 3
+/// connections per client.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn more_parts_than_the_ftp_server_allows() {
+    // Arrange: 1 GiB on the server (4 parts of 256 MiB), asked for in up to 8 parts.
+    let server = Server::from_env("SHUTTLESCP_TEST_FTP_LIMITED");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let local = big_local_file(temp.path(), "limited-parts.bin");
+    let upload = job(
+        JobKind::Copy,
+        Side::Local,
+        vec![SidePath::Local(local.clone())],
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (up, up_errors) = run_job(upload, &remote, None).await;
+    assert!(up.is_complete(), "upload: {up:?} {up_errors:?}");
+    let down = temp.path().join("down");
+    std::fs::create_dir(&down).expect("create");
+    let on_server = SidePath::Remote(server.dir.join("limited-parts.bin"));
+    let mut download = job(
+        JobKind::Copy,
+        Side::Remote,
+        vec![on_server.clone()],
+        SidePath::Local(down.clone()),
+    );
+    download.split = true;
+
+    // Act
+    let (summary, failures) = run_job(download, &remote, None).await;
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        vec![on_server.clone()],
+        on_server,
+    );
+    let (removed, _) = run_job(remove, &remote, None).await;
+
+    // Assert: whole and right.
+    assert!(
+        summary.is_complete(),
+        "download: {summary:?}, failed: {failures:?}"
+    );
+    let here = shuttlescp_core::checksum::local_sha256(local)
+        .await
+        .expect("checksum");
+    let copied = shuttlescp_core::checksum::local_sha256(down.join("limited-parts.bin"))
+        .await
+        .expect("checksum");
+    assert_eq!(copied, here);
+    assert!(removed.is_complete(), "clean up: {removed:?}");
+}
+
+/// Raised above the others, a file copied in parts takes the place of another job's
+/// file, which steps back and continues afterwards from its partial copy: both arrive
+/// whole.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs test servers; see scripts/test-site-to-site.sh"]
+async fn a_raised_file_takes_the_place_of_another_jobs_file() {
+    // Arrange: a limit of 2; job A uploads a file whole, job B one in parts, which
+    // starts as one part.
+    let server = Server::from_env("SHUTTLESCP_TEST_SSH_SHELL");
+    let remote = server.connect().await;
+    let temp = tempfile::tempdir().expect("temp dir");
+    let whole = big_local_file(temp.path(), "raised-other.bin");
+    let parted = big_local_file(temp.path(), "raised-parts.bin");
+    let places = FilePlaces::new(Some(2));
+    let upload = |path: &Path| {
+        job(
+            JobKind::Copy,
+            Side::Local,
+            vec![SidePath::Local(path.to_owned())],
+            SidePath::Remote(server.dir.clone()),
+        )
+    };
+    let mut in_parts = upload(&parted);
+    in_parts.split = true;
+
+    // Act: B is raised as soon as it reports its part.
+    let cancel_a = CancelFlag::default().with_places(Arc::clone(&places));
+    let cancel_b = CancelFlag::default().with_places(Arc::clone(&places));
+    let raising = cancel_b.clone();
+    let most = Arc::new(Mutex::new(0));
+    let seen = Arc::clone(&most);
+    let held = Arc::new(Mutex::new(false));
+    let a_held = Arc::clone(&held);
+    let a = run(
+        upload(&whole),
+        Some(remote.clone()),
+        None,
+        cancel_a,
+        move |event| {
+            if let TransferEvent::Held { .. } = event {
+                *a_held.lock().expect("lock") = true;
+            }
+        },
+    );
+    // A starts first, so it holds a place when B starts.
+    let b = async {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        run(
+            in_parts,
+            Some(remote.clone()),
+            None,
+            cancel_b,
+            move |event| {
+                if let TransferEvent::Parts { id, parts } = event {
+                    raising.raise_priority(id);
+                    let moving = parts.iter().filter(|part| part.at < part.end).count();
+                    let mut most = seen.lock().expect("lock");
+                    *most = (*most).max(moving);
+                }
+            },
+        )
+        .await
+    };
+    let (a, b) = tokio::join!(a, b);
+    let mut sums = Vec::new();
+    for name in ["raised-other.bin", "raised-parts.bin"] {
+        sums.push(remote.sha256(&server.dir.join(name)).await);
+    }
+    let remove = job(
+        JobKind::Delete,
+        Side::Remote,
+        ["raised-other.bin", "raised-parts.bin"]
+            .iter()
+            .map(|name| SidePath::Remote(server.dir.join(name)))
+            .collect(),
+        SidePath::Remote(server.dir.clone()),
+    );
+    let (removed, _) = run_job(remove, &remote, None).await;
+
+    // Assert: A stepped back for B, which went to more parts; both whole.
+    assert!(a.is_complete(), "A: {a:?}");
+    assert!(b.is_complete(), "B: {b:?}");
+    assert!(*held.lock().expect("lock"), "A's file stepped back");
+    assert!(*most.lock().expect("lock") >= 2, "B went to more parts");
+    for (path, sum) in [whole, parted].iter().zip(sums) {
+        let here = shuttlescp_core::checksum::local_sha256(path.clone())
+            .await
+            .expect("checksum");
+        assert_eq!(sum.expect("checksum on the server"), here);
+    }
     assert!(removed.is_complete(), "clean up: {removed:?}");
 }

@@ -207,6 +207,10 @@ pub struct ExportedSite {
     /// default applies).
     #[serde(default = "crate::sites::default_files_at_once")]
     pub files_at_once: u8,
+    /// Most parts per file (exports from older versions have none: the default
+    /// applies).
+    #[serde(default = "crate::sites::default_parts_per_file")]
+    pub parts_per_file: u8,
     /// The site's alias, notes and folder (exports from older versions have none).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub alias: String,
@@ -335,6 +339,7 @@ pub fn export_sites(
                 ..site.ssh.clone()
             },
             files_at_once: site.files_at_once,
+            parts_per_file: site.parts_per_file,
             alias: site.alias.clone(),
             description: site.description.clone(),
             folder: site.folder.clone(),
@@ -414,6 +419,7 @@ pub fn import_sites(
                     ..exported.ssh.clone()
                 },
                 files_at_once: exported.files_at_once,
+                parts_per_file: exported.parts_per_file,
                 alias: exported.alias.clone(),
                 description: exported.description.clone(),
                 folder: crate::sites::normalize_folder(&exported.folder),
@@ -546,6 +552,7 @@ mod tests {
             ftp: crate::sites::FtpOptions::default(),
             ssh: crate::sites::SshAuth::default(),
             files_at_once: 7,
+            parts_per_file: 12,
             alias: String::new(),
             description: String::new(),
             folder: String::new(),
@@ -611,6 +618,10 @@ mod tests {
         assert!(!text.contains("hunter2"), "password must be encrypted");
         assert_eq!(imported[0].0.host, "a.example");
         assert_eq!(imported[0].0.files_at_once, 7, "the site's files at once");
+        assert_eq!(
+            imported[0].0.parts_per_file, 12,
+            "the site's parts per file"
+        );
         assert_eq!(
             (
                 imported[0].0.alias.as_str(),

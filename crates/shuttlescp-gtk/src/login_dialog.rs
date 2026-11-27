@@ -26,8 +26,9 @@ use shuttlescp_core::secrets;
 use shuttlescp_core::session::{self, ExportReport, ImportReport, KeyringAction};
 use shuttlescp_core::site_export::ExportFile;
 use shuttlescp_core::sites::{
-    DEFAULT_FILES_AT_ONCE, FtpEncryption, FtpOptions, MAX_FILES_AT_ONCE, Protocol, Site, SiteBook,
-    SiteVerify, SshAuth, address_label, folder_name, join_folder, new_site_id, parent_folder,
+    DEFAULT_FILES_AT_ONCE, DEFAULT_PARTS_PER_FILE, FtpEncryption, FtpOptions, MAX_FILES_AT_ONCE,
+    MAX_PARTS_PER_FILE, Protocol, Site, SiteBook, SiteVerify, SshAuth, address_label, folder_name,
+    join_folder, new_site_id, parent_folder,
 };
 use shuttlescp_core::transfer::{self, JobKind, Side};
 
@@ -155,6 +156,8 @@ pub enum LoginMsg {
     PortChanged(i32),
     /// The "Files at once" field changed.
     FilesAtOnceChanged(i32),
+    /// The "Parts per file" field changed.
+    PartsPerFileChanged(i32),
     /// The "Verify checksums" choice, by its position in the list.
     VerifyChanged(u32),
     /// The Advanced section was opened or closed.
@@ -270,12 +273,13 @@ pub enum LoginOutput {
         resume: Option<Resume>,
     },
     /// Logged in to two sites, for copying between them: `left` for the left pane and
-    /// `right` for the right one.
+    /// `right` for the right one. Boxed, so this variant (two sites) doesn't make
+    /// every message as big as itself.
     ConnectedPair {
         /// The left pane's site and its connection.
-        left: (Site, Remote),
+        left: Box<(Site, Remote)>,
         /// The right pane's site and its connection.
-        right: (Site, Remote),
+        right: Box<(Site, Remote)>,
         /// Unfinished transfers to resume in it.
         resume: Option<Resume>,
     },
@@ -397,6 +401,8 @@ pub struct LoginDialog {
     port: u16,
     /// Files copied at the same time to or from the site.
     files_at_once: u8,
+    /// Most connections one file copied in parts may use.
+    parts_per_file: u8,
     /// The site's choice for checking copies.
     verify: SiteVerify,
     /// The Advanced section is open: by the user, or because the site changed a setting
@@ -873,11 +879,15 @@ impl LoginDialog {
         self.files_at_once = site
             .as_ref()
             .map_or(DEFAULT_FILES_AT_ONCE, |site| site.files_at_once);
+        self.parts_per_file = site
+            .as_ref()
+            .map_or(DEFAULT_PARTS_PER_FILE, |site| site.parts_per_file);
         self.verify = site
             .as_ref()
             .map_or_else(SiteVerify::default, |site| site.verify);
-        self.advanced_open =
-            self.files_at_once != DEFAULT_FILES_AT_ONCE || self.verify != SiteVerify::default();
+        self.advanced_open = self.files_at_once != DEFAULT_FILES_AT_ONCE
+            || self.parts_per_file != DEFAULT_PARTS_PER_FILE
+            || self.verify != SiteVerify::default();
         self.host
             .set_text(site.as_ref().map_or("", |site| site.host.as_str()));
         self.user
@@ -1035,6 +1045,7 @@ impl LoginDialog {
                 use_agent: self.use_agent,
             },
             files_at_once: self.files_at_once,
+            parts_per_file: self.parts_per_file,
             alias: self.alias.text().trim().to_owned(),
             description: {
                 let (start, end) = self.description.bounds();
@@ -1749,6 +1760,38 @@ impl Component for LoginDialog {
                                     gtk::Box {
                                         set_orientation: gtk::Orientation::Horizontal,
                                         set_spacing: 8,
+                                        set_tooltip_text: Some(
+                                            &tr!("login-parts-per-file-tooltip"),
+                                        ),
+
+                                        gtk::Label {
+                                            set_label: &tr!("login-parts-per-file"),
+                                        },
+                                        gtk::SpinButton::with_range(1.0, f64::from(MAX_PARTS_PER_FILE), 1.0) {
+                                            set_digits: 0,
+                                            set_width_chars: 2,
+                                            #[watch]
+                                            set_sensitive: model.editing,
+                                            #[watch]
+                                            set_value: f64::from(model.parts_per_file),
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(LoginMsg::PartsPerFileChanged(spin.value_as_int()));
+                                            },
+                                            connect_changed[sender] => move |spin| {
+                                                if let Some(value) = typed_number(spin) {
+                                                    sender.input(LoginMsg::PartsPerFileChanged(value));
+                                                }
+                                            },
+                                        },
+                                        gtk::Label {
+                                            set_label: &tr!("login-files-at-once-usual", count = DEFAULT_PARTS_PER_FILE),
+                                            add_css_class: "dim-label",
+                                        },
+                                    },
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
                                         set_tooltip_text: Some(&tr!("login-verify-tooltip")),
 
                                         gtk::Label {
@@ -2249,6 +2292,7 @@ impl Component for LoginDialog {
             protocol: Protocol::default(),
             port: Protocol::default().default_port(),
             files_at_once: DEFAULT_FILES_AT_ONCE,
+            parts_per_file: DEFAULT_PARTS_PER_FILE,
             verify: SiteVerify::default(),
             advanced_open: false,
             ftp: FtpOptions::default(),
@@ -2514,6 +2558,11 @@ impl Component for LoginDialog {
                     self.files_at_once = count;
                 }
             }
+            LoginMsg::PartsPerFileChanged(value) => {
+                if let Ok(count) = u8::try_from(value) {
+                    self.parts_per_file = count;
+                }
+            }
             LoginMsg::VerifyChanged(position) => self.verify = site_verify_at(position),
             LoginMsg::AdvancedToggled(open) => self.advanced_open = open,
             LoginMsg::SavePasswordToggled(active) => self.save_password = active,
@@ -2749,8 +2798,8 @@ impl Component for LoginDialog {
                         };
                         let output = match left {
                             Some(left) => LoginOutput::ConnectedPair {
-                                left,
-                                right: (site, remote),
+                                left: Box::new(left),
+                                right: Box::new((site, remote)),
                                 resume,
                             },
                             None => LoginOutput::Connected {
@@ -3548,6 +3597,7 @@ mod tests {
             ftp: FtpOptions::default(),
             ssh: SshAuth::default(),
             files_at_once: DEFAULT_FILES_AT_ONCE,
+            parts_per_file: DEFAULT_PARTS_PER_FILE,
             alias: String::new(),
             description: String::new(),
             folder: folder.to_owned(),

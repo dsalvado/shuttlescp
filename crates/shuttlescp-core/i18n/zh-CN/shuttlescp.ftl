@@ -16,6 +16,9 @@ preferences-restart = 重新启动 { -app-name } 以使用新语言。
 status-transfers-unlimited = 文件：不限
 status-transfers-limited = 文件：{ $running } / { $limit }
 status-transfers-waiting = { $count } 个等待中
+status-transfers-file-uses = { $name }：{ $count } 个连接
+status-transfers-file-held = { $name }：已暂停，正在等待位置
+status-transfers-not-started = 还有 { $count } 个文件等待开始
 dialog-cancel = 取消
 
 quit-title = 退出
@@ -308,6 +311,7 @@ job-cancel-paused = 取消已暂停的传输
 job-pause = 暂停：暂时停止，保留已复制的内容
 job-resume = 继续：从暂停处继续
 job-start-now = 立即开始
+item-raise-priority = 提高优先级
 job-retry = 重试：从停止处继续
 job-remove = 从列表中移除
 
@@ -411,6 +415,8 @@ login-description = 描述：
 login-advanced = 高级
 login-files-at-once-tooltip = 同时复制的文件数。服务器限制每个连接的速度时，更多可能更快；FTP 为每个文件打开一个连接，有些服务器只允许少量连接。
 login-files-at-once = 同时文件数：
+login-parts-per-file-tooltip = 多段复制的单个文件最多可用的连接数，与按整个文件计数的“同时文件数”分开。服务器限制每个连接的速度时，更多可能更快；有些服务器只允许少量连接。
+login-parts-per-file = 每个文件分段数：
 login-save = 保存
 login-tab-direct = 直连
 login-site-to-site-intro = 两台服务器之间的复制会经过本机。为每个连接选择一个已保存的站点，然后点击“登录”。

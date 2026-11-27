@@ -755,6 +755,9 @@ pub struct CancelFlag {
     split_records: Option<Arc<SplitRecords>>,
     /// Start now was asked for: the job goes first in the shared limit's line.
     start_now: Arc<AtomicBool>,
+    /// Files copied in parts the user raised above the others, by id, until the copy
+    /// takes the request.
+    raised: Arc<Mutex<HashSet<usize>>>,
     /// Wakes whatever waits on a slow server when the user cancels, pauses or stops,
     /// so it does not wait out the server's timeout first.
     wake: Arc<tokio::sync::Notify>,
@@ -838,6 +841,21 @@ impl CancelFlag {
     /// Whether Start now was asked for since the last time; asking clears it.
     pub(super) fn take_start_now(&self) -> bool {
         self.start_now.swap(false, Ordering::Relaxed)
+    }
+
+    /// Raise a file being copied in parts above the others: other files step back, as
+    /// many as it can use more connections, and their places go to its parts.
+    pub fn raise_priority(&self, id: usize) {
+        if let Ok(mut raised) = self.raised.lock() {
+            raised.insert(id);
+        }
+    }
+
+    /// Whether the file was raised since the last time; asking clears it.
+    pub(super) fn take_raised(&self, id: usize) -> bool {
+        self.raised
+            .lock()
+            .is_ok_and(|mut raised| raised.remove(&id))
     }
 
     /// Ask the job to pause: it stops like [`CancelFlag::cancel`], but files being
